@@ -1,11 +1,14 @@
 """Validated process configuration with repository-relative defaults."""
 
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_API_KEY_PATTERN = re.compile(r"^[A-Za-z0-9_-]{32,128}$")
 
 
 class Settings(BaseSettings):
@@ -14,6 +17,7 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
+        hide_input_in_errors=True,
     )
 
     app_env: Literal["development", "test", "production"] = "development"
@@ -61,16 +65,22 @@ class Settings(BaseSettings):
     api_prefix: str = "/api/v1"
     trusted_hosts: str = "localhost,127.0.0.1,testserver"
     cors_allow_origins: str = ""
+    nanoloop_api_key: SecretStr | None = None
+    api_rate_limit_requests: int = Field(default=0, ge=0, le=1_000_000)
+    api_rate_limit_window_seconds: float = Field(default=60.0, gt=0, le=3_600)
 
     @field_validator(
         "embedding_model_revision",
         "llm_base_url",
         "llm_api_key",
         "llm_model",
+        "nanoloop_api_key",
         mode="before",
     )
     @classmethod
     def empty_string_is_none(cls, value: object) -> object:
+        if isinstance(value, SecretStr) and value.get_secret_value() == "":
+            return None
         return None if value == "" else value
 
     @field_validator("log_level")
@@ -80,6 +90,17 @@ class Settings(BaseSettings):
         if normalized not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
             raise ValueError("unsupported LOG_LEVEL")
         return normalized
+
+    @field_validator("nanoloop_api_key")
+    @classmethod
+    def validate_api_key(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is None:
+            return None
+        if not _API_KEY_PATTERN.fullmatch(value.get_secret_value()):
+            raise ValueError(
+                "NANOLOOP_API_KEY must contain 32-128 URL-safe letters, digits, '_' or '-'"
+            )
+        return value
 
     @model_validator(mode="after")
     def request_limit_covers_one_upload(self) -> "Settings":

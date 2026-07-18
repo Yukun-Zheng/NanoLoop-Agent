@@ -19,11 +19,14 @@ ErrorEnvelope = ApiResponse[dict[str, object]]
 
 COMMON_ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
     400: {"model": ErrorEnvelope, "description": "Bad request"},
+    401: {"model": ErrorEnvelope, "description": "API key required or invalid"},
+    403: {"model": ErrorEnvelope, "description": "Request forbidden by security policy"},
     404: {"model": ErrorEnvelope, "description": "Resource not found"},
     409: {"model": ErrorEnvelope, "description": "State or revision conflict"},
     413: {"model": ErrorEnvelope, "description": "Payload too large"},
     415: {"model": ErrorEnvelope, "description": "Unsupported media type"},
     422: {"model": ErrorEnvelope, "description": "Validation error"},
+    429: {"model": ErrorEnvelope, "description": "Rate limit exceeded"},
     500: {"model": ErrorEnvelope, "description": "Internal server error"},
     501: {"model": ErrorEnvelope, "description": "Frozen route awaiting service integration"},
     503: {"model": ErrorEnvelope, "description": "Dependency unavailable"},

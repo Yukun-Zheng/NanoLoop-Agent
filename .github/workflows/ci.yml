@@ -25,10 +25,10 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
           cache: pip
@@ -71,10 +71,10 @@ jobs:
           - "3.12"
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -97,7 +97,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Validate Compose configuration
         run: docker compose config --quiet
@@ -112,24 +112,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          docker network create nanoloop-ci-network >/dev/null
           docker volume create nanoloop-ci-data >/dev/null
           docker volume create nanoloop-ci-outputs >/dev/null
           docker volume create nanoloop-ci-logs >/dev/null
           docker volume create nanoloop-ci-sources >/dev/null
           docker volume create nanoloop-ci-index >/dev/null
-          cleanup() {
-            docker rm --force nanoloop-api-ci >/dev/null 2>&1 || true
-            docker volume rm \
-              nanoloop-ci-data nanoloop-ci-outputs nanoloop-ci-logs \
-              nanoloop-ci-sources nanoloop-ci-index \
-              >/dev/null 2>&1 || true
-          }
-          trap cleanup EXIT
           docker run --detach --name nanoloop-api-ci \
+            --network nanoloop-ci-network \
+            --network-alias api \
             --read-only \
             --cap-drop ALL \
             --security-opt no-new-privileges \
             --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+            --env NANOLOOP_API_KEY=ci_api_key_0123456789abcdef123456 \
+            --env API_RATE_LIMIT_REQUESTS=20 \
+            --env TRUSTED_HOSTS=localhost,127.0.0.1,api \
             --mount type=volume,src=nanoloop-ci-data,dst=/app/data \
             --mount type=volume,src=nanoloop-ci-outputs,dst=/app/outputs \
             --mount type=volume,src=nanoloop-ci-logs,dst=/app/logs \
@@ -142,6 +140,8 @@ jobs:
             if [ "${status}" = "healthy" ]; then
               docker exec nanoloop-api-ci python -c \
                 "import os; assert os.getuid() != 0; assert os.access('/app/data/model-snapshots', os.W_OK)"
+              docker exec nanoloop-api-ci python -c \
+                "import json,urllib.request; r=urllib.request.Request('http://127.0.0.1:8000/api/v1/health',headers={'X-API-Key':'ci_api_key_0123456789abcdef123456'}); p=json.load(urllib.request.urlopen(r,timeout=3)); assert p['status']=='success'"
               exit 0
             fi
             if [ "${status}" = "unhealthy" ]; then
@@ -156,16 +156,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cleanup() {
-            docker rm --force nanoloop-frontend-ci >/dev/null 2>&1 || true
-          }
-          trap cleanup EXIT
           docker run --detach --name nanoloop-frontend-ci \
+            --network nanoloop-ci-network \
             --read-only \
             --cap-drop ALL \
             --security-opt no-new-privileges \
             --tmpfs /tmp:rw,noexec,nosuid,size=128m \
-            --env NANOLOOP_API_BASE_URL=http://127.0.0.1:8000 \
+            --env NANOLOOP_API_BASE_URL=http://api:8000 \
+            --env NANOLOOP_API_KEY=ci_api_key_0123456789abcdef123456 \
             nanoloop-agent-frontend:ci >/dev/null
           for attempt in $(seq 1 40); do
             status=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' \
@@ -176,6 +174,8 @@ jobs:
               readonly_root=$(docker inspect --format '{{.HostConfig.ReadonlyRootfs}}' \
                 nanoloop-frontend-ci)
               test "${readonly_root}" = "true"
+              docker exec nanoloop-frontend-ci python -c \
+                "import json,urllib.request; r=urllib.request.Request('http://api:8000/api/v1/health',headers={'X-API-Key':'ci_api_key_0123456789abcdef123456'}); p=json.load(urllib.request.urlopen(r,timeout=3)); assert p['status']=='success'"
               exit 0
             fi
             if [ "${status}" = "unhealthy" ]; then
@@ -185,3 +185,14 @@ jobs:
           done
           docker logs nanoloop-frontend-ci
           exit 1
+
+      - name: Clean up container smoke resources
+        if: always()
+        shell: bash
+        run: |
+          docker rm --force nanoloop-frontend-ci nanoloop-api-ci >/dev/null 2>&1 || true
+          docker volume rm \
+            nanoloop-ci-data nanoloop-ci-outputs nanoloop-ci-logs \
+            nanoloop-ci-sources nanoloop-ci-index \
+            >/dev/null 2>&1 || true
+          docker network rm nanoloop-ci-network >/dev/null 2>&1 || true

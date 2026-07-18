@@ -1,10 +1,11 @@
 """Route modules for the frozen v1 API."""
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from app.api.deps import require_api_key_contract
 from app.api.routes import analyses, boxes, exports, files, health, knowledge, models, queries, runs
 
-api_router = APIRouter()
+api_router = APIRouter(dependencies=[Depends(require_api_key_contract)])
 api_router.include_router(health.router)
 api_router.include_router(models.router)
 api_router.include_router(analyses.router)

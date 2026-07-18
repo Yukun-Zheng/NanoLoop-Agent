@@ -3,19 +3,54 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterator
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import Request
+from fastapi import HTTPException, Request, Security
+from fastapi.security import APIKeyHeader
 
 from app.agent.application import QueryApplicationService
 from app.analysis.application import AnalysisApplicationService, AnalysisCreationService
 from app.core.errors import ApiNotImplementedError, ServiceUnavailableError
 from app.core.logging import bind_log_context, reset_log_context
+from app.core.security import ApiKeyVerifier
 from app.db.repositories import SqlAlchemyRepositorySet
 from app.db.session import Database
 from app.rag.application import KnowledgeApplicationService
 from app.storage.file_store import LocalFileStore
 from app.storage.knowledge_store import KnowledgeSourceStore
+
+api_key_header = APIKeyHeader(
+    name="X-API-Key",
+    scheme_name="ApiKeyAuth",
+    description=(
+        "Optional shared deployment key. It is enforced when NANOLOOP_API_KEY is configured."
+    ),
+    auto_error=False,
+)
+
+
+async def require_api_key_contract(
+    request: Request,
+    candidate: Annotated[str | None, Security(api_key_header)],
+) -> None:
+    """Declare the OpenAPI scheme and fail closed if middleware wiring is bypassed."""
+
+    verifier = getattr(request.app.state, "api_key_verifier", None)
+    if not isinstance(verifier, ApiKeyVerifier):
+        raise ServiceUnavailableError(details={"component": "api_key_verifier"})
+    if not verifier.enabled:
+        return
+    authenticated = bool(getattr(request.state, "api_key_authenticated", False))
+    if authenticated and verifier.matches([candidate] if candidate is not None else []):
+        return
+    raise HTTPException(
+        status_code=401,
+        detail={
+            "code": "AUTHENTICATION_REQUIRED",
+            "message": "需要有效的 API Key",
+        },
+        headers={"WWW-Authenticate": 'ApiKey realm="nanoloop"'},
+    )
 
 
 async def bind_route_log_context(request: Request) -> AsyncIterator[None]:

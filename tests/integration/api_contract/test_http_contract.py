@@ -6,13 +6,40 @@ from io import BytesIO
 from unittest.mock import patch
 
 import pytest
+from fastapi.testclient import TestClient
 from PIL import Image
 from sqlalchemy import text
 
 from app.contracts.models import ModelCandidate, ModelRecommendationRequest
+from app.core.config import Settings
 from app.core.errors import StorageError
 from app.db.models import ImageAsset, KnowledgeDocument
+from app.main import create_app
 from tests.integration.api_contract.conftest import ApiHarness
+
+_API_KEY = "integration_key_0123456789abcdef"
+
+
+def _security_client(
+    api_harness: ApiHarness,
+    *,
+    rate_limit: int = 0,
+) -> TestClient:
+    app = create_app(
+        settings=Settings(
+            app_env="test",
+            nanoloop_api_key=_API_KEY,
+            api_rate_limit_requests=rate_limit,
+            api_rate_limit_window_seconds=60,
+            log_level="WARNING",
+        ),
+        database=api_harness.database,
+        file_store=api_harness.file_store,
+        inference_gateway=api_harness.gateway,
+    )
+    # Deliberately avoid entering the lifespan: this contract fixture reuses the already
+    # initialized database and only exercises middleware/read-only routes.
+    return TestClient(app, raise_server_exceptions=False)
 
 
 def _assert_success_envelope(payload: dict[str, object]) -> None:
@@ -42,6 +69,114 @@ def test_health_alias_and_versioned_health_are_real(api_harness: ApiHarness) -> 
         assert data["database"]["status"] == "healthy"
         assert data["model_registry"]["status"] == "healthy"
         assert data["rag_index"]["status"] == "degraded"
+
+
+def test_optional_api_key_protects_versioned_api_and_downloads(
+    api_harness: ApiHarness,
+) -> None:
+    client = _security_client(api_harness)
+    try:
+        assert client.get("/health").status_code == 200
+        for headers in (
+            {},
+            {"X-API-Key": "wrong"},
+        ):
+            response = client.get("/api/v1/health", headers=headers)
+            assert response.status_code == 401
+            _assert_error_envelope(response.json(), "AUTHENTICATION_REQUIRED")
+            assert response.headers["www-authenticate"] == 'ApiKey realm="nanoloop"'
+
+        authorized = client.get(
+            "/api/v1/health",
+            headers={"X-API-Key": _API_KEY},
+        )
+        assert authorized.status_code == 200
+
+        protected_file = client.get(f"/api/v1/files/{api_harness.download_token}")
+        assert protected_file.status_code == 401
+        downloaded = client.get(
+            f"/api/v1/files/{api_harness.download_token}",
+            headers={"X-API-Key": _API_KEY},
+        )
+        assert downloaded.status_code == 200
+        assert downloaded.content.startswith(b"particle_id")
+    finally:
+        client.close()
+
+
+def test_security_order_preserves_cors_host_and_origin_guards(
+    api_harness: ApiHarness,
+) -> None:
+    client = _security_client(api_harness)
+    allowed_origin = "http://localhost:8501"
+    try:
+        preflight = client.options(
+            "/api/v1/models",
+            headers={
+                "Origin": allowed_origin,
+                "Access-Control-Request-Method": "GET",
+                "Access-Control-Request-Headers": "X-API-Key",
+            },
+        )
+        assert preflight.status_code == 200
+        assert preflight.headers["access-control-allow-origin"] == allowed_origin
+
+        plain_options = client.options("/api/v1/models")
+        assert plain_options.status_code == 401
+        _assert_error_envelope(plain_options.json(), "AUTHENTICATION_REQUIRED")
+
+        unauthenticated = client.get(
+            "/api/v1/models",
+            headers={"Origin": allowed_origin},
+        )
+        assert unauthenticated.status_code == 401
+        assert unauthenticated.headers["access-control-allow-origin"] == allowed_origin
+
+        cross_site = client.post(
+            "/api/v1/models/recommend",
+            headers={"Origin": "https://attacker.example"},
+            json={"image_id": "img_1", "roi_mode": "full_image"},
+        )
+        assert cross_site.status_code == 403
+        _assert_error_envelope(cross_site.json(), "CROSS_SITE_MUTATION_FORBIDDEN")
+
+        hostile_host = client.get(
+            "/api/v1/models",
+            headers={"Host": "attacker.example"},
+        )
+        assert hostile_host.status_code == 400
+        _assert_error_envelope(hostile_host.json(), "UNTRUSTED_HOST")
+    finally:
+        client.close()
+
+
+def test_root_health_is_not_rate_limited_and_auth_buckets_are_separate(
+    api_harness: ApiHarness,
+) -> None:
+    client = _security_client(api_harness, rate_limit=1)
+    try:
+        assert client.get("/health").status_code == 200
+        assert client.get("/health").status_code == 200
+
+        first_anonymous = client.get("/api/v1/models")
+        second_anonymous = client.get("/api/v1/models")
+        first_authenticated = client.get(
+            "/api/v1/models",
+            headers={"X-API-Key": _API_KEY},
+        )
+        second_authenticated = client.get(
+            "/api/v1/models",
+            headers={"X-API-Key": _API_KEY},
+        )
+
+        assert first_anonymous.status_code == 401
+        assert second_anonymous.status_code == 429
+        assert second_anonymous.headers["retry-after"] == "60"
+        assert first_authenticated.status_code == 200
+        assert second_authenticated.status_code == 429
+        assert second_authenticated.json()["error"]["retryable"] is True
+    finally:
+        client.close()
 
 
 def test_health_reports_missing_or_stale_alembic_revision(api_harness: ApiHarness) -> None:

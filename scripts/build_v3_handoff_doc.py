@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 import subprocess
 import tempfile
 import zipfile
+from datetime import UTC, datetime
 from pathlib import Path
+from posixpath import normpath
 from xml.etree import ElementTree
 
 from docx import Document
@@ -43,6 +46,12 @@ BORDER = "B8C4D1"
 WHITE = "FFFFFF"
 CONTENT_WIDTH_DXA = 9360
 TABLE_INDENT_DXA = 120
+_BASELINE_DATE_PATTERN = re.compile(
+    r"\|\s*基线日期\s*\|\s*`(?P<date>\d{4}-\d{2}-\d{2})`\s*\|"
+)
+_COMMENTS_RELATIONSHIP_TYPE = (
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments"
+)
 
 
 def _rgb(hex_value: str) -> RGBColor:
@@ -624,7 +633,16 @@ def _style_paragraphs(doc: DocumentObject) -> None:
         paragraph.paragraph_format.widow_control = True
 
 
-def _set_metadata(doc: DocumentObject) -> None:
+def _source_timestamp(source: Path) -> datetime:
+    """Use the declared baseline date as the reproducible document timestamp."""
+
+    match = _BASELINE_DATE_PATTERN.search(source.read_text(encoding="utf-8"))
+    if match is None:
+        raise ValueError("source must declare a Markdown table row named 基线日期")
+    return datetime.strptime(match.group("date"), "%Y-%m-%d").replace(tzinfo=UTC)
+
+
+def _set_metadata(doc: DocumentObject, timestamp: datetime) -> None:
     props = doc.core_properties
     props.title = "NanoLoop Agent 协同开发规格与接口总文档 v3.0"
     props.subject = "基于当前仓库代码的开发者接手、修改与扩展手册"
@@ -632,6 +650,8 @@ def _set_metadata(doc: DocumentObject) -> None:
     props.last_modified_by = "NanoLoop Agent Team"
     props.keywords = "NanoLoop Agent, SEM, developer handoff, API, RAG, inference"
     props.comments = "Generated from the repository Markdown source."
+    props.created = timestamp
+    props.modified = timestamp
     settings = doc.settings.element
     update = settings.find(qn("w:updateFields"))
     if update is None:
@@ -691,9 +711,97 @@ def _remove_stale_extended_statistics(path: Path) -> None:
         temp_path.unlink(missing_ok=True)
 
 
+def _remove_empty_comments_part(path: Path, timestamp: datetime) -> None:
+    """Strip Pandoc's empty comments part without hiding real review comments."""
+
+    comments_part = "word/comments.xml"
+    content_types_part = "[Content_Types].xml"
+    relationships_part = "word/_rels/document.xml.rels"
+    document_part = "word/document.xml"
+    word_ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    content_types_ns = (
+        "http://schemas.openxmlformats.org/package/2006/content-types"
+    )
+    relationships_ns = (
+        "http://schemas.openxmlformats.org/package/2006/relationships"
+    )
+
+    with zipfile.ZipFile(path, "r") as source_zip:
+        names = set(source_zip.namelist())
+        if comments_part not in names:
+            return
+        entries = [(item, source_zip.read(item.filename)) for item in source_zip.infolist()]
+
+    payloads = {item.filename: data for item, data in entries}
+    comments = ElementTree.fromstring(payloads[comments_part])
+    if comments.findall(f"{{{word_ns}}}comment"):
+        raise ValueError("refusing to remove a non-empty Word comments part")
+
+    document = ElementTree.fromstring(payloads[document_part])
+    comment_markers = (
+        "commentRangeStart",
+        "commentRangeEnd",
+        "commentReference",
+    )
+    if any(document.findall(f".//{{{word_ns}}}{tag}") for tag in comment_markers):
+        raise ValueError("refusing to remove comments referenced by the document")
+
+    content_types = ElementTree.fromstring(payloads[content_types_part])
+    removed_content_types = 0
+    for child in list(content_types):
+        if (child.get("PartName") or "").lstrip("/") == comments_part:
+            content_types.remove(child)
+            removed_content_types += 1
+    if removed_content_types != 1:
+        raise ValueError("expected exactly one comments content-type override")
+    ElementTree.register_namespace("", content_types_ns)
+    payloads[content_types_part] = ElementTree.tostring(
+        content_types,
+        encoding="utf-8",
+        xml_declaration=True,
+    )
+
+    relationships = ElementTree.fromstring(payloads[relationships_part])
+    removed_relationships = 0
+    for child in list(relationships):
+        target = (child.get("Target") or "").replace("\\", "/")
+        if (
+            child.get("Type") == _COMMENTS_RELATIONSHIP_TYPE
+            or normpath(target) == "comments.xml"
+        ):
+            relationships.remove(child)
+            removed_relationships += 1
+    if removed_relationships != 1:
+        raise ValueError("expected exactly one comments relationship")
+    ElementTree.register_namespace("", relationships_ns)
+    payloads[relationships_part] = ElementTree.tostring(
+        relationships,
+        encoding="utf-8",
+        xml_declaration=True,
+    )
+
+    temp_path = path.with_suffix(f"{path.suffix}.tmp")
+    zip_timestamp = timestamp.utctimetuple()[:6]
+    try:
+        with zipfile.ZipFile(temp_path, "w") as target_zip:
+            for item, payload in entries:
+                if item.filename == comments_part:
+                    continue
+                item.date_time = zip_timestamp
+                item.extra = b""
+                item.comment = b""
+                item.create_system = 0
+                item.external_attr = 0
+                target_zip.writestr(item, payloads.get(item.filename, payload))
+        temp_path.replace(path)
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
 def build(source: Path, output: Path, pandoc: str) -> None:
     if not source.is_file():
         raise FileNotFoundError(source)
+    timestamp = _source_timestamp(source)
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="nanoloop-v3-doc-") as temp_dir:
         intermediate = Path(temp_dir) / "pandoc.docx"
@@ -710,7 +818,7 @@ def build(source: Path, output: Path, pandoc: str) -> None:
             check=True,
         )
         doc = Document(intermediate)
-        _set_metadata(doc)
+        _set_metadata(doc, timestamp)
         _set_section_geometry(doc)
         _configure_styles(doc)
         _patch_numbering(doc)
@@ -721,6 +829,7 @@ def build(source: Path, output: Path, pandoc: str) -> None:
             _remove_trailing_rule(doc.paragraphs[-1])
         doc.save(output)
         _remove_stale_extended_statistics(output)
+        _remove_empty_comments_part(output, timestamp)
 
 
 def parse_args() -> argparse.Namespace:

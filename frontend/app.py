@@ -6,6 +6,7 @@ import hashlib
 import importlib
 import inspect
 import math
+import os
 from collections.abc import Callable, Mapping, MutableMapping, Sequence
 from datetime import UTC, datetime
 from functools import partial
@@ -43,6 +44,7 @@ from frontend.roi_canvas import (
     render_roi_canvas,
 )
 from frontend.state import (
+    DEFAULT_API_BASE_URL,
     append_history,
     as_dict,
     build_analysis_metadata,
@@ -116,6 +118,18 @@ def main() -> None:
 
 
 def _sidebar(st: Any, state: State) -> Any | None:
+    api_key_configured = bool(os.getenv("NANOLOOP_API_KEY"))
+    configured_base_value = os.getenv("NANOLOOP_API_BASE_URL", DEFAULT_API_BASE_URL)
+    if api_key_configured:
+        try:
+            locked_base_url = normalize_base_url(configured_base_value)
+        except ValueError:
+            locked_base_url = None
+        if locked_base_url is not None and state["api_base_url"] != locked_base_url:
+            state["api_base_url"] = locked_base_url
+            state["health"] = None
+            _drop_client(state)
+
     with st.sidebar:
         st.markdown(
             '<div class="nl-brand"><span class="nl-brand-mark">◌</span>'
@@ -130,7 +144,12 @@ def _sidebar(st: Any, state: State) -> Any | None:
                 base_url = st.text_input(
                     "后端服务地址",
                     value=str(state["api_base_url"]),
-                    help="请填写服务根地址；客户端会自动添加 /api/v1。",
+                    help=(
+                        "已由 NANOLOOP_API_BASE_URL 锁定，避免共享 API Key 被发送到其他地址。"
+                        if api_key_configured
+                        else "请填写服务根地址；客户端会自动添加 /api/v1。"
+                    ),
+                    disabled=api_key_configured,
                 )
                 timeout = st.number_input(
                     "请求超时（秒）",
@@ -142,7 +161,9 @@ def _sidebar(st: Any, state: State) -> Any | None:
                 apply_connection = st.form_submit_button("保存连接设置", width="stretch")
             if apply_connection:
                 try:
-                    normalized = normalize_base_url(base_url)
+                    normalized = normalize_base_url(
+                        configured_base_value if api_key_configured else base_url
+                    )
                     changed = (
                         normalized != state["api_base_url"]
                         or float(timeout) != state["api_timeout_seconds"]
@@ -1905,7 +1926,30 @@ def _knowledge_page(st: Any, state: State, client: Any | None) -> None:
 
 
 def _get_client(st: Any, state: State) -> Any | None:
-    key = (state["api_base_url"], float(state["api_timeout_seconds"]))
+    api_key = os.getenv("NANOLOOP_API_KEY") or None
+    try:
+        requested_base_url = normalize_base_url(str(state["api_base_url"]))
+        if api_key is not None:
+            trusted_base_url = normalize_base_url(
+                os.getenv("NANOLOOP_API_BASE_URL", DEFAULT_API_BASE_URL)
+            )
+            if requested_base_url != trusted_base_url:
+                raise ValueError(
+                    "配置共享 API Key 时，后端服务地址必须使用运维锁定值"
+                )
+    except (KeyError, TypeError, ValueError) as error:
+        _drop_client(state)
+        render_exception(st, error, action="创建 REST 客户端")
+        return None
+
+    api_key_fingerprint = (
+        hashlib.sha256(api_key.encode("utf-8")).hexdigest() if api_key is not None else None
+    )
+    key = (
+        requested_base_url,
+        float(state["api_timeout_seconds"]),
+        api_key_fingerprint,
+    )
     if state.get("_api_client_key") == key and state.get("_api_client") is not None:
         return state["_api_client"]
     _drop_client(state)
@@ -1914,14 +1958,15 @@ def _get_client(st: Any, state: State) -> Any | None:
         client_class = module.NanoLoopApiClient
         parameters = inspect.signature(client_class).parameters
         timeout = float(state["api_timeout_seconds"])
+        client_arguments: dict[str, Any] = {}
+        if "api_key" in parameters:
+            client_arguments["api_key"] = api_key
         if "timeout_seconds" in parameters:
-            client = client_class(str(state["api_base_url"]), timeout_seconds=timeout)
+            client_arguments["timeout_seconds"] = timeout
         else:
-            client = client_class(
-                str(state["api_base_url"]),
-                timeout=timeout,
-                upload_timeout=max(timeout, 120.0),
-            )
+            client_arguments["timeout"] = timeout
+            client_arguments["upload_timeout"] = max(timeout, 120.0)
+        client = client_class(requested_base_url, **client_arguments)
     except Exception as error:
         render_exception(st, error, action="创建 REST 客户端")
         return None

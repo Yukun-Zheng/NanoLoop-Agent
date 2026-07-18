@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import io
 import json
+import os
 import re
 import sys
 import time
@@ -858,6 +859,11 @@ def build_parser() -> argparse.ArgumentParser:
         description="Run the NanoLoop REST scientific closed-loop smoke test.",
     )
     parser.add_argument("--base-url", required=True, help="Backend origin, e.g. http://localhost:8000")
+    parser.add_argument(
+        "--api-key",
+        default=os.getenv("NANOLOOP_API_KEY"),
+        help="Optional API key (default: NANOLOOP_API_KEY environment variable)",
+    )
     parser.add_argument("--fixture", required=True, type=Path, help="Path to a smoke fixture JSON")
     parser.add_argument(
         "--poll-timeout",
@@ -889,7 +895,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.fixture,
             require_files=not args.allow_degraded,
         )
-        with NanoLoopApiClient(args.base_url) as client:
+        with NanoLoopApiClient(args.base_url, api_key=args.api_key) as client:
             runner = SmokeRunner(
                 client,
                 fixture,

@@ -19,8 +19,10 @@ from app.analysis.application import AnalysisApplicationService, AnalysisCreatio
 from app.api.deps import bind_route_log_context
 from app.api.errors import install_exception_handlers
 from app.api.middleware import (
+    ApiKeyAuthMiddleware,
     BrowserMutationGuardMiddleware,
     ErrorEnvelopeTrustedHostMiddleware,
+    InMemoryRateLimitMiddleware,
     RequestBodyLimitMiddleware,
     RequestContextMiddleware,
 )
@@ -29,7 +31,8 @@ from app.api.routes.health import health
 from app.contracts.common import ApiResponse, HealthData
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging
-from app.core.security import cors_origins, file_token_secret, trusted_hosts
+from app.core.rate_limit import TokenBucketLimiter
+from app.core.security import ApiKeyVerifier, cors_origins, file_token_secret, trusted_hosts
 from app.db.repositories import SqlAlchemyUnitOfWork
 from app.db.session import Database
 from app.orchestration import (
@@ -226,17 +229,52 @@ def create_app(
     application.state.knowledge_service = None
 
     allowed_origins = cors_origins(configured)
+    api_key_verifier = ApiKeyVerifier(configured.nanoloop_api_key)
+    application.state.api_key_verifier = api_key_verifier
+    public_paths = tuple(
+        path
+        for path in (
+            "/health",
+            application.openapi_url,
+            application.docs_url,
+            application.swagger_ui_oauth2_redirect_url,
+            application.redoc_url,
+        )
+        if path is not None
+    )
     application.add_middleware(
         RequestBodyLimitMiddleware,
         max_body_bytes=configured.max_request_mb * 1024 * 1024,
     )
     application.add_middleware(
+        ApiKeyAuthMiddleware,
+        verifier=api_key_verifier,
+        public_paths=public_paths,
+    )
+    if configured.api_rate_limit_requests > 0:
+        application.add_middleware(
+            InMemoryRateLimitMiddleware,
+            verifier=api_key_verifier,
+            limiter=TokenBucketLimiter(
+                capacity=configured.api_rate_limit_requests,
+                window_seconds=configured.api_rate_limit_window_seconds,
+            ),
+            public_paths=public_paths,
+        )
+    application.add_middleware(
         CORSMiddleware,
         allow_origins=allowed_origins,
         allow_credentials=False,
         allow_methods=["GET", "POST", "PUT", "PATCH", "OPTIONS"],
-        allow_headers=["Accept", "Content-Type", "X-Request-ID"],
-        expose_headers=["Content-Disposition", "X-Request-ID"],
+        allow_headers=["Accept", "Content-Type", "X-API-Key", "X-Request-ID"],
+        expose_headers=[
+            "Content-Disposition",
+            "Retry-After",
+            "WWW-Authenticate",
+            "X-RateLimit-Limit",
+            "X-RateLimit-Remaining",
+            "X-Request-ID",
+        ],
         max_age=600,
     )
     application.add_middleware(

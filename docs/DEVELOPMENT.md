@@ -95,6 +95,14 @@ soffice --headless --convert-to pdf \
 - multipart 操作必须使用 `BoundedMultipartRoute` 的明确 policy，在 FastAPI 参数绑定前限制文件/字段
   数、名称、类型、基数和文本 part 大小；不得退回 Starlette 的 1000 files/1000 fields 默认值或修改
   全局 parser 状态。
+- 配置 `NANOLOOP_API_KEY` 后，所有版本化 API 与签名文件下载必须统一校验共享 `X-API-Key`；认证/限流
+  只精确豁免根级 `/health` 和 OpenAPI/文档路径。带 `Origin` 与 `Access-Control-Request-Method` 的合法
+  CORS 预检由更外层 `CORSMiddleware` 直接响应；普通 `OPTIONS` 仍须经过认证与限流。认证应在请求体
+  解析前失败关闭，错误响应、日志和缓存键不得暴露原始 Key。它只是服务级共享门禁，不得被描述为
+  用户/角色/租户授权。
+- `API_RATE_LIMIT_REQUESTS` 启用的 token bucket 只允许合法 Key、匿名/错误 Key、未启用认证的服务请求
+  三个固定桶，避免按攻击者输入创建无界状态。计数只在当前 API 进程内存在并会随重启清空；多进程、
+  多副本或公网部署必须另接集中限流，不能把该机制当成用户 quota 或分布式 rate limit。
 - 图像在 `verify`/像素解码前检查声明尺寸和像素总数，人工修正 mask 在转数组前检查与原图尺寸一致。
   知识输入同时限制 PDF 页数、提取字符、单文档 chunk、材料别名和向量语料总量；文本读取在上限 + 1
   字符处停止，embedding 分批执行。数据工具的粒径总体统计在 SQL 完成，返回证据行有确定性上限。
@@ -112,8 +120,8 @@ soffice --headless --convert-to pdf \
   不得拆成可独立漂移的多个挂载，也不得指向可写的 snapshot/output 卷；接入或升级资产后重建
   API 容器，由注册校验重新发布不可变 bundle。
 - API `/health` 的 database component 必须同时证明数据库可访问且 `alembic_version` 与打包迁移
-  head 完全一致；缺表、缺 revision 或 stale revision 都是 `unavailable`，不能仅以 `SELECT 1`
-  成功报告 healthy。
+  head 完全一致；缺表、缺 revision 或 stale revision 报告 `degraded`，连接或检查异常报告
+  `unavailable`，不能仅以 `SELECT 1` 成功报告 healthy。
 - 启动恢复可以为普通陈旧运行复制完整不可变科学输入，但不能只复制 corrected-mask 运行的
   JSON。若崩溃恢复时缺少原始人工修正掩膜制品，必须将父运行标记失败、报告 operator
   attention 且不创建子运行。
@@ -145,8 +153,11 @@ soffice --headless --convert-to pdf \
   只读访问该目录；内容寻址 snapshot 位于可写 `nanoloop-data`，运行产物位于可写
   `nanoloop-outputs`，不要把后两者放入只读模型目录。
 
-`docker compose config --quiet` 可用于静态配置检查；本轮 Docker image build 因 Docker Hub
-基础镜像拉取超时而未完成，不能把 Dockerfile/Compose/CI 定义存在写成“镜像已构建通过”。
+`docker compose config --quiet` 可用于静态配置检查。本机 Docker image build 曾因 Docker Hub
+基础镜像拉取超时而未完成；与此同时，`main` 基线的
+[GitHub Actions run 29625213698](https://github.com/Yukun-Zheng/NanoLoop-Agent/actions/runs/29625213698)
+已全绿，并真实构建、启动和健康检查 API 与 frontend 两个容器。后续分支仍须以自己的 CI 结果为准，
+不能把历史成功运行或 CI 定义存在当成当前提交已通过，也不能用容器启动替代真实科学资产验收。
 
 ## 延后接入接缝
 

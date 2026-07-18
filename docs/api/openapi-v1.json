@@ -3507,6 +3507,14 @@
         "title": "UpdateKnowledgeDocumentRequest",
         "type": "object"
       }
+    },
+    "securitySchemes": {
+      "ApiKeyAuth": {
+        "description": "Optional shared deployment key. It is enforced when NANOLOOP_API_KEY is configured.",
+        "in": "header",
+        "name": "X-API-Key",
+        "type": "apiKey"
+      }
     }
   },
   "info": {
@@ -3550,6 +3558,26 @@
             },
             "description": "Bad request"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "API key required or invalid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Request forbidden by security policy"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -3600,6 +3628,16 @@
             },
             "description": "Validation error"
           },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Rate limit exceeded"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -3631,6 +3669,11 @@
             "description": "Dependency unavailable"
           }
         },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
         "summary": "Create Analysis",
         "tags": [
           "analyses"
@@ -3672,6 +3715,26 @@
             },
             "description": "Bad request"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "API key required or invalid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Request forbidden by security policy"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -3722,6 +3785,16 @@
             },
             "description": "Validation error"
           },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Rate limit exceeded"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -3753,6 +3826,11 @@
             "description": "Dependency unavailable"
           }
         },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
         "summary": "Get Analysis",
         "tags": [
           "analyses"
@@ -3813,6 +3891,26 @@
             },
             "description": "Bad request"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "API key required or invalid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Request forbidden by security policy"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -3863,6 +3961,16 @@
             },
             "description": "Validation error"
           },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Rate limit exceeded"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -3894,6 +4002,11 @@
             "description": "Dependency unavailable"
           }
         },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
         "summary": "Export Analysis",
         "tags": [
           "exports"
@@ -3944,6 +4057,26 @@
             },
             "description": "Bad request"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "API key required or invalid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Request forbidden by security policy"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -3994,6 +4127,16 @@
             },
             "description": "Validation error"
           },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Rate limit exceeded"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -4025,6 +4168,11 @@
             "description": "Dependency unavailable"
           }
         },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
         "summary": "Get Boxes",
         "tags": [
           "boxes"
@@ -4083,6 +4231,26 @@
             },
             "description": "Bad request"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "API key required or invalid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Request forbidden by security policy"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -4133,6 +4301,16 @@
             },
             "description": "Validation error"
           },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Rate limit exceeded"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -4164,6 +4342,11 @@
             "description": "Dependency unavailable"
           }
         },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
         "summary": "Replace Boxes",
         "tags": [
           "boxes"
@@ -4215,6 +4398,26 @@
             },
             "description": "Bad request"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "API key required or invalid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Request forbidden by security policy"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -4265,6 +4468,16 @@
             },
             "description": "Validation error"
           },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Rate limit exceeded"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -4296,6 +4509,11 @@
             "description": "Dependency unavailable"
           }
         },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
         "summary": "Query Analysis",
         "tags": [
           "queries"
@@ -4347,6 +4565,26 @@
             },
             "description": "Bad request"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "API key required or invalid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Request forbidden by security policy"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -4397,6 +4635,16 @@
             },
             "description": "Validation error"
           },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Rate limit exceeded"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -4428,6 +4676,11 @@
             "description": "Dependency unavailable"
           }
         },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
         "summary": "Create Runs",
         "tags": [
           "runs"
@@ -4470,6 +4723,26 @@
             },
             "description": "Bad request"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "API key required or invalid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Request forbidden by security policy"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -4520,6 +4793,16 @@
             },
             "description": "Validation error"
           },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Rate limit exceeded"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -4551,6 +4834,11 @@
             "description": "Dependency unavailable"
           }
         },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
         "summary": "Download File",
         "tags": [
           "files"
@@ -4581,6 +4869,26 @@
             },
             "description": "Bad request"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "API key required or invalid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Request forbidden by security policy"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -4631,6 +4939,16 @@
             },
             "description": "Validation error"
           },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Rate limit exceeded"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -4662,6 +4980,11 @@
             "description": "Dependency unavailable"
           }
         },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
         "summary": "Health",
         "tags": [
           "health"
@@ -4692,6 +5015,26 @@
             },
             "description": "Bad request"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "API key required or invalid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Request forbidden by security policy"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -4742,6 +5085,16 @@
             },
             "description": "Validation error"
           },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Rate limit exceeded"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -4773,6 +5126,11 @@
             "description": "Dependency unavailable"
           }
         },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
         "summary": "List Documents",
         "tags": [
           "knowledge"
@@ -4811,6 +5169,26 @@
             },
             "description": "Bad request"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "API key required or invalid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Request forbidden by security policy"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -4861,6 +5239,16 @@
             },
             "description": "Validation error"
           },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Rate limit exceeded"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -4892,6 +5280,11 @@
             "description": "Dependency unavailable"
           }
         },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
         "summary": "Ingest Document",
         "tags": [
           "knowledge"
@@ -4943,6 +5336,26 @@
             },
             "description": "Bad request"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "API key required or invalid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Request forbidden by security policy"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -4993,6 +5406,16 @@
             },
             "description": "Validation error"
           },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Rate limit exceeded"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -5024,6 +5447,11 @@
             "description": "Dependency unavailable"
           }
         },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
         "summary": "Update Document",
         "tags": [
           "knowledge"
@@ -5064,6 +5492,26 @@
             },
             "description": "Bad request"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "API key required or invalid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Request forbidden by security policy"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -5114,6 +5562,16 @@
             },
             "description": "Validation error"
           },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Rate limit exceeded"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -5145,6 +5603,11 @@
             "description": "Dependency unavailable"
           }
         },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
         "summary": "Reindex Knowledge",
         "tags": [
           "knowledge"
@@ -5259,6 +5722,26 @@
             },
             "description": "Bad request"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "API key required or invalid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Request forbidden by security policy"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -5309,6 +5792,16 @@
             },
             "description": "Validation error"
           },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Rate limit exceeded"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -5340,6 +5833,11 @@
             "description": "Dependency unavailable"
           }
         },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
         "summary": "List Models",
         "tags": [
           "models"
@@ -5380,6 +5878,26 @@
             },
             "description": "Bad request"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "API key required or invalid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Request forbidden by security policy"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -5430,6 +5948,16 @@
             },
             "description": "Validation error"
           },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Rate limit exceeded"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -5461,6 +5989,11 @@
             "description": "Dependency unavailable"
           }
         },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
         "summary": "Recommend Models",
         "tags": [
           "models"
@@ -5502,6 +6035,26 @@
             },
             "description": "Bad request"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "API key required or invalid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Request forbidden by security policy"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -5552,6 +6105,16 @@
             },
             "description": "Validation error"
           },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Rate limit exceeded"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -5583,6 +6146,11 @@
             "description": "Dependency unavailable"
           }
         },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
         "summary": "Get Run",
         "tags": [
           "runs"
@@ -5634,6 +6202,26 @@
             },
             "description": "Bad request"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "API key required or invalid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Request forbidden by security policy"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -5684,6 +6272,16 @@
             },
             "description": "Validation error"
           },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Rate limit exceeded"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -5715,6 +6313,11 @@
             "description": "Dependency unavailable"
           }
         },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
         "summary": "Upload Corrected Mask",
         "tags": [
           "runs"
@@ -5766,6 +6369,26 @@
             },
             "description": "Bad request"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "API key required or invalid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Request forbidden by security policy"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -5816,6 +6439,16 @@
             },
             "description": "Validation error"
           },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Rate limit exceeded"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -5847,6 +6480,11 @@
             "description": "Dependency unavailable"
           }
         },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
         "summary": "Review Run",
         "tags": [
           "runs"
