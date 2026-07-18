@@ -318,7 +318,7 @@ jobs:
             /app/scripts/backup_restore.py verify /backup/nanoloop-ci.zip \
             --checksum-path /backup/nanoloop-ci.zip.sha256
 
-          test ! -e "${restore_parent}/restored"
+          sudo test ! -e "${restore_parent}/restored"
           docker run --rm --name nanoloop-backup-restore-ci \
             --user 10001:10001 \
             --network none \
@@ -334,17 +334,17 @@ jobs:
             /backup/nanoloop-ci.zip /restore/restored \
             --offline-confirmed \
             --checksum-path /backup/nanoloop-ci.zip.sha256
-          test "$(stat -c '%u:%g' "${restore_parent}/restored")" = "10001:10001"
+          test "$(sudo stat -c '%u:%g' "${restore_parent}/restored")" = "10001:10001"
 
       - name: Start the API and frontend from restored state
         shell: bash
         run: |
           set -euo pipefail
           restored_root="${RUNNER_TEMP}/nanoloop-ci-disaster/restore/restored"
-          test -d "${restored_root}/data"
-          test -d "${restored_root}/outputs"
-          test -d "${restored_root}/knowledge_base/sources"
-          test -d "${restored_root}/knowledge_base/index"
+          sudo test -d "${restored_root}/data"
+          sudo test -d "${restored_root}/outputs"
+          sudo test -d "${restored_root}/knowledge_base/sources"
+          sudo test -d "${restored_root}/knowledge_base/index"
 
           docker rm nanoloop-api-ci >/dev/null
           docker volume create nanoloop-ci-restored-logs >/dev/null

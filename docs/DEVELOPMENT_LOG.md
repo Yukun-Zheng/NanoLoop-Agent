@@ -61,5 +61,7 @@
   继续严格监控，任何有数据或元数据变化仍中止备份。新增干净 WAL 与含 100 行已提交 WAL 的双重
   回归覆盖。
 - 本地证据：备份/恢复与 CLI 聚焦测试 36 项通过，相关 Ruff 与严格 Mypy 通过。
-- 待云端验证：本机仍无法连接 Docker Hub；下一次 `yukun` push 以 GitHub CPU 容器全恢复结果作为
-  闭环证据。
+- 云端复验：`yukun@64f5035` 已在受限 helper 容器中完成 archive create、verify 与 fresh-root
+  restore；后续失败来自 runner 用户不能穿越 UID 10001 所有的 0700 恢复目录，并非备份数据失败。
+  工作流已把恢复前置检查改为受控 `sudo test/stat`，恢复后的应用仍由非 root 容器自行验证全部内容；
+  下一次 push 继续以 GitHub CPU 容器结果收束完整启动与旧下载 URL 闭环。
