@@ -429,17 +429,33 @@ def _base_arguments(query: DataQuery, intent: _Intent) -> dict[str, Any]:
 
 
 def _load_scope(session: Session, query: DataQuery) -> _Scope:
-    if session.get(AnalysisJob, query.job_id) is None:
+    job = session.scalar(
+        select(AnalysisJob).where(
+            AnalysisJob.job_id == query.job_id,
+            AnalysisJob.tenant_id == query.tenant_id,
+        )
+    )
+    if job is None:
         raise _ScopeError("指定任务不存在，无法读取实验数据")
 
     if query.image_id is not None:
-        image = session.get(ImageAsset, query.image_id)
-        if image is None or image.job_id != query.job_id:
+        image = session.scalar(
+            select(ImageAsset)
+            .join(AnalysisJob, AnalysisJob.job_id == ImageAsset.job_id)
+            .where(
+                ImageAsset.image_id == query.image_id,
+                ImageAsset.job_id == query.job_id,
+                AnalysisJob.tenant_id == query.tenant_id,
+            )
+        )
+        if image is None:
             raise _ScopeError("image_id 不属于指定任务")
 
     normalized_run_ids = tuple(dict.fromkeys(query.run_ids))
     statement = (
         select(SegmentationRun)
+        .join(AnalysisJob, AnalysisJob.job_id == SegmentationRun.job_id)
+        .where(AnalysisJob.tenant_id == query.tenant_id)
         .options(
             joinedload(SegmentationRun.image),
             joinedload(SegmentationRun.summary),
@@ -448,16 +464,14 @@ def _load_scope(session: Session, query: DataQuery) -> _Scope:
     )
     if normalized_run_ids:
         records = session.scalars(
-            statement.where(SegmentationRun.run_id.in_(normalized_run_ids))
+            statement.where(
+                SegmentationRun.job_id == query.job_id,
+                SegmentationRun.run_id.in_(normalized_run_ids),
+            )
         ).all()
         by_id = {record.run_id: record for record in records}
         missing = [run_id for run_id in normalized_run_ids if run_id not in by_id]
-        foreign = [
-            run_id
-            for run_id in normalized_run_ids
-            if run_id in by_id and by_id[run_id].job_id != query.job_id
-        ]
-        if missing or foreign:
+        if missing:
             raise _ScopeError("run_ids 包含不存在或不属于指定任务的运行")
         records = [by_id[run_id] for run_id in normalized_run_ids]
     else:

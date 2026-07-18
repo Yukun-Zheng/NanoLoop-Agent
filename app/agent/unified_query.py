@@ -7,12 +7,14 @@ from typing import Literal, Protocol
 
 from app.agent.router import QueryRouter
 from app.contracts.enums import QueryType
+from app.contracts.identity import AuthMode
 from app.contracts.queries import (
     ToolCallLog,
     ToolEvidence,
     UnifiedQueryRequest,
     UnifiedQueryResponse,
 )
+from app.core.errors import ServiceUnavailableError
 from app.rag.service import KnowledgeAnswer, KnowledgeService
 
 Confidence = Literal["low", "medium", "high"]
@@ -22,6 +24,7 @@ OutcomeCode = Literal["OK", "INSUFFICIENT_EVIDENCE"]
 @dataclass(frozen=True, slots=True)
 class DataQuery:
     job_id: str
+    tenant_id: str
     question: str
     image_id: str | None
     run_ids: tuple[str, ...]
@@ -69,7 +72,14 @@ class UnifiedQueryService:
         self.knowledge_service = knowledge_service
         self.data_tools = data_tools or UnavailableDataToolService()
 
-    def answer(self, job_id: str, request: UnifiedQueryRequest) -> UnifiedQueryResponse:
+    def answer(
+        self,
+        job_id: str,
+        request: UnifiedQueryRequest,
+        *,
+        tenant_id: str,
+        auth_mode: AuthMode,
+    ) -> UnifiedQueryResponse:
         query_type = request.query_type
         if query_type == QueryType.AUTO:
             decision = self.router.classify(
@@ -87,18 +97,34 @@ class UnifiedQueryService:
                 )
             query_type = decision.query_type
 
+        if auth_mode is AuthMode.PRINCIPAL and query_type in {
+            QueryType.MATERIAL_KNOWLEDGE,
+            QueryType.MIXED,
+        }:
+            # Knowledge documents are still global.  Principal-mode callers must
+            # never reach retrieval or answer providers until that corpus has a
+            # tenant boundary of its own.
+            raise ServiceUnavailableError(details={"component": "knowledge_tenant_scope"})
+
         if query_type == QueryType.ANALYSIS_DATA:
-            return self._data_response(job_id, request)
+            return self._data_response(job_id, request, tenant_id=tenant_id)
         if query_type == QueryType.MATERIAL_KNOWLEDGE:
             return self._knowledge_response(request)
         if query_type == QueryType.MIXED:
-            return self._mixed_response(job_id, request)
+            return self._mixed_response(job_id, request, tenant_id=tenant_id)
         raise ValueError(f"unsupported query type: {query_type}")
 
-    def _data_result(self, job_id: str, request: UnifiedQueryRequest) -> DataQueryResult:
+    def _data_result(
+        self,
+        job_id: str,
+        request: UnifiedQueryRequest,
+        *,
+        tenant_id: str,
+    ) -> DataQueryResult:
         return self.data_tools.answer(
             DataQuery(
                 job_id=job_id,
+                tenant_id=tenant_id,
                 question=request.question,
                 image_id=request.image_id,
                 run_ids=tuple(request.run_ids),
@@ -109,8 +135,10 @@ class UnifiedQueryService:
         self,
         job_id: str,
         request: UnifiedQueryRequest,
+        *,
+        tenant_id: str,
     ) -> UnifiedQueryResponse:
-        result = self._data_result(job_id, request)
+        result = self._data_result(job_id, request, tenant_id=tenant_id)
         return UnifiedQueryResponse(
             query_type=QueryType.ANALYSIS_DATA,
             answer=result.answer,
@@ -145,8 +173,10 @@ class UnifiedQueryService:
         self,
         job_id: str,
         request: UnifiedQueryRequest,
+        *,
+        tenant_id: str,
     ) -> UnifiedQueryResponse:
-        data = self._data_result(job_id, request)
+        data = self._data_result(job_id, request, tenant_id=tenant_id)
         knowledge = self._knowledge_result(request)
         outcome: OutcomeCode = (
             "OK"

@@ -28,11 +28,14 @@ from app.contracts.analyses import (
 )
 from app.contracts.enums import JobStatus, QualityStatus, QueryType, RoiMode
 from app.contracts.execution import ExecutionRuntimeProvenance
+from app.contracts.identity import AuthMode
 from app.contracts.queries import (
+    QueryActorDTO,
     QueryAuditRecordDTO,
     UnifiedQueryRequest,
     UnifiedQueryResponse,
 )
+from app.core.identity import legacy_principal_context
 from app.storage.file_store import LocalFileStore
 from app.storage.paths import StoragePaths
 
@@ -178,6 +181,9 @@ def test_write_reports_and_export_have_versioned_auditable_files(tmp_path: Path)
                 query_id="query_1",
                 job_id="job_1",
                 image_id="img_1",
+                actor=QueryActorDTO.from_principal(
+                    legacy_principal_context(AuthMode.DISABLED)
+                ),
                 request=UnifiedQueryRequest(
                     question="有多少颗粒？",
                     query_type=QueryType.ANALYSIS_DATA,

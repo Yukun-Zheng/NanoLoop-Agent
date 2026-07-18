@@ -101,8 +101,10 @@ soffice --headless --convert-to pdf \
   和 OpenAPI/文档路径。合法 CORS 预检由更外层 `CORSMiddleware` 直接响应；普通 `OPTIONS` 仍须经过认证
   与限流。认证应在请求体解析前完成；错误响应与日志不得暴露 header、token、digest 或 body。
   Analysis 聚合的 HTTP 路径必须先用 tenant-scoped repository 查询，再执行角色/owner 策略；跨租户
-  与缺失统一 404，同租户权限不足为 403，mutation 必须在写入 UoW 内重检。该局部能力不等于 query、
-  file、knowledge 已完成租户隔离，也不等于 quota 或公网多租户就绪。
+  与缺失统一 404，同租户权限不足为 403，mutation 必须在写入 UoW 内重检。Query 路由与数据工具必须
+  各自在 SQL 层重复 tenant scope，最终 QueryLog 事务重检 job/image/run 并写入 actor；principal 的
+  knowledge/mixed 路径在语料租户化前必须于任何检索/提供器调用前安全 503。上述局部能力不等于 file、
+  knowledge 已完成租户隔离，也不等于 quota 或公网多租户就绪。详见 ADR 0010。
 - disabled/shared-key 继续使用 service/authenticated/anonymous 三个固定桶。principal 使用两阶段
   严格有界 LRU：认证前只按规范化的直接 `scope.client` peer 分桶，认证成功后直接复用 middleware 已验证
   `PrincipalContext.principal_id` 分桶，禁止第二次身份查询。应用和捆绑的 Uvicorn 启动命令都不得信任或

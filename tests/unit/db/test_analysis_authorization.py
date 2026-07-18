@@ -24,13 +24,21 @@ from app.contracts.enums import (
     ModelStatus,
     ModelVariant,
     QualityTier,
+    QueryType,
     RoiMode,
+)
+from app.contracts.identity import LEGACY_PRINCIPAL_ID, LEGACY_TENANT_ID, PrincipalRole
+from app.contracts.queries import (
+    QueryActorAuthMode,
+    QueryActorDTO,
+    UnifiedQueryRequest,
+    UnifiedQueryResponse,
 )
 from app.contracts.repositories import StoredImageAsset
 from app.core.config import Settings
 from app.core.errors import ResourceNotFoundError
 from app.db.base import Base
-from app.db.models import ModelRegistryRecord, Principal, QueryLog, Tenant
+from app.db.models import ApiCredential, ModelRegistryRecord, Principal, QueryLog, Tenant
 from app.db.repositories import SqlAlchemyRepositorySet
 from app.db.session import Database
 
@@ -38,6 +46,8 @@ _TENANT_A = f"tnt_{'a' * 32}"
 _TENANT_B = f"tnt_{'b' * 32}"
 _PRINCIPAL_A = f"prn_{'c' * 32}"
 _PRINCIPAL_B = f"prn_{'d' * 32}"
+_CREDENTIAL_A = f"crd_{'e' * 32}"
+_CREDENTIAL_B = f"crd_{'f' * 32}"
 _MODEL_ID = "authorization-model"
 
 
@@ -117,6 +127,31 @@ def repositories(session: Session) -> SqlAlchemyRepositorySet:
             adapter="tests.fake:AuthorizationAdapter",
             status=ModelStatus.READY.value,
         )
+    )
+    session.flush()
+    session.add_all(
+        [
+            ApiCredential(
+                credential_id=_CREDENTIAL_A,
+                principal_id=_PRINCIPAL_A,
+                label="authorization a",
+                token_digest=b"a" * 32,
+                enabled=True,
+                version=1,
+                created_at=now,
+                updated_at=now,
+            ),
+            ApiCredential(
+                credential_id=_CREDENTIAL_B,
+                principal_id=_PRINCIPAL_B,
+                label="authorization b",
+                token_digest=b"b" * 32,
+                enabled=True,
+                version=1,
+                created_at=now,
+                updated_at=now,
+            ),
+        ]
     )
     session.flush()
 
@@ -200,6 +235,13 @@ def repositories(session: Session) -> SqlAlchemyRepositorySet:
                     "answer": f"answer {suffix}",
                     "confidence": "high",
                 },
+                actor_tenant_id=tenant_id,
+                actor_principal_id=principal_id,
+                actor_credential_id=(
+                    _CREDENTIAL_A if tenant_id == _TENANT_A else _CREDENTIAL_B
+                ),
+                actor_role="analyst",
+                actor_auth_mode="principal",
                 created_at=now,
             )
         )
@@ -336,6 +378,72 @@ def test_query_export_snapshot_is_tenant_scoped(
     _assert_not_found(
         lambda: repositories.queries.list_by_job_scoped("job_missing", tenant_id=_TENANT_A)
     )
+
+
+def test_query_write_rechecks_embedded_run_scope_in_final_transaction(
+    repositories: SqlAlchemyRepositorySet,
+) -> None:
+    actor = QueryActorDTO(
+        tenant_id=_TENANT_A,
+        principal_id=_PRINCIPAL_A,
+        credential_id=_CREDENTIAL_A,
+        role=PrincipalRole.ANALYST,
+        auth_mode="principal",
+    )
+
+    with pytest.raises(ResourceNotFoundError):
+        repositories.queries.create_scoped(
+            query_id="query_raced",
+            job_id="job_a",
+            image_id="img_a",
+            actor=actor,
+            request=UnifiedQueryRequest(
+                question="任务概览",
+                query_type=QueryType.ANALYSIS_DATA,
+                run_ids=["run_disappeared"],
+            ),
+            response=UnifiedQueryResponse(
+                query_type=QueryType.ANALYSIS_DATA,
+                answer="stale provider result",
+                confidence="high",
+            ),
+            created_at=datetime(2026, 7, 18, tzinfo=UTC),
+            tenant_id=_TENANT_A,
+        )
+
+
+def test_query_write_rejects_migration_only_legacy_unknown_actor(
+    repositories: SqlAlchemyRepositorySet,
+    session: Session,
+) -> None:
+    actor = QueryActorDTO(
+        tenant_id=LEGACY_TENANT_ID,
+        principal_id=LEGACY_PRINCIPAL_ID,
+        credential_id=None,
+        role=PrincipalRole.TENANT_ADMIN,
+        auth_mode=QueryActorAuthMode.LEGACY_UNKNOWN,
+    )
+
+    with pytest.raises(ValueError, match="migration-only"):
+        repositories.queries.create_scoped(
+            query_id="query_migration_only_actor",
+            job_id="job_a",
+            image_id=None,
+            actor=actor,
+            request=UnifiedQueryRequest(
+                question="任务概览",
+                query_type=QueryType.ANALYSIS_DATA,
+            ),
+            response=UnifiedQueryResponse(
+                query_type=QueryType.ANALYSIS_DATA,
+                answer="must not be persisted",
+                confidence="high",
+            ),
+            created_at=datetime(2026, 7, 18, tzinfo=UTC),
+            tenant_id=_TENANT_A,
+        )
+
+    assert session.get(QueryLog, "query_migration_only_actor") is None
 
 
 def test_scoped_lists_distinguish_an_accessible_empty_job_from_hidden_jobs(

@@ -48,6 +48,7 @@ class TimestampMixin:
 class AnalysisJob(TimestampMixin, Base):
     __tablename__ = "analysis_jobs"
     __table_args__ = (
+        UniqueConstraint("job_id", "tenant_id", name="uq_analysis_jobs_job_tenant"),
         ForeignKeyConstraint(
             ["owner_principal_id", "tenant_id"],
             ["principals.principal_id", "principals.tenant_id"],
@@ -386,12 +387,56 @@ class QueryLog(Base):
             ["image_assets.image_id", "image_assets.job_id"],
             name="fk_query_logs_image_job",
         ),
+        ForeignKeyConstraint(
+            ["job_id", "actor_tenant_id"],
+            ["analysis_jobs.job_id", "analysis_jobs.tenant_id"],
+            name="fk_query_logs_job_actor_tenant",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["actor_principal_id", "actor_tenant_id"],
+            ["principals.principal_id", "principals.tenant_id"],
+            name="fk_query_logs_actor_principal_tenant",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["actor_credential_id", "actor_principal_id"],
+            ["api_credentials.credential_id", "api_credentials.principal_id"],
+            name="fk_query_logs_actor_credential_principal",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "actor_role IN ('tenant_admin', 'analyst', 'viewer')",
+            name="actor_role_known",
+        ),
+        CheckConstraint(
+            "actor_auth_mode IN "
+            "('disabled', 'shared_key', 'principal', 'legacy_unknown')",
+            name="actor_auth_mode_known",
+        ),
+        CheckConstraint(
+            "(actor_auth_mode = 'principal' AND actor_credential_id IS NOT NULL) OR "
+            "(actor_auth_mode IN ('disabled', 'shared_key', 'legacy_unknown') "
+            "AND actor_credential_id IS NULL)",
+            name="actor_credential_shape",
+        ),
+        CheckConstraint(
+            "actor_auth_mode = 'principal' OR "
+            f"(actor_tenant_id = '{LEGACY_TENANT_ID}' "
+            f"AND actor_principal_id = '{LEGACY_PRINCIPAL_ID}' "
+            "AND actor_role = 'tenant_admin')",
+            name="compatibility_actor_shape",
+        ),
+        Index(
+            "ix_query_logs_actor_created",
+            "actor_tenant_id",
+            "actor_principal_id",
+            "created_at",
+        ),
     )
 
     query_id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    job_id: Mapped[str] = mapped_column(
-        ForeignKey("analysis_jobs.job_id", ondelete="CASCADE"), index=True, nullable=False
-    )
+    job_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
     image_id: Mapped[str | None] = mapped_column(
         ForeignKey("image_assets.image_id", ondelete="SET NULL")
     )
@@ -399,11 +444,19 @@ class QueryLog(Base):
     question: Mapped[str] = mapped_column(Text, nullable=False)
     request_json: Mapped[JsonObject] = mapped_column(JSON, default=dict, nullable=False)
     answer_json: Mapped[JsonObject] = mapped_column(JSON, nullable=False)
+    actor_tenant_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    actor_principal_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    actor_credential_id: Mapped[str | None] = mapped_column(String(36))
+    actor_role: Mapped[str] = mapped_column(String(32), nullable=False)
+    actor_auth_mode: Mapped[str] = mapped_column(String(24), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
     )
 
-    job: Mapped[AnalysisJob] = relationship(back_populates="queries")
+    job: Mapped[AnalysisJob] = relationship(
+        back_populates="queries",
+        foreign_keys=[job_id],
+    )
 
 
 class Tenant(TimestampMixin, Base):
@@ -505,6 +558,11 @@ class ApiCredential(TimestampMixin, Base):
         CheckConstraint("enabled IN (0, 1)", name="enabled_boolean"),
         CheckConstraint("version >= 1", name="version_positive"),
         UniqueConstraint("token_digest", name="uq_api_credentials_token_digest"),
+        UniqueConstraint(
+            "credential_id",
+            "principal_id",
+            name="uq_api_credentials_credential_principal",
+        ),
         Index("ix_api_credentials_principal_enabled", "principal_id", "enabled"),
     )
 

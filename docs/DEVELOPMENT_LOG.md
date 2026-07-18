@@ -202,3 +202,42 @@
 - 保留边界：query actor 与 data-tool 深层 tenant scope、tenant/job-bound file-token v2、knowledge document
   tenant ownership、quota/retention 和多副本架构仍未完成；现有 v1 下载 URL 仍是 bearer capability。
   下一批进入 query actor 与双层查询隔离，完成前 principal 模式仍不得宣称公网多租户就绪。
+
+## 2026-07-18 17:57 +08:00 — Analysis 聚合授权云端验收
+
+- 分支与提交：`yukun@f543bc9f12351b10174c6cda56bfe4edaff5de9f`，包含 Analysis 聚合授权和
+  child relationship integrity 两个提交，已推送，未合入 `main`。
+- 云端证据：GitHub Actions run `29639301338` 全绿；Python 3.11、Python 3.12、Ruff/严格 Mypy、
+  OpenAPI/Alembic 门禁和 CPU 双容器 smoke 四个 job 均成功。
+- 结论边界：该 run 只验收 Analysis 聚合与其子资源关系；query、下载和知识资源仍按当时记录的缺口
+  处理，不把局部授权扩大为公网多租户结论。
+
+## 2026-07-18 18:06 +08:00 — Query actor 与双层 tenant scope
+
+- 分支：`yukun`，未合入 `main`；本批已完成独立审查，尚待提交和阶段性推送，提交哈希以本条所在
+  提交为准。
+- HTTP/application 边界：Query 路由显式复用 middleware 缓存的 `PrincipalContext`；job、可选 image
+  和显式 run IDs 都先以 tenant SQL 查询再执行 read policy，跨租户和缺失统一 404。AUTO 在任何
+  clarification 返回前完成安全分类，principal 的 material/mixed/AUTO→knowledge 在 FTS、向量、回答
+  provider、数值工具、QueryLog 和文件投影前统一安全 503。
+- 深层数据边界：`DataQuery` 必须携带 tenant，数值数据工具在自己的 session 中再次以 JOIN/WHERE
+  过滤 job/image/run；不能把路由层检查当成后续 SQL 的授权证明。最终审计 UoW 再次检查 job/image/run
+  和 read policy，provider 返回后 run 被删除的竞态会 404/rollback，不留下 QueryLog 或投影。
+- actor 事实：QueryLog 冻结 tenant/principal/credential/role/auth-mode；复合外键约束 job/tenant、
+  principal/tenant 和 credential/principal，CHECK 约束 principal 与 compatibility actor 形状。历史
+  legacy query 只能诚实回填 fixed legacy administrator/`legacy_unknown`；无法归因的非 legacy 历史行
+  会在首条 DDL 前阻止升级，任何真实可归因审计又会在首条 DDL 前阻止降级丢失。
+- 兼容与投影：disabled/shared-key 仍使用固定 legacy admin 并保留全局知识兼容；新 runtime 不签发
+  `legacy_unknown`。数据库提交是权威事实，`query_history.jsonl`/`rag_citations.json` 只在 commit 后
+  写入同一 actor DTO，投影失败保持结构化 degraded 日志而不伪装事务失败。
+- 独立审查：application/HTTP 只读复审无 P1/P2/P3；DB/security 复审发现 SQLite 非事务 DDL 前缺少
+  全库 FK preflight，以及最深仓储仍可手工写入 migration-only `legacy_unknown`。修正后 upgrade 与
+  downgrade 都在首条 DDL 前检查全库 FK，orphan 反例证明失败后 revision/schema/index/unique 不变；
+  Query repository 在任何查询或写入前拒绝 `legacy_unknown`，并证明无审计副作用。
+- 本地证据：修正后正式 `make check` 再次全绿；Ruff、严格 Mypy 115 个源文件、719 项 Pytest、OpenAPI 稳定、
+  六页 Streamlit AppTest、Alembic 单 head、全 upgrade/downgrade/upgrade 与 ORM metadata drift 均通过。
+  专项合同另覆盖四种同租户角色、跨租户/缺失/foreign child 404、零 provider/审计副作用和单次 identity
+  JOIN；工作区没有本批前端源码改动。
+- 保留边界：v1 下载 token 仍是未绑定 tenant/principal 的 bearer capability；知识文档、FTS 和向量
+  generation 尚未租户化，故 principal 知识/混合查询刻意不可用。file-token v2、knowledge ownership、
+  quota/retention、分布式 rate limit 和多副本协调继续作为后续批次，不宣称公网生产就绪。

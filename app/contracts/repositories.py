@@ -1,6 +1,7 @@
 """Persistence protocols used by services to avoid ORM coupling."""
 
 from contextlib import AbstractContextManager
+from datetime import datetime
 from typing import Protocol, Self
 
 from app.contracts.analyses import (
@@ -16,7 +17,12 @@ from app.contracts.analyses import (
 from app.contracts.common import ContractModel
 from app.contracts.enums import JobStatus
 from app.contracts.execution import ExecutionRuntimeProvenance
-from app.contracts.queries import QueryAuditRecordDTO
+from app.contracts.queries import (
+    QueryActorDTO,
+    QueryAuditRecordDTO,
+    UnifiedQueryRequest,
+    UnifiedQueryResponse,
+)
 
 
 class StoredImageAsset(ContractModel):
@@ -184,6 +190,19 @@ class RunRepository(Protocol):
 
 
 class QueryRepository(Protocol):
+    def create_scoped(
+        self,
+        *,
+        query_id: str,
+        job_id: str,
+        image_id: str | None,
+        actor: QueryActorDTO,
+        request: UnifiedQueryRequest,
+        response: UnifiedQueryResponse,
+        created_at: datetime,
+        tenant_id: str,
+    ) -> None: ...
+
     def list_by_job(self, job_id: str) -> list[QueryAuditRecordDTO]: ...
 
     def list_by_job_scoped(

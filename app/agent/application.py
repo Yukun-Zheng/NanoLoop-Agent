@@ -14,13 +14,21 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.agent.router import QueryRouter
+from app.analysis.authorization import require_read
 from app.contracts.common import utc_now
 from app.contracts.enums import QueryType
+from app.contracts.identity import AuthMode, PrincipalContext
 from app.contracts.limits import MAX_MATERIAL_ALIASES
-from app.contracts.queries import MaterialContext, UnifiedQueryRequest, UnifiedQueryResponse
-from app.core.errors import ResourceNotFoundError
+from app.contracts.queries import (
+    MaterialContext,
+    QueryActorDTO,
+    UnifiedQueryRequest,
+    UnifiedQueryResponse,
+)
+from app.core.errors import ResourceNotFoundError, ServiceUnavailableError
 from app.core.logging import log_context
-from app.db.models import AnalysisJob, ImageAsset, QueryLog, SegmentationRun
+from app.db.models import AnalysisJob, ImageAsset, SegmentationRun
+from app.db.repositories import SqlAlchemyRepositorySet
 from app.storage import LocalFileStore
 
 _MATERIAL_SEPARATORS = re.compile(r"[\s_-]+")
@@ -28,7 +36,14 @@ logger = logging.getLogger(__name__)
 
 
 class UnifiedQueryProtocol(Protocol):
-    def answer(self, job_id: str, request: UnifiedQueryRequest) -> UnifiedQueryResponse: ...
+    def answer(
+        self,
+        job_id: str,
+        request: UnifiedQueryRequest,
+        *,
+        tenant_id: str,
+        auth_mode: AuthMode,
+    ) -> UnifiedQueryResponse: ...
 
 
 class QueryApplicationService:
@@ -46,24 +61,52 @@ class QueryApplicationService:
         self.file_store = file_store
         self._artifact_lock = threading.Lock()
 
-    def answer(self, job_id: str, request: UnifiedQueryRequest) -> UnifiedQueryResponse:
-        resolved_request, clarification = self._validate_scope(job_id, request)
-        response = clarification or self.unified_query.answer(job_id, resolved_request)
+    def answer(
+        self,
+        job_id: str,
+        request: UnifiedQueryRequest,
+        *,
+        principal: PrincipalContext,
+    ) -> UnifiedQueryResponse:
+        tenant_id = principal.tenant_id
+        if tenant_id is None:
+            raise ValueError("principal must carry a tenant ID")
+        resolved_request, clarification = self._validate_scope(
+            job_id,
+            request,
+            principal=principal,
+        )
+        security_query_type = _query_type_for_security(resolved_request)
+        if principal.auth_mode is AuthMode.PRINCIPAL and security_query_type in {
+            QueryType.MATERIAL_KNOWLEDGE,
+            QueryType.MIXED,
+        }:
+            # Explicit knowledge queries fail closed even when material-context
+            # validation could otherwise return an application clarification.
+            raise ServiceUnavailableError(details={"component": "knowledge_tenant_scope"})
+        response = clarification or self.unified_query.answer(
+            job_id,
+            resolved_request,
+            tenant_id=tenant_id,
+            auth_mode=principal.auth_mode,
+        )
         query_id = f"query_{uuid4().hex}"
         created_at = utc_now()
+        actor = QueryActorDTO.from_principal(principal)
         session = self.session_factory()
         try:
-            session.add(
-                QueryLog(
-                    query_id=query_id,
-                    job_id=job_id,
-                    image_id=resolved_request.image_id,
-                    query_type=response.query_type.value,
-                    question=resolved_request.question,
-                    request_json=resolved_request.model_dump(mode="json"),
-                    answer_json=response.model_dump(mode="json"),
-                    created_at=created_at,
-                )
+            repositories = SqlAlchemyRepositorySet(session)
+            scope = repositories.jobs.get_scope(job_id, tenant_id=tenant_id)
+            require_read(principal, scope)
+            repositories.queries.create_scoped(
+                query_id=query_id,
+                job_id=job_id,
+                image_id=resolved_request.image_id,
+                actor=actor,
+                request=resolved_request,
+                response=response,
+                created_at=created_at,
+                tenant_id=tenant_id,
             )
             session.commit()
         except Exception:
@@ -81,6 +124,7 @@ class QueryApplicationService:
                 request=resolved_request,
                 response=response,
                 created_at=created_at.isoformat(),
+                actor=actor,
             )
         except Exception:
             with log_context(job_id=job_id, image_id=resolved_request.image_id):
@@ -99,15 +143,29 @@ class QueryApplicationService:
         self,
         job_id: str,
         request: UnifiedQueryRequest,
+        *,
+        principal: PrincipalContext,
     ) -> tuple[UnifiedQueryRequest, UnifiedQueryResponse | None]:
+        tenant_id = principal.tenant_id
+        if tenant_id is None:
+            raise ValueError("principal must carry a tenant ID")
         session = self.session_factory()
         try:
-            if session.get(AnalysisJob, job_id) is None:
-                raise ResourceNotFoundError(details={"resource": "job", "job_id": job_id})
+            repositories = SqlAlchemyRepositorySet(session)
+            scope = repositories.jobs.get_scope(job_id, tenant_id=tenant_id)
+            require_read(principal, scope)
             image: ImageAsset | None = None
             if request.image_id is not None:
-                image = session.get(ImageAsset, request.image_id)
-                if image is None or image.job_id != job_id:
+                image = session.scalar(
+                    select(ImageAsset)
+                    .join(AnalysisJob, AnalysisJob.job_id == ImageAsset.job_id)
+                    .where(
+                        ImageAsset.image_id == request.image_id,
+                        ImageAsset.job_id == job_id,
+                        AnalysisJob.tenant_id == tenant_id,
+                    )
+                )
+                if image is None:
                     raise ResourceNotFoundError(
                         details={
                             "resource": "image",
@@ -118,11 +176,15 @@ class QueryApplicationService:
             run_ids = list(dict.fromkeys(request.run_ids))
             if run_ids:
                 rows = session.execute(
-                    select(SegmentationRun.run_id, SegmentationRun.job_id).where(
-                        SegmentationRun.run_id.in_(run_ids)
+                    select(SegmentationRun.run_id)
+                    .join(AnalysisJob, AnalysisJob.job_id == SegmentationRun.job_id)
+                    .where(
+                        SegmentationRun.job_id == job_id,
+                        SegmentationRun.run_id.in_(run_ids),
+                        AnalysisJob.tenant_id == tenant_id,
                     )
                 ).all()
-                owned = {run_id for run_id, owner_job_id in rows if owner_job_id == job_id}
+                owned = {run_id for (run_id,) in rows}
                 missing = [run_id for run_id in run_ids if run_id not in owned]
                 if missing:
                     raise ResourceNotFoundError(
@@ -156,7 +218,7 @@ class QueryApplicationService:
                 return request, None
             if not _query_requires_material_context(request):
                 return request, None
-            job_materials = _job_material_contexts(session, job_id)
+            job_materials = _job_material_contexts(session, job_id, tenant_id=tenant_id)
             if len(job_materials) == 1:
                 return (
                     request.model_copy(update={"material_context": job_materials[0]}),
@@ -178,6 +240,7 @@ class QueryApplicationService:
         request: UnifiedQueryRequest,
         response: UnifiedQueryResponse,
         created_at: str,
+        actor: QueryActorDTO,
     ) -> None:
         history_path = self.file_store.paths.query_history(job_id)
         citations_path = self.file_store.paths.rag_citations(job_id)
@@ -185,6 +248,7 @@ class QueryApplicationService:
             "schema_version": "1.0",
             "query_id": query_id,
             "created_at": created_at,
+            "actor": actor.model_dump(mode="json"),
             "request": request.model_dump(mode="json"),
             "response": response.model_dump(mode="json"),
         }
@@ -212,6 +276,7 @@ class QueryApplicationService:
                 {
                     "query_id": query_id,
                     "created_at": created_at,
+                    "actor": actor.model_dump(mode="json"),
                     "citations": [
                         citation.model_dump(mode="json") for citation in response.citations
                     ],
@@ -260,10 +325,28 @@ def _query_requires_material_context(request: UnifiedQueryRequest) -> bool:
     )
 
 
-def _job_material_contexts(session: Session, job_id: str) -> list[MaterialContext]:
+def _query_type_for_security(request: UnifiedQueryRequest) -> QueryType:
+    if request.query_type is not QueryType.AUTO:
+        return request.query_type
+    return QueryRouter().classify(
+        request.question,
+        material_context=request.material_context,
+    ).query_type
+
+
+def _job_material_contexts(
+    session: Session,
+    job_id: str,
+    *,
+    tenant_id: str,
+) -> list[MaterialContext]:
     rows = session.execute(
         select(ImageAsset.material_formula, ImageAsset.material_name)
-        .where(ImageAsset.job_id == job_id)
+        .join(AnalysisJob, AnalysisJob.job_id == ImageAsset.job_id)
+        .where(
+            ImageAsset.job_id == job_id,
+            AnalysisJob.tenant_id == tenant_id,
+        )
         .order_by(ImageAsset.image_id)
     ).all()
     contexts: list[MaterialContext] = []

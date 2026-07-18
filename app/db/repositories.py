@@ -27,7 +27,13 @@ from app.contracts.analyses import (
 from app.contracts.enums import JobStatus, QualityStatus, RoiMode
 from app.contracts.execution import ExecutionRuntimeProvenance
 from app.contracts.identity import validate_principal_id, validate_tenant_id
-from app.contracts.queries import QueryAuditRecordDTO, UnifiedQueryRequest, UnifiedQueryResponse
+from app.contracts.queries import (
+    QueryActorAuthMode,
+    QueryActorDTO,
+    QueryAuditRecordDTO,
+    UnifiedQueryRequest,
+    UnifiedQueryResponse,
+)
 from app.contracts.repositories import AnalysisResourceScope, StoredImageAsset
 from app.core.errors import BoxRevisionConflictError, InvalidBoxError, ResourceNotFoundError
 from app.core.state_machine import ensure_transition
@@ -878,6 +884,62 @@ class SqlAlchemyQueryRepository:
     def __init__(self, session: Session) -> None:
         self.session = session
 
+    def create_scoped(
+        self,
+        *,
+        query_id: str,
+        job_id: str,
+        image_id: str | None,
+        actor: QueryActorDTO,
+        request: UnifiedQueryRequest,
+        response: UnifiedQueryResponse,
+        created_at: datetime,
+        tenant_id: str,
+    ) -> None:
+        if actor.auth_mode is QueryActorAuthMode.LEGACY_UNKNOWN:
+            raise ValueError("legacy_unknown query actors are migration-only")
+        _require_scoped_job(self.session, job_id, tenant_id)
+        if actor.tenant_id != validate_tenant_id(tenant_id):
+            raise ValueError("query actor tenant must match the scoped job tenant")
+        if image_id is not None:
+            _require_scoped_image(self.session, job_id, image_id, tenant_id)
+        run_ids = list(dict.fromkeys(request.run_ids))
+        if run_ids:
+            persisted_run_ids = set(
+                self.session.scalars(
+                    select(SegmentationRun.run_id)
+                    .join(AnalysisJob, AnalysisJob.job_id == SegmentationRun.job_id)
+                    .where(
+                        SegmentationRun.job_id == job_id,
+                        SegmentationRun.run_id.in_(run_ids),
+                        AnalysisJob.tenant_id == validate_tenant_id(tenant_id),
+                    )
+                ).all()
+            )
+            missing = [run_id for run_id in run_ids if run_id not in persisted_run_ids]
+            if missing:
+                raise ResourceNotFoundError(
+                    details={"resource": "run", "job_id": job_id, "run_ids": missing}
+                )
+        self.session.add(
+            QueryLog(
+                query_id=query_id,
+                job_id=job_id,
+                image_id=image_id,
+                query_type=response.query_type.value,
+                question=request.question,
+                request_json=request.model_dump(mode="json"),
+                answer_json=response.model_dump(mode="json"),
+                actor_tenant_id=actor.tenant_id,
+                actor_principal_id=actor.principal_id,
+                actor_credential_id=actor.credential_id,
+                actor_role=actor.role.value,
+                actor_auth_mode=actor.auth_mode.value,
+                created_at=created_at,
+            )
+        )
+        self.session.flush()
+
     def list_by_job(self, job_id: str) -> list[QueryAuditRecordDTO]:
         """Return unscoped query audit rows for trusted internal workers only."""
 
@@ -919,6 +981,13 @@ class SqlAlchemyQueryRepository:
                     query_id=record.query_id,
                     job_id=record.job_id,
                     image_id=record.image_id,
+                    actor=QueryActorDTO(
+                        tenant_id=record.actor_tenant_id,
+                        principal_id=record.actor_principal_id,
+                        credential_id=record.actor_credential_id,
+                        role=record.actor_role,
+                        auth_mode=record.actor_auth_mode,
+                    ),
                     request=UnifiedQueryRequest.model_validate(request_payload),
                     response=UnifiedQueryResponse.model_validate(record.answer_json),
                     created_at=_utc(record.created_at),
