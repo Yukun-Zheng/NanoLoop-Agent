@@ -92,6 +92,7 @@ class AnalysisJob(TimestampMixin, Base):
 class ImageAsset(TimestampMixin, Base):
     __tablename__ = "image_assets"
     __table_args__ = (
+        UniqueConstraint("image_id", "job_id", name="uq_image_assets_image_job"),
         UniqueConstraint("job_id", "filename", name="job_filename"),
         UniqueConstraint("job_id", "sha256", name="job_sha256"),
         CheckConstraint("width > 0", name="width_positive"),
@@ -128,7 +129,9 @@ class ImageAsset(TimestampMixin, Base):
         back_populates="image", cascade="all, delete-orphan"
     )
     runs: Mapped[list["SegmentationRun"]] = relationship(
-        back_populates="image", cascade="all, delete-orphan"
+        back_populates="image",
+        cascade="all, delete-orphan",
+        foreign_keys="SegmentationRun.image_id",
     )
 
 
@@ -204,6 +207,18 @@ class ModelRegistryRecord(TimestampMixin, Base):
 class SegmentationRun(TimestampMixin, Base):
     __tablename__ = "segmentation_runs"
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["image_id", "job_id"],
+            ["image_assets.image_id", "image_assets.job_id"],
+            name="fk_segmentation_runs_image_job",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["parent_run_id", "job_id"],
+            ["segmentation_runs.run_id", "segmentation_runs.job_id"],
+            name="fk_segmentation_runs_parent_job",
+        ),
+        UniqueConstraint("run_id", "job_id", name="uq_segmentation_runs_run_job"),
         CheckConstraint(
             "threshold IS NULL OR (threshold >= 0 AND threshold <= 1)", name="threshold"
         ),
@@ -215,9 +230,7 @@ class SegmentationRun(TimestampMixin, Base):
     job_id: Mapped[str] = mapped_column(
         ForeignKey("analysis_jobs.job_id", ondelete="CASCADE"), nullable=False
     )
-    image_id: Mapped[str] = mapped_column(
-        ForeignKey("image_assets.image_id", ondelete="CASCADE"), nullable=False
-    )
+    image_id: Mapped[str] = mapped_column(String(64), nullable=False)
     model_id: Mapped[str] = mapped_column(
         ForeignKey("model_registry.model_id", ondelete="RESTRICT"), nullable=False
     )
@@ -237,7 +250,10 @@ class SegmentationRun(TimestampMixin, Base):
     error_message: Mapped[str | None] = mapped_column(Text)
 
     job: Mapped[AnalysisJob] = relationship(back_populates="runs")
-    image: Mapped[ImageAsset] = relationship(back_populates="runs")
+    image: Mapped[ImageAsset] = relationship(
+        back_populates="runs",
+        foreign_keys=[image_id],
+    )
     model: Mapped[ModelRegistryRecord] = relationship(back_populates="runs")
     particles: Mapped[list["ParticleRecord"]] = relationship(
         back_populates="run", cascade="all, delete-orphan"
@@ -364,6 +380,13 @@ class KnowledgeChunk(Base):
 
 class QueryLog(Base):
     __tablename__ = "query_logs"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["image_id", "job_id"],
+            ["image_assets.image_id", "image_assets.job_id"],
+            name="fk_query_logs_image_job",
+        ),
+    )
 
     query_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     job_id: Mapped[str] = mapped_column(
