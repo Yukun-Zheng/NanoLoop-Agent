@@ -5,11 +5,13 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import inspect
+from sqlalchemy.engine import make_url
 
 from app.agent.application import QueryApplicationService
 from app.agent.data_tools import SqlAlchemyDataToolService
@@ -35,6 +37,7 @@ from app.core.rate_limit import TokenBucketLimiter
 from app.core.security import ApiKeyVerifier, cors_origins, file_token_secret, trusted_hosts
 from app.db.repositories import SqlAlchemyUnitOfWork
 from app.db.session import Database
+from app.operations.backup import StateDirectoryLock
 from app.orchestration import (
     InProcessTaskDispatcher,
     QueuedRunScheduler,
@@ -82,7 +85,7 @@ def create_app(
     )
 
     @asynccontextmanager
-    async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+    async def _service_lifespan(application: FastAPI) -> AsyncIterator[None]:
         configure_logging(configured.log_level)
         if application.state.inference_gateway is None:
             application.state.inference_gateway = _build_inference_gateway(configured)
@@ -206,6 +209,17 @@ def create_app(
                 active_database.dispose()
             logger.info("application_stopped", extra={"event": "application_stopped"})
 
+    @asynccontextmanager
+    async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+        state_lock = _state_directory_lock(configured)
+        if state_lock is None:
+            async with _service_lifespan(application):
+                yield
+            return
+        with state_lock:
+            async with _service_lifespan(application):
+                yield
+
     application = FastAPI(
         title="NanoLoop Agent API",
         summary="Traceable SEM nanoparticle analysis and evidence-backed query API",
@@ -297,6 +311,23 @@ def create_app(
         include_in_schema=False,
     )
     return application
+
+
+def _state_directory_lock(settings: Settings) -> StateDirectoryLock | None:
+    """Share-lock one ordinary SQLite state root for the complete API lifespan."""
+
+    url = make_url(settings.database_url)
+    database_path = url.database
+    if (
+        url.get_backend_name() != "sqlite"
+        or database_path is None
+        or database_path == ":memory:"
+        or database_path.startswith("file:")
+        or str(url.query.get("mode", "")).casefold() == "memory"
+    ):
+        return None
+    data_root = Path(database_path).expanduser().absolute().parent
+    return StateDirectoryLock(data_root, exclusive=False)
 
 
 def _build_inference_gateway(settings: Settings) -> Any | None:
