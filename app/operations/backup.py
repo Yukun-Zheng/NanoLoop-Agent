@@ -1174,11 +1174,17 @@ def _database_watch_states(path: Path) -> dict[Path, _FileState | None]:
     # read-only mode. That file contains transient locks and index metadata, not durable
     # database pages. Watching it would make an offline backup reject its own harmless
     # reader activity. The database, WAL, and rollback journal remain fail-closed.
-    watched = [path, *(Path(f"{path}{suffix}") for suffix in ("-wal", "-journal"))]
+    wal_path = Path(f"{path}-wal")
+    watched = [path, wal_path, Path(f"{path}-journal")]
     result: dict[Path, _FileState | None] = {}
     for candidate in watched:
         if os.path.lexists(candidate):
-            result[candidate] = _regular_file_state(candidate)
+            state = _regular_file_state(candidate)
+            # Opening a clean WAL-mode database through SQLite's read-only URI can create an
+            # empty ``-wal`` file even though there are no frames to preserve.  Absence and a
+            # zero-byte WAL therefore describe the same durable database state.  Non-empty WAL
+            # files, the main database, and rollback journals remain strictly monitored.
+            result[candidate] = None if candidate == wal_path and state.size == 0 else state
         else:
             result[candidate] = None
     return result

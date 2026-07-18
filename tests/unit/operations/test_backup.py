@@ -171,6 +171,38 @@ def test_backup_accepts_committed_wal_without_ephemeral_shm(
         assert connection.execute("SELECT COUNT(*) FROM committed_payload").fetchone() == (100,)
 
 
+def test_backup_accepts_reader_created_empty_wal_after_clean_checkpoint(
+    tmp_path: Path,
+) -> None:
+    """A read-only backup may create an empty WAL for a clean WAL-mode database."""
+
+    state = _make_state_tree(tmp_path)
+    connection = sqlite3.connect(state.layout.database_path)
+    try:
+        assert connection.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+        connection.execute("CREATE TABLE clean_checkpoint_payload (value TEXT NOT NULL)")
+        connection.execute("INSERT INTO clean_checkpoint_payload VALUES ('preserved')")
+        connection.commit()
+    finally:
+        connection.close()
+
+    source_wal = Path(f"{state.layout.database_path}-wal")
+    assert not source_wal.exists()
+    archive = tmp_path / "clean-wal-state.zip"
+    destination = tmp_path / "clean-wal-restored"
+
+    create_backup(state.layout, archive, offline_confirmed=True)
+    restore_backup(archive, destination, offline_confirmed=True)
+
+    # SQLite versions may either retain the reader-created empty WAL or remove it.  Neither
+    # representation contains database pages, while the restored snapshot must retain the row.
+    assert not source_wal.exists() or source_wal.stat().st_size == 0
+    with sqlite3.connect(destination / "data" / "nanoloop.db") as connection:
+        assert connection.execute("SELECT value FROM clean_checkpoint_payload").fetchone() == (
+            "preserved",
+        )
+
+
 @pytest.mark.parametrize("mutation", ["sidecar", "tamper", "truncate"])
 def test_verify_rejects_archive_bytes_that_do_not_match_checksum(
     tmp_path: Path,

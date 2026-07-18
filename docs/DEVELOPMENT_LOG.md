@@ -48,3 +48,18 @@
   本批推送后以 GitHub `yukun` CI 的 CPU 容器结果作为完整恢复闭环证据。
 - 下一步：进入 operator provision 的身份主体、租户、只存哈希的可撤销凭证与请求审计上下文；
   暂不修改前端，也不提前宣称资源级授权已经完成。
+
+## 2026-07-18 14:31 +08:00 — 容灾 CI 的 SQLite WAL 边界修正
+
+- 分支与提交：`yukun`；提交哈希以本条所在提交为准，未合入 `main`。
+- 云端证据：Python 3.11/3.12、Ruff、严格 Mypy、OpenAPI、六页 Streamlit smoke 与 Alembic
+  往返/漂移门禁已通过；CPU 容器任务稳定定位到离线备份创建阶段，安全原因码为
+  `database_files_changed`，未输出宿主路径。
+- 根因：已干净 checkpoint 但仍标记为 WAL 模式的 SQLite 主库，在只读备份连接打开时会由 SQLite
+  自行创建 0 字节 `-wal` 与临时 `-shm`。它们没有可恢复页面，却被外层文件状态哨兵判成业务写入。
+- 修正：只把“缺失”和“0 字节 WAL”归一为相同的无帧状态；主库、非空 WAL 与 rollback journal
+  继续严格监控，任何有数据或元数据变化仍中止备份。新增干净 WAL 与含 100 行已提交 WAL 的双重
+  回归覆盖。
+- 本地证据：备份/恢复与 CLI 聚焦测试 36 项通过，相关 Ruff 与严格 Mypy 通过。
+- 待云端验证：本机仍无法连接 Docker Hub；下一次 `yukun` push 以 GitHub CPU 容器全恢复结果作为
+  闭环证据。
