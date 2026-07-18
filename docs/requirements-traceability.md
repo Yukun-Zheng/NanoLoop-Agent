@@ -1,0 +1,54 @@
+# NanoLoop Agent v2.0 需求追踪矩阵
+
+本表以《NanoLoop Agent 协同开发规格与接口总文档 v2.0》的 FR-01～FR-14 为准，
+状态对应当前仓库，而不是计划或演示话术。测试路径只证明其覆盖的代码行为；使用 fake
+adapter、内存向量或临时语料的测试不代表真实模型、生产向量索引或可信语料已经交付。
+
+## 状态口径
+
+- `implemented`：当前代码和自动化测试覆盖该 FR 的核心验收路径。
+- `partial`：已有可用子能力，但仍缺少规格要求的用户行为、算法或验收覆盖。
+- `external-blocked`：接入合同已存在，但真实闭环依赖仓库外尚未交付的资产或运行时；不得标记为完成。
+
+当前汇总：`implemented` 10 项，`partial` 3 项，`external-blocked` 1 项。
+
+## FR-01～FR-14
+
+| FR | 状态 | 当前可证实覆盖 | 代码与测试证据 | 明确缺口 / 退出条件 |
+| --- | --- | --- | --- | --- |
+| FR-01 创建分析任务 | `implemented` | `POST /api/v1/analyses` 接收 1～20 个文件及逐图元数据，持久化任务/图像并返回 `job_id`。 | [分析路由](../app/api/routes/analyses.py)、[创建服务](../app/analysis/application.py)、[HTTP 合同测试](../tests/integration/api_contract/test_http_contract.py)、[分析应用测试](../tests/unit/analysis/test_application.py) | 无核心代码缺口；真实模型不可用不影响任务创建。 |
+| FR-02 输入校验 | `implemented` | 校验扩展名与真实格式、解码、尺寸/像素数、位深、文件名/内容重复、元数据匹配和比例尺；高置信度暗色仪器栏生成 `analysis_roi`，不确定时保留整图。 | [图像校验](../app/analysis/validation.py)、[比例尺 DTO](../app/contracts/analyses.py)、[上传编排](../app/analysis/application.py)、[校验测试](../tests/unit/analysis/test_validation.py) | 未做自动标尺 OCR；它在 v2.0 中是 Could，不作为本 FR 完成条件。仪器栏检测是保守启发式，不应宣传为通用检测模型。 |
+| FR-03 人工选框 | `implemented` | 后端支持每图 0～20 框、全量替换、读取、删除/清空、32 px 最小尺寸、原图半开坐标、无效区校验和 revision 乐观锁；每次 revision（包括空框）写入数据库 ledger。前端同时提供无 CDN/npm 运行时依赖的离线 canvas 与数值编辑器，支持拖拽建框、选择/删除、50%～200% 缩放、有效/无效区阴影和显示→原图坐标转换。 | [boxes 路由](../app/api/routes/boxes.py)、[仓储实现](../app/db/repositories.py)、[revision 迁移](../app/db/migrations/versions/d9f3b6c2a1e7_box_revision_ledger.py)、[前端 ROI 页](../frontend/app.py)、[canvas 桥接](../frontend/roi_canvas.py)、[内置 canvas](../frontend/roi_component/index.html)、[canvas 单元测试](../tests/unit/frontend/test_roi_canvas.py)、[仓储测试](../tests/unit/db/test_repositories.py) | 核心路径已完成；除自动化转换/状态测试外，本地 headless Chrome 已验证真实拖拽 → CAS 保存 → 重载 → REST revision round-trip。跨浏览器矩阵和可访问性增强仍可后续补充，但不阻塞 FR-03 核心验收；当前不包含像素级掩膜画笔。 |
+| FR-04 模型目录 | `implemented` | YAML 注册表、数据库投影、`GET /models`、family/variant/tier/status/适用材料/指标/健康原因均已建模；注册时校验权重并计算配置、模型卡和 Adapter 源码 SHA-256，缺任一资产时强制 `unavailable`。通过验证的完整 bundle 发布为只读、内容寻址 snapshot，Adapter 不从可变源路径直接加载。前端提供五类服务端筛选、完整指标上下文/健康详情，并对矛盾的 ready/health 状态失败关闭。 | [注册服务](../app/inference/registry.py)、[模型 snapshot](../app/inference/snapshots.py)、[模型路由](../app/api/routes/models.py)、[模型目录 UI](../frontend/model_catalog.py)、[注册表声明](../model_artifacts/registry.yaml)、[注册测试](../tests/unit/inference/test_registry.py)、[snapshot 测试](../tests/unit/inference/test_snapshots.py)、[前端模型目录测试](../tests/unit/frontend/test_model_catalog.py) | 目录与不可变加载边界已实现，但当前三个登记模型都不是 `ready`；这不等于模型交付完成，见 FR-06。 |
+| FR-05 模型选择 | `implemented` | 创建运行显式接收用户确认的 `model_ids`；推荐只从 ready 模型排序并返回 `requires_user_confirmation=true`，不会自动启动推理；前端分开“推荐”和“创建运行”。 | [推理网关](../app/inference/gateway.py)、[模型路由](../app/api/routes/models.py)、[运行 DTO](../app/contracts/analyses.py)、[前端模型页](../frontend/app.py)、[网关测试](../tests/unit/inference/test_gateway.py) | 当前无 ready 模型，因此生产环境没有可提交候选；选择机制本身已完成。 |
+| FR-06 统一分割 | `external-blocked` | `SegmentationAdapter`、`InferenceGateway`、U-Net/YOLO-Seg/SAM2 接缝和统一 `SegmentationOutput` 已存在；U-Net 按配置执行 patch/stride 重叠滑窗与平滑加权融合。schema v3 在排队前冻结完整模型 bundle，执行前核对 build identity；原图只读取一次并按同一字节核对哈希。`auto` 设备先解析，Python/NumPy/Torch seed 和严格确定性开关在进程级串行边界内设置并恢复，实际执行证据单独持久化。`AdapterCache.lease()` 防止预测期间并发 unload，bundle/snapshot 篡改均 fail closed。 | [Adapter 合同](../app/inference/adapters/base.py)、[U-Net](../app/inference/adapters/unet.py)、[执行控制](../app/inference/execution.py)、[执行证据合同](../app/contracts/execution.py)、[模型 bundle](../app/inference/registry.py)、[Adapter 缓存](../app/inference/cache.py)、[滑窗测试](../tests/unit/inference/test_unet_tiling.py)、[执行测试](../tests/unit/inference/test_execution.py)、[网关测试](../tests/unit/inference/test_gateway.py) | `model_artifacts/weights` 没有真实 checkpoint，三个注册项均 `unavailable`，现有测试使用 fake/工具级对象；没有真实 checkpoint 推理、共同 fixture、模型评测或冷启动证明。工程算法与复现边界不能替代真实科学资产验收。 |
+| FR-07 后处理统计 | `implemented` | 语义/实例输出归一化、连通域、可选 Watershed、去小区域、边界排除、实例去重、颗粒级形貌、ROI union 面积和像素/物理单位汇总已接通；最终 postprocessed 实例统一写为 canonical `instances.json`，并与 canonical `pred_mask.png`、颗粒记录和公开制品来自同一集合。 | [后处理](../app/analysis/postprocessing.py)、[canonical 实例制品](../app/analysis/instance_artifacts.py)、[形貌统计](../app/analysis/morphometry.py)、[分析编排](../app/analysis/application.py)、[实例制品测试](../tests/unit/analysis/test_instance_artifacts.py)、[端到端分析测试](../tests/unit/analysis/test_application.py) | 核心工程闭环已完成；真实模型上的科学有效性、像素级准确率和实例误差仍由 FR-06 的资产与评测验收。 |
+| FR-08 质量门控 | `implemented` | 输出 `PASS/WARN/REVIEW_REQUIRED`、原因、指标和建议；质量输入保留过滤前 candidate/boundary 计数，默认 `exclude_border=true` 后仍记录 `candidate_instance_count`、`boundary_instance_count`、`excluded_border_instance_count` 和有效 `edge_touch_ratio`。 | [质量门控](../app/analysis/quality.py)、[后处理诊断](../app/analysis/postprocessing.py)、[质量配置](../app/analysis/config.py)、[质量单元测试](../tests/unit/analysis/test_morphometry_quality.py)、[触边端到端测试](../tests/unit/analysis/test_application.py) | v2.0 的 PASS/WARN/REVIEW_REQUIRED 核心路径已实现。TTA 或多模型不一致可作为后续增强，但当前未实现，不得在演示中宣称已有。 |
+| FR-09 材料 RAG | `partial` | 已稳定覆盖 PDF/TXT/Markdown 提取、页码保留、600/80 切块、SHA 去重、SQLite FTS5、严格材料标签过滤、离线摘录和 OpenAI-compatible 提供器；多材料且未选图像时返回候选材料澄清，不跨材料补位；引用保留 `doc_id/page/chunk_id` 及 `source_type/citation_text` provenance。PDF 页数、提取字符、单文档 chunk、材料别名和向量语料总量都有可配置上限，文本读取在上限 + 1 停止，embedding 分批执行。可选向量 runtime 使用 local-files-only SentenceTransformers、不可变 FAISS generation、原子 manifest、稳定 ID、索引摘要及数据库成员/正文摘要校验；失败时 FTS 继续有效且旧失配索引停止使用。 | [摄取服务](../app/rag/application.py)、[提取/资源边界](../app/rag/ingestion.py)、[Embedding 提供器](../app/rag/embeddings.py)、[向量发布](../app/rag/vector_index.py)、[向量索引](../app/rag/vector_store.py)、[检索融合](../app/rag/retrieval.py)、[回答服务](../app/rag/service.py)、[资源边界测试](../tests/unit/rag/test_chunking_ingestion.py)、[向量 runtime 测试](../tests/unit/rag/test_vector_runtime.py) | 代码与 fake FAISS backend 已覆盖持久发布、重启加载、映射不一致和降级，但当前环境没有安装/缓存固定的真实 embedding 模型，也没有经许可、带 manifest 的 5～10 篇演示语料；尚未完成真实资产上的重启与检索冒烟，因此保持 `partial`。 |
+| FR-10 数据问答 | `implemented` | 数值只来自只读 SQL/统计工具；支持概览、计数、均值、覆盖率、复核查询、排名，以及 `compare_groups`、`describe_distribution`、`find_anomalies`、`compare_models`。大粒径总体的 count/均值/极值、线性插值四分位数和直方图在 SQL 中精确计算，响应只保留有上限的确定性等距证据行。默认作用域若同图存在多个已完成 run 会要求用户选 run，跨图粒径比较会优先物理单位；尺度不足或单位不可比时返回 `INSUFFICIENT_EVIDENCE`。 | [数据工具](../app/agent/data_tools.py)、[工具测试](../tests/unit/agent/test_data_tools.py)、[查询应用](../app/agent/application.py) | 白名单核心路径已完成；自然语言解析仍是确定性规则，不应宣传为任意 SQL 或开放式统计代理。 |
+| FR-11 混合问答 | `partial` | Router 与 `UnifiedQueryService` 能并行组合实验数据和知识结果，输出“实验数据结论/材料知识结论”两个分区，并分别保留工具证据、引用和限制。 | [路由器](../app/agent/router.py)、[统一问答](../app/agent/unified_query.py)、[混合问答测试](../tests/unit/agent/test_unified_query.py)、[查询持久化测试](../tests/unit/agent/test_query_application.py) | 组合合同已完成，但知识侧仍受 FR-09 的向量 runtime/正式语料缺口限制；因此尚无真实语料上的完整 mixed 闭环验收。 |
+| FR-12 模型对比 | `partial` | 创建运行支持 1～3 个 `model_id` 并按图像×模型创建独立 run；专项测试覆盖 2 图像×3 模型的 6 个独立 run、完整配置/provenance 冻结和无重复投递；`compare_models` 数据工具可比较同图所选运行；前端支持选择同图 2～3 个终态 run，并排展示 REST 获取的预览、统计、质量、耗时与制品。 | [运行创建](../app/analysis/application.py)、[运行 DTO](../app/contracts/analyses.py)、[Cartesian 测试](../tests/unit/analysis/test_application.py)、[数据工具](../app/agent/data_tools.py)、[并排结果页](../frontend/app.py)、[前端作用域校验](../frontend/state.py)、[前端测试](../tests/unit/frontend/test_workbench_state.py)、[数据工具测试](../tests/unit/agent/test_data_tools.py) | 工程路径和专项覆盖已完成，但没有真实 2～3 个 ready 模型对共同图像完成端到端科学闭环；真实 checkpoint 到位并通过共同 fixture 验收后再上调为 `implemented`。 |
+| FR-13 报告导出 | `implemented` | 仅终态 run 可导出；ZIP 包含原图/清单、schema v3 运行配置与完整模型 bundle 引用、实际执行 provenance、运行制品、run/sample 汇总、图表、质量、状态事件、审计链、软件清单、查询历史/RAG 引用（若已产生）和逐文件 SHA-256 manifest。selection digest 绑定排序后的成员路径/精确字节摘要/长度，ZIP metadata 固定且无墙钟时间；相同快照复用同一内容地址，变化快照生成新地址并保留旧 token 字节，发布竞争不覆盖已有文件。 | [运行配置合同](../app/contracts/analyses.py)、[执行证据合同](../app/contracts/execution.py)、[报告与导出](../app/analysis/reporting.py)、[确定性 ZIP](../app/storage/file_store.py)、[导出路由](../app/api/routes/exports.py)、[报告测试](../tests/unit/analysis/test_reporting.py)、[存储并发测试](../tests/unit/storage/test_file_store.py)、[smoke ZIP 校验](../tests/unit/scripts/test_smoke_test.py) | 若未注入 `NANOLOOP_GIT_COMMIT`/`NANOLOOP_IMAGE_TAG`，这些人工发布标识会诚实记录 `unknown`；后端源码和已安装依赖摘要仍可区分实际执行环境。正式演示镜像仍需提供 commit/image 标识。 |
+| FR-14 知识库管理 | `implemented` | 提供文档导入、列出、幂等禁用/启用和重建索引；禁用文档立即退出后续检索，前端目录提供对应动作；同时校验授权元数据、SHA 幂等、源文件变化、逐文档失败隔离和 FTS 事务回滚。 | [知识路由](../app/api/routes/knowledge.py)、[知识应用服务](../app/rag/application.py)、[前端知识库页](../frontend/app.py)、[知识管理测试](../tests/unit/rag/test_knowledge_application.py)、[HTTP 合同测试](../tests/integration/api_contract/test_http_contract.py)、[前端测试](../tests/unit/frontend/test_workbench_state.py) | FR-14 的导入/列出/启停/重建核心行为已完成。生产向量索引的构建与一致性验收仍归 FR-09，不因 FTS reindex 成功而自动视为完成。 |
+
+## 不得用现有测试推导的结论
+
+- `tests/unit/inference` 的 fake adapter 与工具测试不能证明任何真实权重可运行或具有准确率。
+- `InMemoryVectorStore` 只用于融合算法测试，不能证明生产 FAISS 文件已建立、可恢复或与数据库一致。
+- ROI 的 canvas/browser 证据只证明矩形选框、坐标换算和 revision 保存，不证明存在像素级在线掩膜画笔，也不证明未经测试的浏览器组合。
+- 前端并排比较和 `compare_models` 工具证明的是作用域、展示与确定性计算，不证明多个真实模型的科学优劣。
+- `scripts/smoke_test.py --allow-degraded` 只证明系统诚实降级；完整科学闭环必须在真实模型和语料交付后，不带该参数运行。
+
+## 当前数据与部署边界
+
+- SQLite 是任务、运行、查询与 ROI revision 的权威事实源。`query_history.jsonl`、`rag_citations.json` 和 `boxes_revision_*.json` 是可重建投影；提交后的投影写失败会记录结构化降级日志，不把已提交事务伪装为失败。ROI revision ledger 会保留空 revision，避免仅靠框行无法重建历史。
+- 每个 run 的状态转换写入 `run_status_events`，通过 REST DTO 和导出审计暴露；旧数据库迁移只能诚实补一条“迁移时最后已知状态”，不能重建迁移前的完整时间线。
+- 正常模型 run 使用 `RunConfiguration` schema v3 冻结原图 SHA、比例尺、resolved 科学设置、完整模型 bundle/Adapter 摘要和创建端 build；执行端重新核对 build identity，并将实际设备、seed、确定性控制、后端、bundle 与执行时间另存为 provenance。复核子运行继续引用同一 bundle。历史 schema v1/v2 必须显式暴露缺失/不匹配警告，不能冒充同等级复现证据。
+- 普通陈旧运行可按冻结输入重建子运行；corrected-mask 运行若恢复时缺少原始人工制品，则父运行失败并进入 operator attention，不创建仅复制 JSON 的不可复现子运行。
+- `/health` 的数据库状态会校验 Alembic 当前 revision 与仓库 head；数据库可连接但 revision 缺失/滞后仍为 unavailable。
+- [Compose](../docker-compose.yml) 默认只把 API/前端发布到宿主机 `127.0.0.1`；容器内 Uvicorn 固定 `--workers 1`，SQLite、进程内任务队列和进程内导出锁只按单 API 实例设计。
+- 本地已执行 ROI headless Chrome round-trip；Docker image build 因 Docker Hub 基础镜像拉取超时未完成。Compose 静态配置、Dockerfile 或 CI 定义存在都不能被引用为本轮镜像构建成功证据。
+- API 拒绝不受信任/歧义 Host，并对浏览器写请求校验 Origin 与 `Sec-Fetch-Site`，但应用仍没有用户/租户认证、API rate limit、调用 quota 或磁盘 quota/retention。不得只把 `NANOLOOP_BIND_HOST` 改为 `0.0.0.0`、增加 Uvicorn worker 或扩容 replica，就宣称 production-ready；公网/多实例部署需要受信任反向代理和相应架构改造。
+- [请求体中间件](../app/api/middleware.py) 已用 `MAX_REQUEST_MB` 在 multipart 解析前限制整个请求，Compose 默认 512 MB，并把 `TMPDIR` 放到数据卷；[有界 multipart 路由](../app/api/routing.py) 进一步限制每个操作的文件数、字段数、字段名/类型/基数和 256 KiB 文本 part。用户/任务累计磁盘配额及制品/语料保留策略仍是运维硬化缺口。
+
+生产边界和发布门槛见 [生产就绪说明](PRODUCTION_READINESS.md)。状态变更时，应同时补充对应代码、自动化测试和本表的“退出条件”证据；只添加配置名、空目录或 mock 不得把 `partial`/`external-blocked` 改为 `implemented`。

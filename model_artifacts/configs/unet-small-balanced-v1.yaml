@@ -1,0 +1,12 @@
+schema_version: "1"
+loader: torchscript
+input_channels: 3
+input_size: [1024, 1024]
+patch_size: [1024, 1024]
+stride: [768, 768]
+pixel_scale: 255.0
+mean: [0.0, 0.0, 0.0]
+std: [1.0, 1.0, 1.0]
+output_activation: logits
+foreground_class_index: 1
+default_threshold: 0.5

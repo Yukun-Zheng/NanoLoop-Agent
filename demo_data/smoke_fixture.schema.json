@@ -1,0 +1,310 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nanoloop.local/schemas/smoke-fixture-1.0.json",
+  "title": "NanoLoop REST smoke fixture",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "job_name",
+    "images",
+    "box",
+    "knowledge_document",
+    "queries"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1.0"
+    },
+    "job_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255
+    },
+    "images": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 2,
+      "items": {
+        "$ref": "#/$defs/image"
+      }
+    },
+    "box": {
+      "$ref": "#/$defs/box"
+    },
+    "inference": {
+      "$ref": "#/$defs/inference"
+    },
+    "knowledge_document": {
+      "$ref": "#/$defs/knowledgeDocument"
+    },
+    "queries": {
+      "$ref": "#/$defs/queries"
+    }
+  },
+  "$defs": {
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sample_id",
+        "scale"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sample_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "material_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "material_formula": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "experiment_conditions": {
+          "type": "object"
+        },
+        "scale": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "mode"
+              ],
+              "properties": {
+                "mode": {
+                  "const": "pixel_only"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "mode",
+                "value"
+              ],
+              "properties": {
+                "mode": {
+                  "const": "nm_per_pixel"
+                },
+                "value": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "box": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "image_index",
+        "x1",
+        "y1",
+        "x2",
+        "y2"
+      ],
+      "properties": {
+        "image_index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "label": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "x1": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "y1": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "x2": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "y2": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "active": {
+          "type": "boolean"
+        }
+      }
+    },
+    "inference": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "threshold": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 1
+        },
+        "min_area_px": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "watershed_enabled": {
+          "type": "boolean"
+        },
+        "exclude_border": {
+          "type": "boolean"
+        },
+        "device": {
+          "enum": [
+            "auto",
+            "cpu",
+            "cuda",
+            "mps"
+          ]
+        },
+        "seed": {
+          "type": "integer"
+        }
+      }
+    },
+    "knowledgeDocument": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "metadata"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "title",
+            "source_type",
+            "citation_text",
+            "license_note",
+            "allowed_for_demo"
+          ],
+          "properties": {
+            "title": {
+              "type": "string",
+              "minLength": 1
+            },
+            "source_type": {
+              "enum": [
+                "paper",
+                "report",
+                "material_note",
+                "other"
+              ]
+            },
+            "year": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 1000,
+              "maximum": 3000
+            },
+            "citation_text": {
+              "type": "string",
+              "minLength": 1
+            },
+            "material_aliases": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "license_note": {
+              "type": "string",
+              "minLength": 1
+            },
+            "allowed_for_demo": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "queries": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "analysis_data",
+        "material_knowledge",
+        "material_context"
+      ],
+      "properties": {
+        "analysis_data": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "material_knowledge": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "material_context": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "formula": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "aliases": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "source": {
+              "enum": [
+                "request",
+                "image_metadata",
+                "user_confirmation"
+              ]
+            }
+          }
+        }
+      }
+    }
+  }
+}

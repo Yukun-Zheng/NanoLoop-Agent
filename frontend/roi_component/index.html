@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --ink: #14232b;
+      --muted: #5e7078;
+      --line: #cbd7da;
+      --surface: #f7faf9;
+      --teal: #087f78;
+      --danger: #b42318;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; color: var(--ink); background: transparent; }
+    .toolbar {
+      display: flex; align-items: center; flex-wrap: wrap; gap: .45rem;
+      min-height: 38px; margin-bottom: .45rem;
+    }
+    button {
+      min-height: 32px; padding: .25rem .65rem; border: 1px solid var(--line);
+      border-radius: 6px; background: white; color: var(--ink); font-weight: 650;
+      cursor: pointer;
+    }
+    button:hover:not(:disabled) { border-color: var(--teal); color: var(--teal); }
+    button:disabled { cursor: not-allowed; opacity: .45; }
+    label { color: var(--muted); font-size: .82rem; }
+    input[type="range"] { width: 112px; vertical-align: middle; }
+    .count { margin-left: auto; color: var(--muted); font-size: .82rem; }
+    .viewport {
+      position: relative; width: 100%; max-height: 620px; overflow: auto;
+      border: 1px solid var(--line); border-radius: 8px; background: #182126;
+    }
+    canvas { display: block; touch-action: none; cursor: crosshair; outline: none; }
+    canvas.read-only { cursor: default; }
+    .hint {
+      display: flex; justify-content: space-between; gap: .7rem;
+      color: var(--muted); font-size: .78rem; line-height: 1.35; margin-top: .35rem;
+    }
+    .hint strong { color: var(--teal); }
+    .readonly-note { color: #8b5c00; }
+    .error-note { color: var(--danger); font-weight: 650; }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <label>缩放
+      <input id="zoom" type="range" min="50" max="200" step="10" value="100">
+      <span id="zoomValue">100%</span>
+    </label>
+    <button id="delete" type="button">删除选中框</button>
+    <button id="clear" type="button">清空全部框</button>
+    <span class="count" id="count">0 / 20</span>
+  </div>
+  <div class="viewport" id="viewport">
+    <canvas id="canvas" tabindex="0" aria-label="ROI 矩形标注画布"></canvas>
+  </div>
+  <div class="hint">
+    <span id="instructions">在空白处拖拽新建；单击已有框后可删除。</span>
+    <span><strong>青色</strong> valid_rect · <span style="color:#b42318">红色</span> invalid_rect</span>
+  </div>
+
+  <script>
+    (() => {
+      "use strict";
+      const canvas = document.getElementById("canvas");
+      const context = canvas.getContext("2d");
+      const viewport = document.getElementById("viewport");
+      const zoom = document.getElementById("zoom");
+      const zoomValue = document.getElementById("zoomValue");
+      const deleteButton = document.getElementById("delete");
+      const clearButton = document.getElementById("clear");
+      const count = document.getElementById("count");
+      const instructions = document.getElementById("instructions");
+      const image = new Image();
+      let args = null;
+      let boxes = [];
+      let selectedIndex = null;
+      let dragStart = null;
+      let dragCurrent = null;
+      let eventSequence = 0;
+      let imageLoaded = false;
+      let lastPostedHeight = null;
+
+      function post(type, extra = {}) {
+        window.parent.postMessage({isStreamlitMessage: true, type, ...extra}, "*");
+      }
+
+      function setHeight() {
+        // documentElement.scrollHeight is at least the iframe viewport height.
+        // Adding padding to it creates a parent/iframe growth loop and repeated
+        // renders can reset an in-progress pointer gesture.
+        const height = Math.ceil(document.body.scrollHeight);
+        if (height === lastPostedHeight) return;
+        lastPostedHeight = height;
+        post("streamlit:setFrameHeight", {height});
+      }
+
+      function finite(value, fallback = 0) {
+        const number = Number(value);
+        return Number.isFinite(number) ? number : fallback;
+      }
+
+      function originalToDisplay(box) {
+        return {
+          x1: finite(box.x1) * args.display_width / args.original_width,
+          y1: finite(box.y1) * args.display_height / args.original_height,
+          x2: finite(box.x2) * args.display_width / args.original_width,
+          y2: finite(box.y2) * args.display_height / args.original_height,
+        };
+      }
+
+      function displayToOriginal(start, end) {
+        const left = Math.min(Math.max(Math.min(start.x, end.x), 0), args.display_width);
+        const top = Math.min(Math.max(Math.min(start.y, end.y), 0), args.display_height);
+        const right = Math.min(Math.max(Math.max(start.x, end.x), 0), args.display_width);
+        const bottom = Math.min(Math.max(Math.max(start.y, end.y), 0), args.display_height);
+        return {
+          x1: Math.max(0, Math.min(args.original_width,
+            Math.floor(left * args.original_width / args.display_width))),
+          y1: Math.max(0, Math.min(args.original_height,
+            Math.floor(top * args.original_height / args.display_height))),
+          x2: Math.max(0, Math.min(args.original_width,
+            Math.ceil(right * args.original_width / args.display_width))),
+          y2: Math.max(0, Math.min(args.original_height,
+            Math.ceil(bottom * args.original_height / args.display_height))),
+        };
+      }
+
+      function canvasPoint(event) {
+        const rect = canvas.getBoundingClientRect();
+        return {
+          x: (event.clientX - rect.left) * canvas.width / rect.width,
+          y: (event.clientY - rect.top) * canvas.height / rect.height,
+        };
+      }
+
+      function intersects(first, second) {
+        return first.x1 < second.x2 && first.x2 > second.x1 &&
+          first.y1 < second.y2 && first.y2 > second.y1;
+      }
+
+      function newBoxError(box) {
+        const minimum = Math.max(1, finite(args.minimum_size_px, 32));
+        if (box.x2 - box.x1 < minimum || box.y2 - box.y1 < minimum) {
+          return `ROI 宽和高都必须至少为 ${minimum} 个原图像素。`;
+        }
+        const valid = args.valid_rect || {
+          x1: 0, y1: 0, x2: args.original_width, y2: args.original_height,
+        };
+        if (box.x1 < finite(valid.x1) || box.y1 < finite(valid.y1) ||
+            box.x2 > finite(valid.x2) || box.y2 > finite(valid.y2)) {
+          return "ROI 必须完整位于 valid_rect 内。";
+        }
+        if ((args.invalid_rects || []).some(rect => intersects(box, rect))) {
+          return "ROI 不能与红色 invalid_rect 相交。";
+        }
+        return null;
+      }
+
+      function setInstruction(message, isError = false) {
+        instructions.textContent = message;
+        instructions.classList.toggle("error-note", isError);
+      }
+
+      function applyZoom() {
+        if (!args) return;
+        const fit = Math.min(1, Math.max(.05, (viewport.clientWidth - 2) / args.display_width));
+        const multiplier = finite(zoom.value, 100) / 100;
+        canvas.style.width = `${Math.max(1, args.display_width * fit * multiplier)}px`;
+        canvas.style.height = `${Math.max(1, args.display_height * fit * multiplier)}px`;
+        zoomValue.textContent = `${zoom.value}%`;
+        setHeight();
+      }
+
+      function shadeOutsideValid(rect) {
+        if (!rect) return;
+        const item = originalToDisplay(rect);
+        context.save();
+        context.fillStyle = "rgba(8, 20, 25, .48)";
+        context.fillRect(0, 0, canvas.width, Math.max(0, item.y1));
+        context.fillRect(0, item.y2, canvas.width, Math.max(0, canvas.height - item.y2));
+        context.fillRect(0, item.y1, Math.max(0, item.x1), Math.max(0, item.y2 - item.y1));
+        context.fillRect(item.x2, item.y1, Math.max(0, canvas.width - item.x2),
+          Math.max(0, item.y2 - item.y1));
+        context.strokeStyle = "#14b8a6";
+        context.lineWidth = 2;
+        context.setLineDash([7, 5]);
+        context.strokeRect(item.x1, item.y1, item.x2 - item.x1, item.y2 - item.y1);
+        context.restore();
+      }
+
+      function shadeInvalid(rect) {
+        const item = originalToDisplay(rect);
+        context.save();
+        context.fillStyle = "rgba(180, 35, 24, .28)";
+        context.strokeStyle = "rgba(180, 35, 24, .95)";
+        context.lineWidth = 2;
+        context.fillRect(item.x1, item.y1, item.x2 - item.x1, item.y2 - item.y1);
+        context.strokeRect(item.x1, item.y1, item.x2 - item.x1, item.y2 - item.y1);
+        context.beginPath();
+        for (let x = item.x1 - (item.y2 - item.y1); x < item.x2; x += 12) {
+          context.moveTo(x, item.y2);
+          context.lineTo(x + (item.y2 - item.y1), item.y1);
+        }
+        context.globalAlpha = .35;
+        context.stroke();
+        context.restore();
+      }
+
+      function drawBox(box, index) {
+        const item = originalToDisplay(box);
+        const selected = index === selectedIndex;
+        context.save();
+        context.fillStyle = selected ? "rgba(245, 158, 11, .18)" : "rgba(16, 185, 129, .12)";
+        context.strokeStyle = selected ? "#f59e0b" : (box.active === false ? "#94a3b8" : "#10b981");
+        context.lineWidth = selected ? 3 : 2;
+        if (box.active === false) context.setLineDash([5, 4]);
+        context.fillRect(item.x1, item.y1, item.x2 - item.x1, item.y2 - item.y1);
+        context.strokeRect(item.x1, item.y1, item.x2 - item.x1, item.y2 - item.y1);
+        const label = String(box.label || `ROI ${index + 1}`);
+        context.font = "600 12px -apple-system, BlinkMacSystemFont, sans-serif";
+        const labelWidth = Math.min(context.measureText(label).width + 10, 180);
+        const labelY = Math.max(0, item.y1 - 20);
+        context.fillStyle = selected ? "#f59e0b" : "#087f78";
+        context.fillRect(item.x1, labelY, labelWidth, 20);
+        context.fillStyle = "#ffffff";
+        context.fillText(label.slice(0, 24), item.x1 + 5, labelY + 14, labelWidth - 8);
+        context.restore();
+      }
+
+      function drawDrag() {
+        if (!dragStart || !dragCurrent) return;
+        const left = Math.min(dragStart.x, dragCurrent.x);
+        const top = Math.min(dragStart.y, dragCurrent.y);
+        const width = Math.abs(dragCurrent.x - dragStart.x);
+        const height = Math.abs(dragCurrent.y - dragStart.y);
+        context.save();
+        context.fillStyle = "rgba(8, 127, 120, .18)";
+        context.strokeStyle = "#0f766e";
+        context.lineWidth = 2;
+        context.setLineDash([6, 4]);
+        context.fillRect(left, top, width, height);
+        context.strokeRect(left, top, width, height);
+        context.restore();
+      }
+
+      function redraw() {
+        if (!args || !imageLoaded) return;
+        context.clearRect(0, 0, canvas.width, canvas.height);
+        context.drawImage(image, 0, 0, canvas.width, canvas.height);
+        shadeOutsideValid(args.valid_rect);
+        (args.invalid_rects || []).forEach(shadeInvalid);
+        boxes.forEach(drawBox);
+        drawDrag();
+        count.textContent = `${boxes.length} / ${args.max_boxes}`;
+        deleteButton.disabled = args.read_only || selectedIndex === null;
+        clearButton.disabled = args.read_only || boxes.length === 0;
+      }
+
+      function boxAt(point) {
+        for (let index = boxes.length - 1; index >= 0; index -= 1) {
+          const item = originalToDisplay(boxes[index]);
+          if (point.x >= item.x1 && point.x <= item.x2 &&
+              point.y >= item.y1 && point.y <= item.y2) return index;
+        }
+        return null;
+      }
+
+      function emitChange() {
+        eventSequence += 1;
+        post("streamlit:setComponentValue", {
+          value: {
+            event_id: `${Date.now()}-${eventSequence}`,
+            boxes: boxes.map(box => ({...box})),
+          },
+          dataType: "json",
+        });
+      }
+
+      canvas.addEventListener("pointerdown", event => {
+        if (!args || args.read_only || event.button !== 0) return;
+        canvas.focus();
+        const point = canvasPoint(event);
+        const hit = boxAt(point);
+        if (hit !== null) {
+          selectedIndex = hit;
+          dragStart = null;
+          dragCurrent = null;
+          redraw();
+          return;
+        }
+        if (boxes.length >= args.max_boxes) return;
+        selectedIndex = null;
+        dragStart = point;
+        dragCurrent = point;
+        canvas.setPointerCapture(event.pointerId);
+        redraw();
+      });
+
+      canvas.addEventListener("pointermove", event => {
+        if (!dragStart) return;
+        dragCurrent = canvasPoint(event);
+        redraw();
+      });
+
+      canvas.addEventListener("pointerup", event => {
+        if (!dragStart) return;
+        dragCurrent = canvasPoint(event);
+        const width = Math.abs(dragCurrent.x - dragStart.x);
+        const height = Math.abs(dragCurrent.y - dragStart.y);
+        if (width >= 2 && height >= 2) {
+          const mapped = displayToOriginal(dragStart, dragCurrent);
+          const error = newBoxError(mapped);
+          if (error) {
+            setInstruction(error, true);
+          } else {
+            boxes.push({...mapped, label: `ROI ${boxes.length + 1}`, active: true});
+            selectedIndex = boxes.length - 1;
+            setInstruction("在空白处拖拽新建；单击已有框后可删除。");
+            emitChange();
+          }
+        }
+        dragStart = null;
+        dragCurrent = null;
+        if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+        redraw();
+      });
+
+      canvas.addEventListener("pointercancel", event => {
+        dragStart = null;
+        dragCurrent = null;
+        if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+        redraw();
+      });
+
+      function deleteSelected() {
+        if (!args || args.read_only || selectedIndex === null) return;
+        boxes.splice(selectedIndex, 1);
+        selectedIndex = null;
+        emitChange();
+        redraw();
+      }
+
+      deleteButton.addEventListener("click", deleteSelected);
+      clearButton.addEventListener("click", () => {
+        if (!args || args.read_only || boxes.length === 0) return;
+        boxes = [];
+        selectedIndex = null;
+        emitChange();
+        redraw();
+      });
+      canvas.addEventListener("keydown", event => {
+        if (event.key === "Delete" || event.key === "Backspace") {
+          event.preventDefault();
+          deleteSelected();
+        } else if (event.key === "Escape") {
+          dragStart = null;
+          dragCurrent = null;
+          selectedIndex = null;
+          redraw();
+        }
+      });
+      zoom.addEventListener("input", applyZoom);
+      new ResizeObserver(applyZoom).observe(viewport);
+
+      window.addEventListener("message", event => {
+        if (event.source !== window.parent || !event.data ||
+            event.data.type !== "streamlit:render") return;
+        args = event.data.args;
+        canvas.width = args.display_width;
+        canvas.height = args.display_height;
+        canvas.classList.toggle("read-only", Boolean(args.read_only));
+        boxes = Array.isArray(args.boxes) ? args.boxes.map(box => ({...box})) : [];
+        selectedIndex = null;
+        dragStart = null;
+        dragCurrent = null;
+        setInstruction(args.read_only
+          ? "先加载服务端 ROI revision，再开始画框。"
+          : "在空白处拖拽新建；单击已有框后可删除。");
+        instructions.classList.toggle("readonly-note", Boolean(args.read_only));
+        imageLoaded = false;
+        image.onload = () => {
+          imageLoaded = true;
+          applyZoom();
+          redraw();
+          setHeight();
+        };
+        image.src = args.image_data_url;
+        redraw();
+      });
+
+      post("streamlit:componentReady", {apiVersion: 1});
+      setHeight();
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+{
+  "request_id": "req_fixture_query",
+  "status": "success",
+  "data": {
+    "query_type": "material_knowledge",
+    "answer": "知识库证据不足，无法基于当前已导入文档回答该问题。",
+    "data_evidence": [],
+    "citations": [],
+    "tool_calls": [],
+    "material_context": {"formula": "SrNiO3-x", "name": null, "aliases": [], "source": "request"},
+    "confidence": "low",
+    "limitations": ["知识库为空"],
+    "needs_clarification": false,
+    "outcome_code": "INSUFFICIENT_EVIDENCE"
+  },
+  "error": null
+}

@@ -1,0 +1,11 @@
+{
+  "request_id": "req_fixture_conflict",
+  "status": "error",
+  "data": null,
+  "error": {
+    "code": "BOX_REVISION_CONFLICT",
+    "message": "矩形框版本已更新，请重新读取后再保存。",
+    "details": {"image_id": "img_fixture", "expected_revision": 2, "current_revision": 3},
+    "retryable": false
+  }
+}

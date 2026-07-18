@@ -1,0 +1,26 @@
+{
+  "request_id": "req_fixture_models",
+  "status": "success",
+  "data": {
+    "models": [
+      {
+        "model_id": "unet-small-balanced-v1",
+        "family": "unet",
+        "variant": "small_particle",
+        "quality_tier": "balanced",
+        "version": "1",
+        "status": "unavailable",
+        "supports_box_prompt": false,
+        "default_threshold": 0.5,
+        "preprocess_profile": "sem-rgb-unit-v1",
+        "postprocess_profile": "semantic-mask-v1",
+        "applicable_materials": [],
+        "metrics": {},
+        "metric_context": {},
+        "notes": "Checkpoint supplied separately.",
+        "health_error": "Model checkpoint is not bundled."
+      }
+    ]
+  },
+  "error": null
+}

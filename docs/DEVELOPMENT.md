@@ -1,0 +1,158 @@
+# 开发与交接指南
+
+## 接手前必读
+
+先阅读 [v3 交接 DOCX](NanoLoop_Agent_协同开发规格与接口总文档_v3.0.docx)；检索代码路径、评审或修改内容时使用 [Markdown 源文件](NanoLoop_Agent_协同开发规格与接口总文档_v3.0.md)。该文档依据当前代码、迁移、路由和测试生成，A～F 分工分别对应模型推理、科学分析、平台后端、RAG/Agent、前端和 QA/交付。若 v2 计划与当前实现冲突，以代码、测试和 v3 的现状说明为准。
+
+## 冻结模块边界
+
+| 角色 | 领域 | 负责路径 | 公共依赖面 |
+| --- | --- | --- | --- |
+| A | 模型推理 | `app/inference`、`model_artifacts`、`configs`、`model_cards` | `InferenceGateway`、冻结模型 bundle |
+| B | 科学分析 | `app/analysis`、分析领域 contracts | repository 与 inference protocol |
+| C | 平台后端 | `app/main.py`、`app/api`、`app/core`、`app/db`、`app/storage`、`app/orchestration` | 共享 DTO、事务、文件仓储与任务状态 |
+| D | RAG / Agent | `app/rag`、`app/agent`、知识与查询领域 contracts | retrieval、provider 与只读分析数据工具 |
+| E | 前端 | `frontend` | 只依赖 `/api/v1` |
+| F | QA / 交付 | CI、`scripts`、集成测试、`demo_data`、`docs`、Docker 文件 | 黑盒 API、OpenAPI 与发布门禁 |
+
+`app/contracts` 是共享事实源。若修改其中字段，必须同步更新持久化所需的 Alembic 迁移、
+生成的 `docs/api/openapi-v1.json`、相关 `tests/fixtures/api`，以及 v2.0 规格未覆盖行为所需的
+ADR。不得只改某一层后让其他层猜测新合同。
+
+## 重建 v3 交接文档
+
+v3 Markdown 是编辑源，DOCX 是随仓库提交的生成物。安装 `docs` 依赖和 Pandoc 后，在仓库根目录运行：
+
+```bash
+make handoff-doc
+```
+
+该命令从 `docs/NanoLoop_Agent_协同开发规格与接口总文档_v3.0.md` 重建同目录的 `.docx`。两者应在同一个提交中保持同步。
+
+在 macOS 上用 headless LibreOffice 转 PDF 做中文排版检查时，应显式使用 Homebrew 的 Fontconfig；否则进程可能找不到苹方等系统中文字体：
+
+```bash
+fontconfig_root="$(brew --prefix)"
+export FONTCONFIG_FILE="$fontconfig_root/etc/fonts/fonts.conf"
+export FONTCONFIG_PATH="$fontconfig_root/etc/fonts"
+mkdir -p /tmp/nanoloop-v3-render
+soffice --headless --convert-to pdf \
+  --outdir /tmp/nanoloop-v3-render \
+  docs/NanoLoop_Agent_协同开发规格与接口总文档_v3.0.docx
+```
+
+`brew --prefix` 同时适配 Apple Silicon 和 Intel Homebrew；渲染后应人工检查中文字体、表格换页、目录和页眉页脚。
+
+## 合并与验证顺序
+
+1. 合同、迁移、repository protocol、存储、OpenAPI fixture；
+2. 推理注册表/Adapter、检索服务和纯分析服务；
+3. 路由到应用服务的集成与后台执行；
+4. API 集成测试、smoke、Docker 冷启动、许可证和固定演示数据；
+5. 前端按冻结 OpenAPI 实现，再运行 Streamlit AppTest；有浏览器执行器时补 browser E2E。
+
+先运行改动模块的窄测试，再运行完整门禁。重型模型和语料测试使用 `slow` marker；普通测试
+不得依赖私有权重、外网、API Key 或生产语料。
+
+## 科学完整性门禁
+
+- 保留原图并记录 SHA-256。
+- 正常模型 run 使用 `RunConfiguration` schema v3 冻结原图 SHA-256、比例尺、model ID/version、
+  权重/配置/模型卡/Adapter 源码组成的内容寻址 bundle、框及 revision、变换、阈值，以及 resolved
+  postprocess/morphometry/quality 配置。`execution_build` 同时记录应用版本、Python、声明依赖摘要、
+  已安装 distribution 版本摘要和后端 `app` 源码树摘要；执行前必须重新计算并匹配科学 build identity。
+  复核子运行继续使用父运行的完整 bundle，不能从当时的 registry 重新解释。schema v1/v2 仅作历史或
+  受控接缝兼容，并带明确缺失/不匹配警告。
+- 排队合同不是执行事实。每次执行另存 `ExecutionRuntimeProvenance`：实际设备、seed、Python/NumPy/Torch
+  确定性控制、全局串行边界、实际后端、executor build、bundle/Adapter 摘要与执行时间；模型输入使用
+  同一次读取并完成 SHA 校验的原图字节，Adapter 不能重新打开可变源路径。
+- 只保留一套最终 postprocessed 实例事实：canonical `pred_mask.png`、`instances.json`、
+  overlay、`particles.csv`、数据库颗粒、汇总和质量输入必须一致。Adapter `.npz`/概率只是
+  内部证据，不能替代公开 canonical 制品。
+- 过滤前 candidate/boundary 诊断与边界策略排除后的最终实例分开记录；否则
+  `edge_touch_ratio` 会静默失真。
+- 实验数据证据与材料知识证据保持分区。
+- 数据工具不得把同一图像的替代完成 run 重复计数；未显式给出 `run_ids` 时先澄清。跨图
+  粒径比较需要兼容的物理尺度，不能混用 px 与 nm。
+- 低质量结果仍可查看，但必须显示 `WARN` 或 `REVIEW_REQUIRED`。
+- 缺少物理尺度时只返回像素指标，绝不能静默生成纳米单位。
+- 材料检索执行严格过滤：请求材料无证据时不能退回其他材料。多材料任务未选图像时返回
+  候选材料澄清；每条引用保留 `doc_id`、页码/chunk、`source_type` 和 `citation_text` provenance。
+
+## 运行时不变量
+
+- 支持的本地部署是一个 API process/container + SQLite WAL。若未替换进程内导出协调、
+  建立唯一持久队列 owner，不得增加 Uvicorn worker 或 API replica。
+- `QUEUED` 行是持久事实并原子领取为 `PREPROCESSING`；内存队列只是有界执行加速器。
+- 每次 run 转换都追加 `run_status_events`；必须走 repository 状态转换，不能直接修改状态。
+  REST 与报告导出暴露事件时间线。旧库迁移只能补最后已知状态，不能重建从未记录的历史。
+- SQLite 对 job、run、query audit、活动 boxes 和完整 ROI revision ledger 权威。
+  `query_history.jsonl`、`rag_citations.json` 与 `boxes_revision_*.json` 是可重建投影。投影在
+  commit 后写失败只记录降级，不能把已提交请求伪装成事务失败。即使一个 revision 没有
+  `roi_boxes` 行，也必须保留 `roi_box_revisions` 中的空 revision。
+- multipart 在 Starlette 解析前受整体请求体上限限制，保存时另行执行逐文件上限。容器将
+  multipart spool 放在 `/app/data/tmp`，不使用只读运行时的小型 `/tmp` tmpfs。
+- multipart 操作必须使用 `BoundedMultipartRoute` 的明确 policy，在 FastAPI 参数绑定前限制文件/字段
+  数、名称、类型、基数和文本 part 大小；不得退回 Starlette 的 1000 files/1000 fields 默认值或修改
+  全局 parser 状态。
+- 图像在 `verify`/像素解码前检查声明尺寸和像素总数，人工修正 mask 在转数组前检查与原图尺寸一致。
+  知识输入同时限制 PDF 页数、提取字符、单文档 chunk、材料别名和向量语料总量；文本读取在上限 + 1
+  字符处停止，embedding 分批执行。数据工具的粒径总体统计在 SQL 完成，返回证据行有确定性上限。
+- 导出 selection digest 由排序后的成员相对路径、精确内容 SHA-256 和长度计算；ZIP metadata 固定且
+  不写墙钟时间。同一 selection 只发布一次并复用相同内容地址，已有文件只有在完整 ZIP 字节一致时才
+  可复用；内容变化生成新路径，已签发 token 永不解析为后来覆盖的字节。
+- 所有模型预测都经过 `InferenceGateway` 和 `AdapterCache.lease()`。`auto` 设备先解析为实际设备，
+  Python/NumPy/Torch RNG 与确定性开关在进程级串行边界内设置并恢复。lease 按
+  `model_id + device + provenance` 串行保护可变 Adapter，并在预测结束前阻止 unload/eviction；
+  通过验证的权重、配置、模型卡和 Adapter 源码一起发布到 `MODEL_SNAPSHOT_ROOT` 下只读、内容寻址的
+  bundle snapshot，Adapter 只从该 snapshot 加载。业务服务不得直接调用 Adapter 实例或回退到可变
+  registry/source 路径。
+- Compose 通过 `NANOLOOP_MODEL_ARTIFACTS_DIR` 将完整的 `registry.yaml`、`configs/`、
+  `model_cards/`、`weights/` 和自定义 Adapter 目录只读挂载到 `/app/model_artifacts`。这些来源文件
+  不得拆成可独立漂移的多个挂载，也不得指向可写的 snapshot/output 卷；接入或升级资产后重建
+  API 容器，由注册校验重新发布不可变 bundle。
+- API `/health` 的 database component 必须同时证明数据库可访问且 `alembic_version` 与打包迁移
+  head 完全一致；缺表、缺 revision 或 stale revision 都是 `unavailable`，不能仅以 `SELECT 1`
+  成功报告 healthy。
+- 启动恢复可以为普通陈旧运行复制完整不可变科学输入，但不能只复制 corrected-mask 运行的
+  JSON。若崩溃恢复时缺少原始人工修正掩膜制品，必须将父运行标记失败、报告 operator
+  attention 且不创建子运行。
+- 摄取失败后不立即删除内容寻址的知识源：并发事务可能已引用同一 digest。孤儿回收必须是
+  显式维护任务，并使用宽限期与数据库引用快照。
+- 知识文档状态只经应用服务和 REST `PATCH` 修改。`ready ↔ disabled` 幂等；禁用文档必须
+  同时从关键词与向量检索排除，非法状态转换保持显式冲突。
+
+## 当前实现检查点
+
+- Canonical `instances.json` 和边界过滤前诊断已实现并有分析测试；新 Adapter 必须维持这些
+  不变量。
+- 确定性数据工具白名单已覆盖分组比较、分布、异常和模型比较，并有重复 run/单位保护。
+- Streamlit 结果页先呈现质量结论/原因/建议，再呈现数值；单 run 可切换原图、mask、overlay、实例标注
+  和经范围/形状/有限值校验的概率图，也可并排比较同一图像的 2～3 个完成 run。模型目录可按族、变体、
+  quality tier、状态与材料筛选，展示指标上下文及健康原因，并对矛盾的 ready/health 状态失败关闭。
+  知识库页可启用/禁用已索引文档。ROI 页提供仓库内置的离线 canvas 和同步数值编辑器：拖拽建框、
+  选择/删除、50%～200% 缩放、
+  有效/无效区阴影、显示坐标到原图坐标转换和 revision CAS 保存均已接通。纯转换/校验由单元
+  测试覆盖；本地 headless Chrome 已走通真实拖拽、保存、重载与 REST revision round-trip。
+- 运行创建专项测试覆盖 2 图像 × 3 个 ready 模型的 6 个独立 run、全部组合、配置/provenance
+  快照和无重复调度；这证明 Cartesian 编排，不证明缺失 checkpoint 的科学性能。
+- 稳定 RAG 基线是 FTS5 + 可核验摘录。可选 SentenceTransformers/FAISS runtime 已接通
+  原子 generation、manifest/数据库映射校验、重启加载和 keyword-only 降级；没有固定的真实
+  embedding 模型与正式语料完成资产级冒烟前，仍不得标记为生产向量闭环完成。
+- 真实分割 checkpoint 与有许可的演示语料仍是外部交付物。
+- 容器资产接缝已存在：默认挂载仓库内 `./model_artifacts`，也可把
+  `NANOLOOP_MODEL_ARTIFACTS_DIR` 设为宿主机上的私有绝对路径。API 以 UID/GID `10001:10001`
+  只读访问该目录；内容寻址 snapshot 位于可写 `nanoloop-data`，运行产物位于可写
+  `nanoloop-outputs`，不要把后两者放入只读模型目录。
+
+`docker compose config --quiet` 可用于静态配置检查；本轮 Docker image build 因 Docker Hub
+基础镜像拉取超时而未完成，不能把 Dockerfile/Compose/CI 定义存在写成“镜像已构建通过”。
+
+## 延后接入接缝
+
+代码已为生产 U-Net、YOLO-Seg、SAM2 资产、向量 embedding、LLM 生成、外部学术搜索、设备
+控制和分布式队列保留接缝。本地持久调度器已经实现；只有多副本部署才需要分布式队列。
+任何接手包都必须包含依赖版本、资产路径、硬件要求、启动健康行为、配置、异常、许可和
+fixture-backed 合同测试。
+
+受支持的信任边界和公网/多实例剩余工作见 [生产就绪说明](PRODUCTION_READINESS.md)。

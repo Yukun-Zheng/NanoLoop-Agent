@@ -1,0 +1,20 @@
+{
+  "request_id": "req_fixture_boxes",
+  "status": "success",
+  "data": {
+    "image_id": "img_fixture",
+    "revision": 3,
+    "boxes": [
+      {
+        "box_id": "box_fixture",
+        "label": "关注区域 1",
+        "x1": 64,
+        "y1": 64,
+        "x2": 320,
+        "y2": 320,
+        "active": true
+      }
+    ]
+  },
+  "error": null
+}

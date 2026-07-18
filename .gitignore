@@ -1,0 +1,30 @@
+.DS_Store
+.env
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+dist/
+build/
+
+# Runtime state and generated scientific artifacts
+data/*.db
+data/*.db-*
+data/model-snapshots/
+outputs/*
+!outputs/.gitkeep
+knowledge_base/index/*
+!knowledge_base/index/.gitkeep
+knowledge_base/sources/*
+!knowledge_base/sources/.gitkeep
+model_artifacts/weights/*
+!model_artifacts/weights/.gitkeep
+
+# Frontend/runtime caches
+.streamlit/secrets.toml
+node_modules/

@@ -1,0 +1,59 @@
+{
+  "$schema": "./smoke_fixture.schema.json",
+  "schema_version": "1.0",
+  "job_name": "NanoLoop real-data smoke test",
+  "images": [
+    {
+      "path": "replace-with-real-data/sem_image_01.tif",
+      "sample_id": "real-sample-01",
+      "material_name": "replace with real material name",
+      "material_formula": "replace with real formula",
+      "experiment_conditions": {
+        "note": "replace with traceable acquisition conditions"
+      },
+      "scale": {
+        "mode": "nm_per_pixel",
+        "value": 1.0
+      }
+    }
+  ],
+  "box": {
+    "image_index": 0,
+    "label": "smoke ROI",
+    "x1": 64,
+    "y1": 64,
+    "x2": 320,
+    "y2": 320,
+    "active": true
+  },
+  "inference": {
+    "min_area_px": 8,
+    "watershed_enabled": false,
+    "exclude_border": true,
+    "device": "auto",
+    "seed": 42
+  },
+  "knowledge_document": {
+    "path": "replace-with-real-data/licensed_material_source.md",
+    "metadata": {
+      "title": "Replace with the real source title",
+      "source_type": "material_note",
+      "citation_text": "Replace with a traceable citation",
+      "material_aliases": [
+        "replace with real formula"
+      ],
+      "license_note": "Replace with the actual reuse or demo permission",
+      "allowed_for_demo": true
+    }
+  },
+  "queries": {
+    "analysis_data": "这次完成运行记录了多少颗粒？",
+    "material_knowledge": "根据已摄取来源，这种材料有哪些已知性质？",
+    "material_context": {
+      "formula": "replace with real formula",
+      "name": "replace with real material name",
+      "aliases": [],
+      "source": "request"
+    }
+  }
+}

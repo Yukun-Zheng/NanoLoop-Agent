@@ -1,0 +1,140 @@
+name: nanoloop-agent
+
+services:
+  api:
+    image: nanoloop-agent:local
+    build:
+      context: .
+      target: runtime
+      args:
+        PYTHON_VERSION: "3.12"
+        API_EXTRAS: "${NANOLOOP_API_EXTRAS:-}"
+    environment:
+      APP_ENV: production
+      DATABASE_URL: sqlite:////app/data/nanoloop.db
+      OUTPUT_ROOT: /app/outputs
+      MODEL_REGISTRY_PATH: /app/model_artifacts/registry.yaml
+      MODEL_SNAPSHOT_ROOT: /app/data/model-snapshots
+      MODEL_DEVICE: cpu
+      KNOWLEDGE_SOURCE_DIR: /app/knowledge_base/sources
+      FAISS_INDEX_PATH: /app/knowledge_base/index/faiss.index
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-BAAI/bge-small-zh-v1.5}
+      EMBEDDING_MODEL_REVISION: ${EMBEDDING_MODEL_REVISION:-}
+      KNOWLEDGE_MAX_PDF_PAGES: ${KNOWLEDGE_MAX_PDF_PAGES:-2000}
+      KNOWLEDGE_MAX_EXTRACTED_CHARS: ${KNOWLEDGE_MAX_EXTRACTED_CHARS:-10000000}
+      KNOWLEDGE_MAX_CHUNKS_PER_DOCUMENT: ${KNOWLEDGE_MAX_CHUNKS_PER_DOCUMENT:-20000}
+      KNOWLEDGE_MAX_VECTOR_INDEX_CHUNKS: ${KNOWLEDGE_MAX_VECTOR_INDEX_CHUNKS:-100000}
+      EMBEDDING_INDEX_BATCH_SIZE: ${EMBEDDING_INDEX_BATCH_SIZE:-128}
+      DATA_DISTRIBUTION_EVIDENCE_LIMIT: ${DATA_DISTRIBUTION_EVIDENCE_LIMIT:-200}
+      LLM_PROVIDER: extractive
+      LOG_DIR: /app/logs
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-200}
+      MAX_REQUEST_MB: ${MAX_REQUEST_MB:-512}
+      TMPDIR: /app/data/tmp
+      ANALYSIS_WORKER_COUNT: ${ANALYSIS_WORKER_COUNT:-2}
+      ANALYSIS_QUEUE_CAPACITY: ${ANALYSIS_QUEUE_CAPACITY:-32}
+      ANALYSIS_SCHEDULER_POLL_SECONDS: ${ANALYSIS_SCHEDULER_POLL_SECONDS:-0.5}
+      SHUTDOWN_TIMEOUT_SECONDS: ${SHUTDOWN_TIMEOUT_SECONDS:-30}
+      TRUSTED_HOSTS: ${TRUSTED_HOSTS:-localhost,127.0.0.1,testserver}
+      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-}
+      NANOLOOP_SKIP_MIGRATIONS: "0"
+    ports:
+      - "${NANOLOOP_BIND_HOST:-127.0.0.1}:${NANOLOOP_PORT:-8000}:8000"
+    volumes:
+      # Registry, configs, model cards, adapters, and checkpoints are one operator-supplied
+      # bundle. Mount it read-only so private weights never need to be baked into the image.
+      - type: bind
+        source: "${NANOLOOP_MODEL_ARTIFACTS_DIR:-./model_artifacts}"
+        target: /app/model_artifacts
+        read_only: true
+        bind:
+          create_host_path: false
+      # The read-only root filesystem does not make managed volumes read-only. Snapshots and
+      # outputs are runtime-derived state and remain explicitly writable by UID/GID 10001.
+      - nanoloop-data:/app/data:rw
+      - nanoloop-outputs:/app/outputs:rw
+      - nanoloop-logs:/app/logs:rw
+      - nanoloop-knowledge-sources:/app/knowledge_base/sources:rw
+      - nanoloop-knowledge-index:/app/knowledge_base/index:rw
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    logging:
+      driver: local
+      options:
+        max-size: 10m
+        max-file: "5"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import json,urllib.request;
+          p=json.load(urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=3));
+          assert p['status']=='success' and p['data']['service']['status']=='healthy'
+          and p['data']['database']['status']=='healthy'
+      interval: 15s
+      timeout: 5s
+      start_period: 20s
+      retries: 5
+
+  frontend:
+    image: nanoloop-agent-frontend:local
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      target: runtime
+      args:
+        PYTHON_VERSION: "3.12"
+    environment:
+      NANOLOOP_API_BASE_URL: http://api:8000
+      STREAMLIT_SERVER_HEADLESS: "true"
+      STREAMLIT_BROWSER_GATHER_USAGE_STATS: "false"
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${NANOLOOP_BIND_HOST:-127.0.0.1}:${NANOLOOP_FRONTEND_PORT:-8501}:8501"
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=128m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    stop_grace_period: 15s
+    logging:
+      driver: local
+      options:
+        max-size: 10m
+        max-file: "5"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          assert urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health',timeout=3).read().strip()==b'ok'
+      interval: 15s
+      timeout: 5s
+      start_period: 15s
+      retries: 5
+
+volumes:
+  nanoloop-data:
+  nanoloop-outputs:
+  nanoloop-logs:
+  nanoloop-knowledge-sources:
+  nanoloop-knowledge-index:

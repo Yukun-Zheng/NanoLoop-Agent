@@ -1,0 +1,12 @@
+{
+  "request_id": "req_fixture_health",
+  "status": "success",
+  "data": {
+    "service": {"status": "healthy"},
+    "database": {"status": "healthy"},
+    "model_registry": {"status": "degraded", "detail": "no ready models"},
+    "rag_index": {"status": "unavailable", "detail": "knowledge index not built"},
+    "version": "0.1.0"
+  },
+  "error": null
+}

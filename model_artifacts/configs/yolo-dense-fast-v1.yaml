@@ -1,0 +1,5 @@
+schema_version: "1"
+runtime: ultralytics
+task: segment
+default_confidence: 0.25
+mask_threshold: 0.5

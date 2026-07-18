@@ -1,0 +1,73 @@
+schema_version: "2.0"
+models:
+  - metadata:
+      model_id: unet-small-balanced-v1
+      family: unet
+      variant: small_particle
+      quality_tier: balanced
+      version: "1"
+      status: unavailable
+      supports_box_prompt: false
+      default_threshold: 0.5
+      preprocess_profile: sem-rgb-unit-v1
+      postprocess_profile: semantic-mask-v1
+      applicable_materials: []
+      metrics: {}
+      metric_context: {}
+      notes: TorchScript U-Net integration seam; checkpoint is supplied separately.
+      health_error: Model checkpoint is not bundled with this repository.
+    adapter_path: app.inference.adapters.unet:UNetAdapter
+    weight_path: weights/unet-small-balanced-v1.pt
+    weight_sha256: null
+    config_path: configs/unet-small-balanced-v1.yaml
+    model_card_path: model_cards/unet-small-balanced-v1.md
+    required_modules:
+      - torch
+
+  - metadata:
+      model_id: yolo-dense-fast-v1
+      family: yolo_seg
+      variant: dense_particle
+      quality_tier: fast
+      version: "1"
+      status: unavailable
+      supports_box_prompt: false
+      default_threshold: 0.25
+      preprocess_profile: ultralytics-native-v1
+      postprocess_profile: instance-union-mask-v1
+      applicable_materials: []
+      metrics: {}
+      metric_context: {}
+      notes: Ultralytics YOLO-Seg integration seam; checkpoint is supplied separately.
+      health_error: Model checkpoint is not bundled with this repository.
+    adapter_path: app.inference.adapters.yolo_seg:YOLOSegAdapter
+    weight_path: weights/yolo-dense-fast-v1.pt
+    weight_sha256: null
+    config_path: configs/yolo-dense-fast-v1.yaml
+    model_card_path: model_cards/yolo-dense-fast-v1.md
+    required_modules:
+      - ultralytics
+
+  - metadata:
+      model_id: sam2-general-balanced-v1
+      family: sam2
+      variant: general
+      quality_tier: balanced
+      version: "1"
+      status: unavailable
+      supports_box_prompt: true
+      default_threshold: null
+      preprocess_profile: sam2-native-v1
+      postprocess_profile: prompted-instance-union-v1
+      applicable_materials: []
+      metrics: {}
+      metric_context: {}
+      notes: SAM2 prompt/automatic-mask integration seam; checkpoint and runtime are external.
+      health_error: Model checkpoint and optional SAM2 runtime are not bundled.
+    adapter_path: app.inference.adapters.sam2:SAM2Adapter
+    weight_path: weights/sam2-general-balanced-v1.pt
+    weight_sha256: null
+    config_path: configs/sam2-general-balanced-v1.yaml
+    model_card_path: model_cards/sam2-general-balanced-v1.md
+    required_modules:
+      - sam2

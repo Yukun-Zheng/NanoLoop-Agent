@@ -1,0 +1,35 @@
+.git
+.github
+.DS_Store
+.env
+.env.*
+!.env.example
+.venv
+**/__pycache__
+**/*.py[cod]
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.coverage
+htmlcov
+dist
+build
+*.egg-info
+
+# Development-only material is not part of either runtime image.
+tests
+docs
+node_modules
+
+# Runtime state, private artifacts, and external scientific assets stay outside the image.
+data/*
+data/model-snapshots/*
+outputs/*
+logs/*
+model_artifacts/weights/*
+knowledge_base/sources/*
+knowledge_base/index/*
+*.db
+*.db-shm
+*.db-wal
+*.log
