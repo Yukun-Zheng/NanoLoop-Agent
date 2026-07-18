@@ -5,12 +5,13 @@ BACKUP_ARCHIVE ?=
 BACKUP_CHECKSUM ?=
 BACKUP_REPORT ?=
 RESTORE_ROOT ?=
+IDENTITY_ARGS ?=
 
 .DEFAULT_GOAL := help
 
 .PHONY: help install lint typecheck test frontend-check openapi migration-check check serve frontend db-upgrade \
 	handoff-doc backup-create backup-verify backup-restore backup-drill docker-build compose-config compose-up \
-	compose-down compose-logs
+	compose-down compose-logs identity-manage
 
 help:
 	@echo "NanoLoop Agent development commands"
@@ -24,6 +25,7 @@ help:
 	@echo "  make backup-verify    Verify BACKUP_ARCHIVE and optional BACKUP_CHECKSUM"
 	@echo "  make backup-restore   Restore BACKUP_ARCHIVE into fresh RESTORE_ROOT"
 	@echo "  make backup-drill     Create, verify, and restore with a limited BACKUP_REPORT"
+	@echo "  make identity-manage  Run the operator identity CLI with IDENTITY_ARGS"
 	@echo "  make docker-build     Build the CPU API image"
 	@echo "  make compose-up       Start the hardened local container stack"
 	@echo "  make compose-down     Stop the local container stack"
@@ -86,6 +88,10 @@ backup-drill:
 	@test -n "$(RESTORE_ROOT)" || { echo "RESTORE_ROOT is required" >&2; exit 2; }
 	@test -n "$(BACKUP_REPORT)" || { echo "BACKUP_REPORT is required" >&2; exit 2; }
 	$(PYTHON_BIN) scripts/backup_restore.py drill "$(BACKUP_ARCHIVE)" "$(RESTORE_ROOT)" "$(BACKUP_REPORT)" --offline-confirmed
+
+identity-manage:
+	@test -n "$(IDENTITY_ARGS)" || { echo "IDENTITY_ARGS is required" >&2; exit 2; }
+	$(PYTHON_BIN) scripts/manage_identity.py $(IDENTITY_ARGS)
 
 docker-build:
 	docker build --tag nanoloop-agent:local .

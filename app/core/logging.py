@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -22,6 +23,9 @@ _CONTEXT_KEYS = frozenset(
         "image_id",
         "run_id",
         "model_id",
+        "tenant_id",
+        "principal_id",
+        "credential_id",
     }
 )
 _EXTRA_KEYS = frozenset(
@@ -34,10 +38,14 @@ _EXTRA_KEYS = frozenset(
         "outcome",
         "path",
         "status_code",
+        "auth_mode",
+        "auth_outcome",
+        "auth_reason",
     }
 )
 _COUNT_KEYS = frozenset({"deferred_count", "error_count"})
 _HANDLER_MARKER = "_nanoloop_json_handler"
+_FILE_TOKEN_PATH_SEGMENT = re.compile(r"(?<=/files/)[^/?\s\"]+")
 
 
 def get_log_context() -> dict[str, str]:
@@ -85,7 +93,10 @@ class JsonFormatter(logging.Formatter):
             "timestamp": datetime.now(UTC).isoformat(),
             "level": record.levelname,
             "logger": record.name,
-            "message": record.getMessage(),
+            # Uvicorn access messages include the raw request target. Signed file URLs carry a
+            # bearer token in the path, so redaction must happen at the shared formatter boundary
+            # rather than only in NanoLoop's request-completion middleware.
+            "message": _redact_sensitive_log_text(record.getMessage()),
         }
         direct_context = {
             key: value
@@ -107,6 +118,10 @@ class JsonFormatter(logging.Formatter):
         if record.exc_info:
             payload["exception"] = self.formatException(record.exc_info)
         return json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str)
+
+
+def _redact_sensitive_log_text(value: str) -> str:
+    return _FILE_TOKEN_PATH_SEGMENT.sub("<redacted>", value)
 
 
 def configure_logging(level: str = "INFO", *, stream: Any = None) -> None:

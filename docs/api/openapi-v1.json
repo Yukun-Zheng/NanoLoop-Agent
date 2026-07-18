@@ -3510,7 +3510,7 @@
     },
     "securitySchemes": {
       "ApiKeyAuth": {
-        "description": "Optional shared deployment key. It is enforced when NANOLOOP_API_KEY is configured.",
+        "description": "NanoLoop API credential. The server may run in disabled, shared-key, or revocable principal mode.",
         "in": "header",
         "name": "X-API-Key",
         "type": "apiKey"

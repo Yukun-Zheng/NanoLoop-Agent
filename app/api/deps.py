@@ -10,9 +10,10 @@ from fastapi.security import APIKeyHeader
 
 from app.agent.application import QueryApplicationService
 from app.analysis.application import AnalysisApplicationService, AnalysisCreationService
+from app.authentication import AUTHENTICATION_VERIFIED_STATE_KEY, RequestAuthenticator
+from app.contracts.identity import PrincipalContext
 from app.core.errors import ApiNotImplementedError, ServiceUnavailableError
 from app.core.logging import bind_log_context, reset_log_context
-from app.core.security import ApiKeyVerifier
 from app.db.repositories import SqlAlchemyRepositorySet
 from app.db.session import Database
 from app.rag.application import KnowledgeApplicationService
@@ -23,7 +24,8 @@ api_key_header = APIKeyHeader(
     name="X-API-Key",
     scheme_name="ApiKeyAuth",
     description=(
-        "Optional shared deployment key. It is enforced when NANOLOOP_API_KEY is configured."
+        "NanoLoop API credential. The server may run in disabled, shared-key, or revocable "
+        "principal mode."
     ),
     auto_error=False,
 )
@@ -32,24 +34,27 @@ api_key_header = APIKeyHeader(
 async def require_api_key_contract(
     request: Request,
     candidate: Annotated[str | None, Security(api_key_header)],
-) -> None:
-    """Declare the OpenAPI scheme and fail closed if middleware wiring is bypassed."""
+) -> PrincipalContext:
+    """Expose the OpenAPI scheme and consume only middleware-verified identity state."""
 
-    verifier = getattr(request.app.state, "api_key_verifier", None)
-    if not isinstance(verifier, ApiKeyVerifier):
-        raise ServiceUnavailableError(details={"component": "api_key_verifier"})
-    if not verifier.enabled:
-        return
-    authenticated = bool(getattr(request.state, "api_key_authenticated", False))
-    if authenticated and verifier.matches([candidate] if candidate is not None else []):
-        return
+    del candidate  # The middleware already performed the only credential verification/query.
+    authenticator = getattr(request.app.state, "authenticator", None)
+    principal = getattr(request.state, "principal", None)
+    verified = getattr(request.state, AUTHENTICATION_VERIFIED_STATE_KEY, False) is True
+    if (
+        isinstance(authenticator, RequestAuthenticator)
+        and isinstance(principal, PrincipalContext)
+        and verified
+        and principal.auth_mode is authenticator.mode
+    ):
+        return principal
     raise HTTPException(
-        status_code=401,
+        status_code=503,
         detail={
-            "code": "AUTHENTICATION_REQUIRED",
-            "message": "需要有效的 API Key",
+            "code": "AUTHENTICATION_UNAVAILABLE",
+            "message": "认证服务暂时不可用",
         },
-        headers={"WWW-Authenticate": 'ApiKey realm="nanoloop"'},
+        headers={"Cache-Control": "no-store"},
     )
 
 

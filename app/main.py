@@ -30,11 +30,12 @@ from app.api.middleware import (
 )
 from app.api.routes import api_router
 from app.api.routes.health import health
+from app.authentication import RequestAuthenticator
 from app.contracts.common import ApiResponse, HealthData
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging
 from app.core.rate_limit import TokenBucketLimiter
-from app.core.security import ApiKeyVerifier, cors_origins, file_token_secret, trusted_hosts
+from app.core.security import cors_origins, file_token_secret, trusted_hosts
 from app.db.repositories import SqlAlchemyUnitOfWork
 from app.db.session import Database
 from app.operations.backup import StateDirectoryLock
@@ -243,8 +244,11 @@ def create_app(
     application.state.knowledge_service = None
 
     allowed_origins = cors_origins(configured)
-    api_key_verifier = ApiKeyVerifier(configured.nanoloop_api_key)
-    application.state.api_key_verifier = api_key_verifier
+    authenticator = RequestAuthenticator.from_settings(configured, active_database)
+    application.state.authenticator = authenticator
+    # Transitional read-only state for extensions that introspect whether legacy shared-key mode
+    # is active. Principal mode deliberately exposes a disabled verifier here.
+    application.state.api_key_verifier = authenticator.shared_key_verifier
     public_paths = tuple(
         path
         for path in (
@@ -262,13 +266,13 @@ def create_app(
     )
     application.add_middleware(
         ApiKeyAuthMiddleware,
-        verifier=api_key_verifier,
+        authenticator=authenticator,
         public_paths=public_paths,
     )
     if configured.api_rate_limit_requests > 0:
         application.add_middleware(
             InMemoryRateLimitMiddleware,
-            verifier=api_key_verifier,
+            authenticator=authenticator,
             limiter=TokenBucketLimiter(
                 capacity=configured.api_rate_limit_requests,
                 window_seconds=configured.api_rate_limit_window_seconds,

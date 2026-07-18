@@ -65,3 +65,32 @@
   restore；后续失败来自 runner 用户不能穿越 UID 10001 所有的 0700 恢复目录，并非备份数据失败。
   工作流已把恢复前置检查改为受控 `sudo test/stat`，恢复后的应用仍由非 root 容器自行验证全部内容；
   下一次 push 继续以 GitHub CPU 容器结果收束完整启动与旧下载 URL 闭环。
+
+## 2026-07-18 15:21 +08:00 — Principal 身份与可撤销凭据基础批次
+
+- 分支：`yukun`，未合入 `main`；本条先记录待提交批次，提交哈希以本条所在提交为准。
+- 前序容灾收束：`yukun@5257600` 的 GitHub Actions run `29635057345` 已全绿；Python
+  3.11/3.12、质量/迁移门禁和 CPU 容器均通过，容器任务真实完成离线 create/verify/fresh-root
+  restore、恢复后 API/前端启动、旧签名 URL、SQLite/迁移头、组件状态及非 root 写入检查。
+- 身份合同：新增 canonical tenant/principal/credential ID、固定 legacy compatibility principal、
+  user/service kind、tenant_admin/analyst/viewer role，以及严格版本化 principal token。token 只显示一次，
+  数据库只存独立 pepper 下的 HMAC-SHA256 摘要；对象表示、错误、HTTP 响应与访问日志均不记录原始
+  token 或 pepper，`/files/{token}` 在统一 JSON formatter 边界脱敏。
+- 数据库与运维：新增 tenant、principal、可过期/禁用/撤销 credential 和 append-only identity audit
+  migration；应用服务使用 compare-and-set 生命周期操作。SQLite migration 与 `create_all()` 测试库都用
+  trigger 阻止审计记录被直接更新/删除，ORM 层另有保护。新增安全运维 CLI，使用 exclusive/no-follow
+  的 `0600` 文件、完整写入和 file/directory fsync 交付 token；失败时只通过原文件描述符销毁字节，
+  commit 结果不确定时返回可执行的 list/revoke 补偿动作。
+- HTTP 装配：`AUTH_MODE=auto|disabled|shared_key|principal`；`auto` 保持旧行为，principal 模式要求
+  `CREDENTIAL_PEPPER` 且绝不回退 shared key。middleware 在请求体解析前完成严格 token 校验与唯一一次
+  identity JOIN，把不可伪造的 principal context 放入 request state；未知、畸形、缺失、重复、过期、
+  撤销和禁用凭据统一 401，身份数据库不可用统一安全 503。公共豁免仍只包含根健康与文档精确路径。
+- 本地证据：Ruff 全仓、严格 Mypy 114 个源文件、596 项 Pytest、六页 Streamlit AppTest、OpenAPI
+  再生成稳定、Alembic upgrade/downgrade/upgrade 与 ORM 漂移全部通过；身份/日志/数据库聚焦回归
+  另有 106 项通过。
+- 未完成边界：当前只是 authentication，不是完整 authorization。业务资源尚未绑定 tenant/owner，
+  路由角色策略、租户查询隔离、principal 级二阶段限流、调用/磁盘 quota 与 retention 仍未实现；
+  principal 请求目前在预鉴权阶段使用匿名固定桶。单进程 SQLite/限流边界也未改变，不能据此开放公网
+  或宣称多租户生产就绪。
+- 发布状态：本批尚待提交并推送；推送后必须以 `yukun` CI 复验，失败则继续在本分支修正，不合并
+  `main`。下一批优先实现有界二阶段限流与资源 tenant/owner 迁移，继续不修改前端。

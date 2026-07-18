@@ -16,6 +16,14 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from app.api.responses import error_response
+from app.authentication import (
+    AUTH_MODE_STATE_KEY,
+    AUTH_OUTCOME_STATE_KEY,
+    AUTH_REASON_STATE_KEY,
+    AUTHENTICATION_VERIFIED_STATE_KEY,
+    RequestAuthenticator,
+)
+from app.contracts.identity import PrincipalContext
 from app.core.logging import bind_log_context, log_context, reset_log_context
 from app.core.rate_limit import RateLimitBucket, TokenBucketLimiter
 from app.core.security import ApiKeyVerifier, normalize_http_origin, trusted_request_id
@@ -32,37 +40,73 @@ _TRUSTED_FETCH_SITES = frozenset({"same-origin", "same-site", "none"})
 
 
 class ApiKeyAuthMiddleware:
-    """Authenticate protected HTTP routes before request bodies are parsed."""
+    """Authenticate protected HTTP routes before request bodies are parsed.
+
+    ``verifier`` remains accepted for compatibility with integrations that constructed the old
+    shared-key middleware directly.  Application assembly always supplies the unified
+    ``authenticator``.
+    """
 
     def __init__(
         self,
         app: Callable[..., Awaitable[None]],
         *,
-        verifier: ApiKeyVerifier,
+        authenticator: RequestAuthenticator | None = None,
+        verifier: ApiKeyVerifier | None = None,
         public_paths: Sequence[str],
     ) -> None:
+        if (authenticator is None) == (verifier is None):
+            raise ValueError("provide exactly one authenticator or legacy verifier")
         self.app = app
-        self.verifier = verifier
+        if authenticator is not None:
+            self.authenticator = authenticator
+        else:
+            assert verifier is not None
+            self.authenticator = RequestAuthenticator.from_legacy_verifier(verifier)
         self.public_paths = frozenset(public_paths)
 
     async def __call__(self, scope: Message, receive: Receive, send: Send) -> None:
         if (
             scope.get("type") != "http"
-            or not self.verifier.enabled
             or scope.get("path") in self.public_paths
         ):
             await self.app(scope, receive, send)
             return
 
         values = Headers(scope=scope).getlist("x-api-key")
-        if self.verifier.matches(values):
-            scope.setdefault("state", {})["api_key_authenticated"] = True
-            await self.app(scope, receive, send)
+        decision = await self.authenticator.authenticate(values)
+        state = scope.setdefault("state", {})
+        state[AUTH_MODE_STATE_KEY] = self.authenticator.mode.value
+        state[AUTH_OUTCOME_STATE_KEY] = decision.outcome
+        state[AUTH_REASON_STATE_KEY] = decision.reason
+        if decision.authenticated:
+            principal = decision.principal
+            if principal is None:  # Defensive narrowing; AuthenticationDecision enforces this.
+                await self._send_unavailable(scope, send)
+                return
+            state["principal"] = principal
+            state[AUTHENTICATION_VERIFIED_STATE_KEY] = True
+            state["api_key_authenticated"] = True  # Transitional compatibility for extensions.
+            identity_context = _principal_log_context(principal)
+            token = bind_log_context(**identity_context)
+            try:
+                await self.app(scope, receive, send)
+            finally:
+                reset_log_context(token)
             return
 
+        if decision.outcome == "unavailable":
+            await self._send_unavailable(scope, send)
+            return
         logger.warning(
             "api_key_authentication_failed",
-            extra={"event": "authentication_failed", "status_code": 401},
+            extra={
+                "auth_mode": self.authenticator.mode.value,
+                "auth_outcome": decision.outcome,
+                "auth_reason": decision.reason,
+                "event": "authentication_failed",
+                "status_code": 401,
+            },
         )
         await _send_security_rejection(
             scope,
@@ -73,6 +117,26 @@ class ApiKeyAuthMiddleware:
             headers={"WWW-Authenticate": 'ApiKey realm="nanoloop"'},
         )
 
+    async def _send_unavailable(self, scope: Message, send: Send) -> None:
+        logger.error(
+            "authentication_backend_unavailable",
+            extra={
+                "auth_mode": self.authenticator.mode.value,
+                "auth_outcome": "unavailable",
+                "auth_reason": "backend_unavailable",
+                "event": "authentication_unavailable",
+                "status_code": 503,
+            },
+        )
+        await _send_security_rejection(
+            scope,
+            send,
+            status_code=503,
+            code="AUTHENTICATION_UNAVAILABLE",
+            message="认证服务暂时不可用",
+            retryable=True,
+        )
+
 
 class InMemoryRateLimitMiddleware:
     """Apply one bounded token bucket per fixed authentication class."""
@@ -81,12 +145,19 @@ class InMemoryRateLimitMiddleware:
         self,
         app: Callable[..., Awaitable[None]],
         *,
-        verifier: ApiKeyVerifier,
+        authenticator: RequestAuthenticator | None = None,
+        verifier: ApiKeyVerifier | None = None,
         limiter: TokenBucketLimiter,
         public_paths: Sequence[str],
     ) -> None:
+        if (authenticator is None) == (verifier is None):
+            raise ValueError("provide exactly one authenticator or legacy verifier")
         self.app = app
-        self.verifier = verifier
+        if authenticator is not None:
+            self.authenticator = authenticator
+        else:
+            assert verifier is not None
+            self.authenticator = RequestAuthenticator.from_legacy_verifier(verifier)
         self.limiter = limiter
         self.public_paths = frozenset(public_paths)
 
@@ -99,13 +170,7 @@ class InMemoryRateLimitMiddleware:
             return
 
         values = Headers(scope=scope).getlist("x-api-key")
-        bucket: RateLimitBucket
-        if not self.verifier.enabled:
-            bucket = "service"
-        elif self.verifier.matches(values):
-            bucket = "authenticated"
-        else:
-            bucket = "anonymous"
+        bucket: RateLimitBucket = self.authenticator.rate_limit_bucket(values)
         decision = self.limiter.consume(bucket)
         rate_headers = {
             "X-RateLimit-Limit": str(decision.limit),
@@ -400,10 +465,30 @@ class RequestContextMiddleware:
                 for key, value in path_params.items()
                 if key in {"job_id", "image_id", "run_id", "model_id"} and isinstance(value, str)
             }
-            with log_context(**resource_context):
+            state = scope.get("state", {})
+            principal = state.get("principal") if isinstance(state, Mapping) else None
+            identity_context = (
+                _principal_log_context(principal)
+                if isinstance(principal, PrincipalContext)
+                else {}
+            )
+            auth_fields = {
+                key: value
+                for key, state_key in (
+                    ("auth_mode", AUTH_MODE_STATE_KEY),
+                    ("auth_outcome", AUTH_OUTCOME_STATE_KEY),
+                    ("auth_reason", AUTH_REASON_STATE_KEY),
+                )
+                if isinstance(state, Mapping)
+                and isinstance(value := state.get(state_key), str)
+                and value
+            }
+            with log_context(**resource_context, **identity_context):
                 logger.info(
                     "request_completed",
                     extra={
+                        **auth_fields,
+                        **identity_context,
                         "duration_ms": duration_ms,
                         "event": "request_completed",
                         "method": scope.get("method"),
@@ -412,6 +497,18 @@ class RequestContextMiddleware:
                     },
                 )
             reset_log_context(token)
+
+
+def _principal_log_context(principal: PrincipalContext) -> dict[str, str]:
+    return {
+        key: value
+        for key, value in (
+            ("tenant_id", principal.tenant_id),
+            ("principal_id", principal.principal_id),
+            ("credential_id", principal.credential_id),
+        )
+        if isinstance(value, str) and value
+    }
 
 
 def _safe_log_path(value: object) -> object:

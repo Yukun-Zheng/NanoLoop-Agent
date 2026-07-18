@@ -5,25 +5,31 @@
 当前正式支持的拓扑是单台主机上的一个 API 容器、一个 Streamlit 容器、SQLite WAL 和本地命名卷。API 容器固定单 Uvicorn worker，内部分析线程数由 `ANALYSIS_WORKER_COUNT` 控制。不要用增加 Uvicorn worker 的方式提高模型并发。
 
 默认端口只发布到 `127.0.0.1`。API 依据 `TRUSTED_HOSTS` 拒绝异常 Host，并依据
-`CORS_ALLOW_ORIGINS`/同站 fetch metadata 保护浏览器写请求。可选
-`NANOLOOP_API_KEY` 为所有版本化 API 和签名文件下载增加共享 `X-API-Key` 门禁；
-`API_RATE_LIMIT_REQUESTS`/`API_RATE_LIMIT_WINDOW_SECONDS` 提供单进程固定三桶限流。根级
-`/health` 和文档路径保留精确豁免，`/api/v1/health` 会验证 Key。
+`CORS_ALLOW_ORIGINS`/同站 fetch metadata 保护浏览器写请求。`AUTH_MODE` 支持
+`auto|disabled|shared_key|principal`：`auto` 在设置 `NANOLOOP_API_KEY` 时保持旧共享门禁，
+否则关闭认证；`principal` 使用数据库中的可撤销凭据且绝不回退到共享 Key。
+`API_RATE_LIMIT_REQUESTS`/`API_RATE_LIMIT_WINDOW_SECONDS` 提供单进程固定桶限流。根级
+`/health` 和文档路径保留精确豁免，`/api/v1/health` 会执行所选模式的认证。
 
-生成服务 Key：
+生成共享服务 Key：
 
 ```bash
 python -c 'import secrets; print(secrets.token_urlsafe(32))'
 ```
 
-把结果同时提供给 API 和 Streamlit 容器；Compose 已从同一 `NANOLOOP_API_KEY` 变量传递。
-Key 存在时，Streamlit 会禁用会话内的后端地址编辑，并在构造客户端前再次要求规范化地址与
+principal 模式还必须设置独立且稳定的 32 字节以上 `CREDENTIAL_PEPPER`，完成迁移后使用
+`python scripts/manage_identity.py --help` 所列的 tenant/principal/credential 子命令预置身份，
+并把 `credential issue --token-output` 生成的 `0600` 文件作为唯一一次 token 交付。数据库只保存
+peppered HMAC 摘要；原始 token 不会被列出或恢复。把共享 Key 或已签发 principal token 通过同一
+`NANOLOOP_API_KEY` 变量提供给 Streamlit；principal 模式下 API 只把该值当请求携带的 token，绝不当
+共享 fallback。Streamlit 会禁用会话内的后端地址编辑，并在构造客户端前再次要求规范化地址与
 `NANOLOOP_API_BASE_URL` 完全一致；不匹配时拒绝创建客户端，不能静默把 Key 发往其他 origin/path。
 环境变量可被宿主管理员或 `docker inspect` 看到，长期部署应迁移到 secret file/
-Docker secret 与可轮换多 Key 方案。
+Docker secret；principal credential 可单独撤销和轮换。
 
-`NANOLOOP_BIND_HOST=0.0.0.0` 只应在前方已有 TLS、用户认证/授权、独立边缘限流和请求体配额
-的受信任反向代理时使用。共享 Key 不提供账号、角色、租户或调用者归属，应用仍不应裸露到公网。
+`NANOLOOP_BIND_HOST=0.0.0.0` 只应在前方已有 TLS、所需的用户登录/联邦身份、独立边缘限流和请求体
+配额的受信任反向代理时使用。principal authentication 能提供 tenant/principal/credential 调用者上下文，
+但业务资源尚无 owner 字段，角色策略和租户隔离也未实施，应用仍不应裸露到公网。
 
 ## 持久数据
 
@@ -35,7 +41,7 @@ Docker secret 与可轮换多 Key 方案。
 | `nanoloop-knowledge-index` | 可重建索引 | 中 |
 | `nanoloop-logs` | 应用与迁移日志 | 中 |
 
-备份时先停止写入并执行 `docker compose stop`，随后对上述卷做同一时间点快照。恢复时必须同时恢复 `nanoloop-data` 与 `nanoloop-outputs`，否则数据库记录、文件路径和下载签名密钥会不一致。索引可以通过 reindex API 重建，但原始知识源不能丢失。
+备份时先停止写入并执行 `docker compose stop`，随后对上述卷做同一时间点快照。恢复时必须同时恢复 `nanoloop-data` 与 `nanoloop-outputs`，否则数据库记录、身份摘要、文件路径和下载签名密钥会不一致。`CREDENTIAL_PEPPER` 不在卷和数据库内，必须由秘密管理系统独立备份并与快照配对；更换它会使现有 principal token 全部失效。索引可以通过 reindex API 重建，但原始知识源不能丢失。
 
 API 以 UID/GID `10001:10001` 运行。Compose 新建的命名卷会从镜像中的预创建目录取得可写
 属主，入口脚本也会在启动时验证 data、snapshot、output、log 和知识目录可写；若改用预先存在的
@@ -43,7 +49,7 @@ API 以 UID/GID `10001:10001` 运行。Compose 新建的命名卷会从镜像中
 
 ## 容量与上传
 
-- Compose 默认将 `API_RATE_LIMIT_REQUESTS=120`、`API_RATE_LIMIT_WINDOW_SECONDS=60`；合法 Key、匿名/错误 Key 与未启用认证的服务请求分别使用固定桶，进程重启会清空计数。
+- Compose 默认将 `API_RATE_LIMIT_REQUESTS=120`、`API_RATE_LIMIT_WINDOW_SECONDS=60`；关闭认证的服务请求和精确匹配的共享 Key 各使用固定桶，错误 Key 及所有预鉴权 principal 请求使用匿名桶，进程重启会清空计数。principal 的按主体限流尚未实现。
 - Compose 的 API Host allowlist 包含内部服务名 `api`；删除该项会使 Streamlit 到 API 的请求被 Host guard 拒绝。
 - `MAX_UPLOAD_MB` 是每个文件的流式保存上限，默认 200 MB。
 - `MAX_REQUEST_MB` 是整个 HTTP 请求在 multipart 解析前的上限，默认 512 MB，且不得小于单文件上限。

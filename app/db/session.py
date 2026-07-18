@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import Settings
 from app.core.errors import JobStateConflictError
-from app.db.models import SegmentationRun
+from app.db.models import IdentityAuditEvent, SegmentationRun
 
 IMMUTABLE_RUN_FIELDS = (
     "job_id",
@@ -45,6 +45,25 @@ def protect_immutable_run_configuration(
                 "运行配置不可修改；请创建新的 run",
                 details={"run_id": instance.run_id, "immutable_fields": changed},
             )
+
+
+@event.listens_for(Session, "before_flush")
+def protect_append_only_identity_audit(
+    session: Session,
+    _flush_context: object,
+    _instances: object,
+) -> None:
+    """Reject ORM mutation or deletion of persisted identity lifecycle facts."""
+
+    for instance in session.dirty:
+        if (
+            isinstance(instance, IdentityAuditEvent)
+            and inspect(instance).persistent
+            and session.is_modified(instance, include_collections=False)
+        ):
+            raise RuntimeError("identity audit events are append-only")
+    if any(isinstance(instance, IdentityAuditEvent) for instance in session.deleted):
+        raise RuntimeError("identity audit events are append-only")
 
 
 def create_database_engine(settings: Settings) -> Engine:

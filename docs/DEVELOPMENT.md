@@ -95,13 +95,16 @@ soffice --headless --convert-to pdf \
 - multipart 操作必须使用 `BoundedMultipartRoute` 的明确 policy，在 FastAPI 参数绑定前限制文件/字段
   数、名称、类型、基数和文本 part 大小；不得退回 Starlette 的 1000 files/1000 fields 默认值或修改
   全局 parser 状态。
-- 配置 `NANOLOOP_API_KEY` 后，所有版本化 API 与签名文件下载必须统一校验共享 `X-API-Key`；认证/限流
-  只精确豁免根级 `/health` 和 OpenAPI/文档路径。带 `Origin` 与 `Access-Control-Request-Method` 的合法
-  CORS 预检由更外层 `CORSMiddleware` 直接响应；普通 `OPTIONS` 仍须经过认证与限流。认证应在请求体
-  解析前失败关闭，错误响应、日志和缓存键不得暴露原始 Key。它只是服务级共享门禁，不得被描述为
-  用户/角色/租户授权。
-- `API_RATE_LIMIT_REQUESTS` 启用的 token bucket 只允许合法 Key、匿名/错误 Key、未启用认证的服务请求
-  三个固定桶，避免按攻击者输入创建无界状态。计数只在当前 API 进程内存在并会随重启清空；多进程、
+- `AUTH_MODE=auto|disabled|shared_key|principal` 必须保持显式失败关闭：`auto` 只兼容旧共享 Key/关闭认证
+  行为，`principal` 必须使用稳定 pepper、严格 token、单次身份查询和 middleware 已验证的
+  `PrincipalContext`，不得回退共享 Key 或在 dependency 重查数据库。认证/限流只精确豁免根级 `/health`
+  和 OpenAPI/文档路径。合法 CORS 预检由更外层 `CORSMiddleware` 直接响应；普通 `OPTIONS` 仍须经过认证
+  与限流。认证应在请求体解析前完成；错误响应与日志不得暴露 header、token、digest 或 body。当前
+  principal 上下文不等于资源 owner、角色授权、租户隔离或 quota，新增业务授权前不得如此描述。
+- `API_RATE_LIMIT_REQUESTS` 启用的 token bucket 只使用关闭认证的 service、精确匹配的 shared key 和
+  anonymous 三个固定桶，避免按攻击者输入创建无界状态。principal 请求在预鉴权阶段一律进入 anonymous，
+  不得凭可伪造的 token 形状进入 authenticated 桶；后续如增加按主体限流，应复用一次认证结果。计数只在
+  当前 API 进程内存在并会随重启清空；多进程、
   多副本或公网部署必须另接集中限流，不能把该机制当成用户 quota 或分布式 rate limit。
 - 图像在 `verify`/像素解码前检查声明尺寸和像素总数，人工修正 mask 在转数组前检查与原图尺寸一致。
   知识输入同时限制 PDF 页数、提取字符、单文档 chunk、材料别名和向量语料总量；文本读取在上限 + 1

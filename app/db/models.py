@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import (
+    DDL,
     JSON,
     Boolean,
     CheckConstraint,
@@ -12,9 +13,11 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
+    event,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -28,6 +31,7 @@ from app.contracts.enums import (
 from app.db.base import Base
 
 JsonObject = dict[str, Any]
+_HEX_32_GLOB = "[0-9a-f]" * 32
 
 
 class TimestampMixin:
@@ -351,3 +355,201 @@ class QueryLog(Base):
     )
 
     job: Mapped[AnalysisJob] = relationship(back_populates="queries")
+
+
+class Tenant(TimestampMixin, Base):
+    """Tenant lifecycle state used by principal authentication and authorization."""
+
+    __tablename__ = "tenants"
+    __table_args__ = (
+        CheckConstraint("length(tenant_id) = 36", name="tenant_id_length"),
+        CheckConstraint(
+            f"tenant_id GLOB 'tnt_{_HEX_32_GLOB}'",
+            name="tenant_id_canonical",
+        ),
+        CheckConstraint("length(slug) BETWEEN 1 AND 63", name="slug_length"),
+        CheckConstraint("slug = lower(slug)", name="slug_lowercase"),
+        CheckConstraint(
+            "slug NOT GLOB '*[^a-z0-9-]*' "
+            "AND substr(slug, 1, 1) GLOB '[a-z0-9]' "
+            "AND substr(slug, -1, 1) GLOB '[a-z0-9]'",
+            name="slug_canonical",
+        ),
+        CheckConstraint(
+            "length(trim(display_name)) BETWEEN 1 AND 255",
+            name="display_name_length",
+        ),
+        CheckConstraint("enabled IN (0, 1)", name="enabled_boolean"),
+        CheckConstraint("version >= 1", name="version_positive"),
+        Index("ix_tenants_enabled", "enabled"),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    slug: Mapped[str] = mapped_column(String(63), unique=True, nullable=False)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+
+
+class Principal(TimestampMixin, Base):
+    """Human or service identity scoped to exactly one tenant."""
+
+    __tablename__ = "principals"
+    __table_args__ = (
+        CheckConstraint("length(principal_id) = 36", name="principal_id_length"),
+        CheckConstraint(
+            f"principal_id GLOB 'prn_{_HEX_32_GLOB}'",
+            name="principal_id_canonical",
+        ),
+        CheckConstraint("length(handle) BETWEEN 1 AND 64", name="handle_length"),
+        CheckConstraint("handle = lower(handle)", name="handle_lowercase"),
+        CheckConstraint(
+            "handle NOT GLOB '*[^a-z0-9._-]*' "
+            "AND substr(handle, 1, 1) GLOB '[a-z0-9]' "
+            "AND substr(handle, -1, 1) GLOB '[a-z0-9]'",
+            name="handle_canonical",
+        ),
+        CheckConstraint(
+            "length(trim(display_name)) BETWEEN 1 AND 255",
+            name="display_name_length",
+        ),
+        CheckConstraint("kind IN ('user', 'service')", name="kind_known"),
+        CheckConstraint(
+            "role IN ('tenant_admin', 'analyst', 'viewer')",
+            name="role_known",
+        ),
+        CheckConstraint("enabled IN (0, 1)", name="enabled_boolean"),
+        CheckConstraint("version >= 1", name="version_positive"),
+        UniqueConstraint("tenant_id", "handle", name="uq_principals_tenant_handle"),
+        Index("ix_principals_tenant_enabled", "tenant_id", "enabled"),
+    )
+
+    principal_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.tenant_id", ondelete="RESTRICT"), nullable=False
+    )
+    handle: Mapped[str] = mapped_column(String(64), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    role: Mapped[str] = mapped_column(String(32), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+
+
+class ApiCredential(TimestampMixin, Base):
+    """Revocable bearer credential metadata; raw credential tokens are never stored."""
+
+    __tablename__ = "api_credentials"
+    __table_args__ = (
+        CheckConstraint("length(credential_id) = 36", name="credential_id_length"),
+        CheckConstraint(
+            f"credential_id GLOB 'crd_{_HEX_32_GLOB}'",
+            name="credential_id_canonical",
+        ),
+        CheckConstraint("length(trim(label)) BETWEEN 1 AND 120", name="label_length"),
+        CheckConstraint("length(token_digest) = 32", name="token_digest_32_bytes"),
+        CheckConstraint("enabled IN (0, 1)", name="enabled_boolean"),
+        CheckConstraint("version >= 1", name="version_positive"),
+        UniqueConstraint("token_digest", name="uq_api_credentials_token_digest"),
+        Index("ix_api_credentials_principal_enabled", "principal_id", "enabled"),
+    )
+
+    credential_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    principal_id: Mapped[str] = mapped_column(
+        ForeignKey("principals.principal_id", ondelete="RESTRICT"), nullable=False
+    )
+    label: Mapped[str] = mapped_column(String(120), nullable=False)
+    token_digest: Mapped[bytes] = mapped_column(LargeBinary(32), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+
+    def __repr__(self) -> str:
+        return (
+            f"{type(self).__name__}(credential_id={self.credential_id!r}, "
+            f"principal_id={self.principal_id!r}, token_digest=<redacted>)"
+        )
+
+
+class IdentityAuditEvent(Base):
+    """Append-only audit fact for identity lifecycle changes."""
+
+    __tablename__ = "identity_audit_events"
+    __table_args__ = (
+        CheckConstraint(
+            "event_type IN ("
+            "'tenant.created', 'tenant.enabled', 'tenant.disabled', "
+            "'principal.created', 'principal.enabled', 'principal.disabled', "
+            "'credential.issued', 'credential.enabled', 'credential.disabled', "
+            "'credential.revoked')",
+            name="event_type_known",
+        ),
+        CheckConstraint(
+            "actor_kind IN ('operator_cli', 'principal', 'migration', 'system')",
+            name="actor_kind_known",
+        ),
+        CheckConstraint(
+            "(actor_kind = 'principal' AND actor_principal_id IS NOT NULL) OR "
+            "(actor_kind <> 'principal' AND actor_principal_id IS NULL)",
+            name="actor_principal_shape",
+        ),
+        CheckConstraint(
+            "credential_id IS NULL OR principal_id IS NOT NULL",
+            name="credential_requires_principal",
+        ),
+        Index("ix_identity_audit_tenant_occurred", "tenant_id", "occurred_at"),
+        Index("ix_identity_audit_principal_occurred", "principal_id", "occurred_at"),
+        Index("ix_identity_audit_credential_occurred", "credential_id", "occurred_at"),
+    )
+
+    event_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.tenant_id", ondelete="RESTRICT"), nullable=False
+    )
+    principal_id: Mapped[str | None] = mapped_column(
+        ForeignKey("principals.principal_id", ondelete="RESTRICT")
+    )
+    credential_id: Mapped[str | None] = mapped_column(
+        ForeignKey("api_credentials.credential_id", ondelete="RESTRICT")
+    )
+    actor_principal_id: Mapped[str | None] = mapped_column(
+        ForeignKey("principals.principal_id", ondelete="RESTRICT")
+    )
+    actor_kind: Mapped[str] = mapped_column(String(24), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    metadata_json: Mapped[JsonObject] = mapped_column(JSON, default=dict, nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+
+# Alembic owns production schema changes and installs the same triggers in revision
+# f5c1d8a4b2e9. These metadata listeners cover isolated/test databases built with
+# ``Base.metadata.create_all()`` so their direct-SQL integrity guarantees do not differ.
+event.listen(
+    IdentityAuditEvent.__table__,
+    "after_create",
+    DDL(  # type: ignore[no-untyped-call]
+        """
+        CREATE TRIGGER trg_identity_audit_events_no_update
+        BEFORE UPDATE ON identity_audit_events
+        BEGIN
+            SELECT RAISE(ABORT, 'identity audit events are append-only');
+        END
+        """
+    ).execute_if(dialect="sqlite"),
+)
+event.listen(
+    IdentityAuditEvent.__table__,
+    "after_create",
+    DDL(  # type: ignore[no-untyped-call]
+        """
+        CREATE TRIGGER trg_identity_audit_events_no_delete
+        BEFORE DELETE ON identity_audit_events
+        BEGIN
+            SELECT RAISE(ABORT, 'identity audit events are append-only');
+        END
+        """
+    ).execute_if(dialect="sqlite"),
+)
