@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sqlite3
 import stat
 import zipfile
@@ -126,6 +127,48 @@ def test_create_verify_restore_roundtrip_preserves_unicode_hidden_readonly_and_t
     )
     with sqlite3.connect(destination / "data" / "nanoloop.db") as connection:
         assert connection.execute("SELECT parent_id FROM child").fetchall() == [(1,)]
+
+
+def test_backup_accepts_committed_wal_without_ephemeral_shm(
+    tmp_path: Path,
+) -> None:
+    """A stopped container can leave durable WAL pages while SQLite recreates ``-shm``."""
+
+    state = _make_state_tree(tmp_path)
+    live_database = tmp_path / "live.db"
+    writer = sqlite3.connect(live_database)
+    try:
+        assert writer.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)")
+        writer.execute(
+            "INSERT INTO alembic_version (version_num) VALUES (?)",
+            (expected_alembic_heads()[0],),
+        )
+        writer.execute("CREATE TABLE committed_payload (value TEXT NOT NULL)")
+        writer.executemany(
+            "INSERT INTO committed_payload (value) VALUES (?)",
+            [(f"row-{index}",) for index in range(100)],
+        )
+        writer.commit()
+        shutil.copy2(live_database, state.layout.database_path)
+        shutil.copy2(
+            Path(f"{live_database}-wal"),
+            Path(f"{state.layout.database_path}-wal"),
+        )
+    finally:
+        writer.close()
+
+    source_shm = Path(f"{state.layout.database_path}-shm")
+    source_shm.unlink(missing_ok=True)
+    archive = tmp_path / "wal-state.zip"
+    destination = tmp_path / "wal-restored"
+
+    create_backup(state.layout, archive, offline_confirmed=True)
+    restore_backup(archive, destination, offline_confirmed=True)
+
+    with sqlite3.connect(destination / "data" / "nanoloop.db") as connection:
+        assert connection.execute("SELECT COUNT(*) FROM committed_payload").fetchone() == (100,)
 
 
 @pytest.mark.parametrize("mutation", ["sidecar", "tamper", "truncate"])

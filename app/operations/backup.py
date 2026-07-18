@@ -1170,7 +1170,11 @@ def _assert_inventory_unchanged(inventory: Iterable[_SourceFile]) -> None:
 
 
 def _database_watch_states(path: Path) -> dict[Path, _FileState | None]:
-    watched = [path, *(Path(f"{path}{suffix}") for suffix in ("-wal", "-shm", "-journal"))]
+    # SQLite may create or remove ``-shm`` while this process opens an existing WAL in
+    # read-only mode. That file contains transient locks and index metadata, not durable
+    # database pages. Watching it would make an offline backup reject its own harmless
+    # reader activity. The database, WAL, and rollback journal remain fail-closed.
+    watched = [path, *(Path(f"{path}{suffix}") for suffix in ("-wal", "-journal"))]
     result: dict[Path, _FileState | None] = {}
     for candidate in watched:
         if os.path.lexists(candidate):
