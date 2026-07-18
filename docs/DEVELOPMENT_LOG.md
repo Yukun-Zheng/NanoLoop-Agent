@@ -125,3 +125,23 @@
 - 保留边界：现有读取、修改、运行、查询、导出与文件端点尚未按 tenant/role/owner 执行资源级策略；
   下一阶段必须实现跨租户 404、同租户权限不足 403 与仓储查询隔离。继续不修改前端，也不把本分支
   合入 `main`。
+
+## 2026-07-18 16:27 +08:00 — 有界二阶段 Principal 限流
+
+- 分支：`yukun`，未合入 `main`；本批替换 principal 模式下的匿名单桶兼容行为，disabled/shared-key
+  继续使用固定桶，不改变既有鉴权合同。
+- 两阶段策略：认证前按规范化后的直接 socket peer 限流，认证成功后按已验证的 `principal_id` 限流；
+  后认证阶段复用 middleware 已解析的主体，不增加第二次 identity 查询。认证失败或身份数据库不可用
+  不消耗 principal 桶，公共路径、CORS 和 OPTIONS 保持原有边界。
+- 内存安全：新增带锁的有界 keyed token bucket，使用严格最大桶数和 LRU 淘汰；高基数来源不能让
+  进程内映射无限增长。IPv4-mapped IPv6 归一到 IPv4，并明确忽略不可信的 `Forwarded`、
+  `X-Forwarded-For`。
+- 部署约束：Docker CMD、entrypoint fallback 与 `make serve` 均显式使用 `--no-proxy-headers`；新增
+  pre-auth capacity/window、最大桶数配置。响应中的限流头由实际拒绝/最内层有效限流器决定，不允许
+  下游伪造值泄漏到单层配置。
+- 本地证据：限流聚焦回归覆盖 LRU、万级 key churn、并发、来源隔离、principal 隔离、401/503、
+  单 identity JOIN、头部优先级与代理头忽略；整仓 645 项 Pytest、Ruff、严格 Mypy、OpenAPI、
+  Streamlit AppTest 和 Alembic 往返/漂移门禁通过，`docker compose config`、entrypoint shell 语法及
+  当前 Uvicorn `--no-proxy-headers` 能力检查通过。
+- 保留边界：桶状态只在单进程内生效，重启和多副本不共享；LRU 淘汰是有界内存下的 fail-open
+  取舍，NAT 下多个客户端会共享 pre-auth 桶。这不是计费 quota，也不能替代网关或分布式限流。

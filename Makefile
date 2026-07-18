@@ -59,7 +59,7 @@ check:
 	PYTHON_BIN=$(PYTHON_BIN) ./scripts/verify.sh
 
 serve:
-	$(PYTHON_BIN) -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+	$(PYTHON_BIN) -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload --no-proxy-headers
 
 frontend:
 	NANOLOOP_API_BASE_URL=http://127.0.0.1:8000 $(PYTHON_BIN) -m streamlit run frontend/app.py

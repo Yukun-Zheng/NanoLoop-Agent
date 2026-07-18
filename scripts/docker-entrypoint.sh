@@ -63,7 +63,7 @@ if [ "${NANOLOOP_SKIP_MIGRATIONS:-0}" != "1" ]; then
 fi
 
 if [ "$#" -eq 0 ]; then
-    set -- uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
+    set -- uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1 --no-proxy-headers
 fi
 
 exec "$@"

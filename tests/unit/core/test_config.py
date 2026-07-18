@@ -22,6 +22,9 @@ def test_api_security_defaults_are_disabled() -> None:
     assert settings.credential_pepper is None
     assert settings.api_rate_limit_requests == 0
     assert settings.api_rate_limit_window_seconds == 60.0
+    assert settings.api_principal_preauth_rate_limit_requests == 600
+    assert settings.api_principal_preauth_rate_limit_window_seconds == 60.0
+    assert settings.api_rate_limit_max_buckets == 4_096
 
 
 def test_api_key_is_secret_and_empty_string_disables_it() -> None:
@@ -101,7 +104,26 @@ def test_api_rate_limit_configuration_is_bounded_at_zero() -> None:
         Settings(api_rate_limit_window_seconds=0)
     with pytest.raises(ValidationError):
         Settings(api_rate_limit_window_seconds=3_601)
+    with pytest.raises(ValidationError):
+        Settings(api_principal_preauth_rate_limit_requests=-1)
+    with pytest.raises(ValidationError):
+        Settings(api_principal_preauth_rate_limit_requests=1_000_001)
+    with pytest.raises(ValidationError):
+        Settings(api_principal_preauth_rate_limit_window_seconds=0)
+    with pytest.raises(ValidationError):
+        Settings(api_rate_limit_max_buckets=0)
+    with pytest.raises(ValidationError):
+        Settings(api_rate_limit_max_buckets=1_000_001)
 
-    settings = Settings(api_rate_limit_requests=25, api_rate_limit_window_seconds=10.5)
+    settings = Settings(
+        api_rate_limit_requests=25,
+        api_rate_limit_window_seconds=10.5,
+        api_principal_preauth_rate_limit_requests=100,
+        api_principal_preauth_rate_limit_window_seconds=12.5,
+        api_rate_limit_max_buckets=512,
+    )
     assert settings.api_rate_limit_requests == 25
     assert settings.api_rate_limit_window_seconds == 10.5
+    assert settings.api_principal_preauth_rate_limit_requests == 100
+    assert settings.api_principal_preauth_rate_limit_window_seconds == 12.5
+    assert settings.api_rate_limit_max_buckets == 512

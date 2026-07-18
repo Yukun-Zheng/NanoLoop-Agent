@@ -8,8 +8,11 @@
 `CORS_ALLOW_ORIGINS`/同站 fetch metadata 保护浏览器写请求。`AUTH_MODE` 支持
 `auto|disabled|shared_key|principal`：`auto` 在设置 `NANOLOOP_API_KEY` 时保持旧共享门禁，
 否则关闭认证；`principal` 使用数据库中的可撤销凭据且绝不回退到共享 Key。
-`API_RATE_LIMIT_REQUESTS`/`API_RATE_LIMIT_WINDOW_SECONDS` 提供单进程固定桶限流。根级
-`/health` 和文档路径保留精确豁免，`/api/v1/health` 会执行所选模式的认证。
+`API_RATE_LIMIT_REQUESTS`/`API_RATE_LIMIT_WINDOW_SECONDS` 为兼容模式提供固定桶，并在
+principal 模式中提供认证后的按主体桶；principal 认证前另由
+`API_PRINCIPAL_PREAUTH_RATE_LIMIT_REQUESTS`/`API_PRINCIPAL_PREAUTH_RATE_LIMIT_WINDOW_SECONDS`
+按直接 socket peer 防洪。两个 keyed limiter 各自最多保留 `API_RATE_LIMIT_MAX_BUCKETS` 个 LRU
+状态。根级 `/health` 和文档路径保留精确豁免，`/api/v1/health` 会执行所选模式的认证。
 
 生成共享服务 Key：
 
@@ -28,8 +31,11 @@ peppered HMAC 摘要；原始 token 不会被列出或恢复。把共享 Key 或
 Docker secret；principal credential 可单独撤销和轮换。
 
 `NANOLOOP_BIND_HOST=0.0.0.0` 只应在前方已有 TLS、所需的用户登录/联邦身份、独立边缘限流和请求体
-配额的受信任反向代理时使用。principal authentication 能提供 tenant/principal/credential 调用者上下文，
-但业务资源尚无 owner 字段，角色策略和租户隔离也未实施，应用仍不应裸露到公网。
+配额的受信任反向代理时使用。捆绑的 Uvicorn 命令显式使用 `--no-proxy-headers`，应用不读取
+`Forwarded`/`X-Forwarded-For`；因此反向代理后的所有请求默认会共享代理 socket peer 的预鉴权桶。
+如需真实客户端级边缘限流，应由受信任 ingress 完成，并可把应用预鉴权阶段设为 `0`，不能在应用内
+直接信任客户端可伪造的转发头。principal authentication 能提供 tenant/principal/credential 调用者上下文，
+但角色策略和完整租户隔离仍未实施，应用仍不应裸露到公网。
 
 ## 持久数据
 
@@ -49,7 +55,7 @@ API 以 UID/GID `10001:10001` 运行。Compose 新建的命名卷会从镜像中
 
 ## 容量与上传
 
-- Compose 默认将 `API_RATE_LIMIT_REQUESTS=120`、`API_RATE_LIMIT_WINDOW_SECONDS=60`；关闭认证的服务请求和精确匹配的共享 Key 各使用固定桶，错误 Key 及所有预鉴权 principal 请求使用匿名桶，进程重启会清空计数。principal 的按主体限流尚未实现。
+- Compose 默认将主体限流设为 `API_RATE_LIMIT_REQUESTS=120`/60 秒，并把 principal 预鉴权来源桶设为 `API_PRINCIPAL_PREAUTH_RATE_LIMIT_REQUESTS=600`/60 秒；每层最多保留 4096 个 LRU key。disabled/shared-key 仍使用兼容固定桶。principal 请求先消费规范化的直接 peer 桶，认证成功后再消费同次查询产生的 `principal_id` 桶；失败的 401/503 不消费主体桶。进程重启会清空计数，多个 worker/replica 之间不共享额度。
 - Compose 的 API Host allowlist 包含内部服务名 `api`；删除该项会使 Streamlit 到 API 的请求被 Host guard 拒绝。
 - `MAX_UPLOAD_MB` 是每个文件的流式保存上限，默认 200 MB。
 - `MAX_REQUEST_MB` 是整个 HTTP 请求在 multipart 解析前的上限，默认 512 MB，且不得小于单文件上限。

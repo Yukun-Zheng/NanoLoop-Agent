@@ -53,6 +53,9 @@ def identity_harness(tmp_path: Path) -> Iterator[IdentityHarness]:
         model_registry_path=tmp_path / "registry.yaml",
         faiss_index_path=tmp_path / "faiss.index",
         log_level="WARNING",
+        api_rate_limit_requests=20,
+        api_principal_preauth_rate_limit_requests=20,
+        api_rate_limit_max_buckets=16,
     )
     database = Database(settings)
     Base.metadata.create_all(database.engine)
@@ -171,14 +174,40 @@ def test_principal_request_performs_one_identity_lookup_without_dependency_reche
         if "FROM api_credentials JOIN principals" in statement
     ]
     assert len(identity_reads) == 1
+    assert identity_harness.app.state.principal_rate_limiter.bucket_count == 1
 
 
 def test_only_exact_public_routes_remain_anonymous(identity_harness: IdentityHarness) -> None:
     assert identity_harness.client.get("/health").status_code == 200
     assert identity_harness.client.get("/docs").status_code == 200
     assert identity_harness.client.get("/openapi.json").status_code == 200
+    assert identity_harness.app.state.principal_preauth_rate_limiter.bucket_count == 0
     assert identity_harness.client.get("/api/v1/health").status_code == 401
     assert identity_harness.client.get("/health/extra").status_code == 401
+
+
+def test_cors_preflight_bypasses_both_stages_but_plain_options_is_protected(
+    identity_harness: IdentityHarness,
+) -> None:
+    preflight = identity_harness.client.options(
+        "/api/v1/health",
+        headers={
+            "Origin": "http://localhost:8501",
+            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": "X-API-Key",
+        },
+    )
+
+    assert preflight.status_code == 200
+    assert preflight.headers["access-control-allow-origin"] == "http://localhost:8501"
+    assert identity_harness.app.state.principal_preauth_rate_limiter.bucket_count == 0
+    assert identity_harness.app.state.principal_rate_limiter.bucket_count == 0
+
+    plain_options = identity_harness.client.options("/api/v1/health")
+
+    assert plain_options.status_code == 401
+    assert identity_harness.app.state.principal_preauth_rate_limiter.bucket_count == 1
+    assert identity_harness.app.state.principal_rate_limiter.bucket_count == 0
 
 
 @pytest.mark.parametrize(
@@ -204,6 +233,7 @@ def test_inactive_identity_states_share_one_http_failure(
         "details": {},
         "retryable": False,
     }
+    assert identity_harness.app.state.principal_rate_limiter.bucket_count == 0
 
 
 def test_unknown_malformed_missing_and_duplicate_credentials_are_indistinguishable(
@@ -231,6 +261,7 @@ def test_unknown_malformed_missing_and_duplicate_credentials_are_indistinguishab
         'ApiKey realm="nanoloop"'
     }
     assert len({str(response.json()["error"]) for response in responses}) == 1
+    assert identity_harness.app.state.principal_rate_limiter.bucket_count == 0
 
 
 def test_principal_database_or_schema_failure_is_a_safe_503(
@@ -253,6 +284,68 @@ def test_principal_database_or_schema_failure_is_a_safe_503(
         "details": {},
         "retryable": True,
     }
+    assert identity_harness.app.state.principal_rate_limiter.bucket_count == 0
+
+
+def test_untrusted_source_cannot_exhaust_other_peers_or_the_principal_bucket(
+    identity_harness: IdentityHarness,
+) -> None:
+    settings = identity_harness.app.state.settings.model_copy(
+        update={
+            "api_rate_limit_requests": 1,
+            "api_principal_preauth_rate_limit_requests": 1,
+            "api_rate_limit_max_buckets": 8,
+        }
+    )
+    app = create_app(
+        settings=settings,
+        database=identity_harness.database,
+        inference_gateway=_Gateway(),
+    )
+    attacker = TestClient(
+        app,
+        raise_server_exceptions=False,
+        client=("192.0.2.1", 1000),
+    )
+    other_peer = TestClient(
+        app,
+        raise_server_exceptions=False,
+        client=("192.0.2.2", 1000),
+    )
+    third_peer = TestClient(
+        app,
+        raise_server_exceptions=False,
+        client=("192.0.2.3", 1000),
+    )
+    token = identity_harness.issued.token.get_secret_value()
+    try:
+        rejected = attacker.get(
+            "/api/v1/health",
+            headers={"X-API-Key": "wrong", "X-Forwarded-For": "198.51.100.1"},
+        )
+        spoofed_retry = attacker.get(
+            "/api/v1/health",
+            headers={"X-API-Key": token, "X-Forwarded-For": "203.0.113.1"},
+        )
+        accepted = other_peer.get(
+            "/api/v1/health",
+            headers={"X-API-Key": token, "X-Forwarded-For": "198.51.100.1"},
+        )
+        principal_limited = third_peer.get(
+            "/api/v1/health",
+            headers={"X-API-Key": token},
+        )
+    finally:
+        attacker.close()
+        other_peer.close()
+        third_peer.close()
+
+    assert rejected.status_code == 401
+    assert spoofed_retry.status_code == 429
+    assert accepted.status_code == 200
+    assert principal_limited.status_code == 429
+    assert app.state.principal_preauth_rate_limiter.bucket_count == 3
+    assert app.state.principal_rate_limiter.bucket_count == 1
 
 
 def test_access_log_recovers_safe_principal_state_without_recording_token(

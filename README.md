@@ -68,7 +68,7 @@ docker compose logs -f api frontend
 
 API 使用单个 Uvicorn worker、SQLite WAL 和进程内有界 worker pool。数据库中的 `QUEUED` 记录是持久事实来源，队列溢出会由调度器继续领取。当前支持单 API 容器；多副本部署需要把数据库、导出锁和调度所有权迁移到共享基础设施。
 
-认证由 `AUTH_MODE=auto|disabled|shared_key|principal` 选择。默认 `auto` 完全兼容旧部署：存在 `NANOLOOP_API_KEY` 时使用共享门禁，否则关闭认证；`principal` 模式要求稳定的 32 字节以上 `CREDENTIAL_PEPPER`，并通过 `scripts/manage_identity.py` 预置 tenant、principal 和只显示一次的凭据。principal 凭据以摘要入库，可过期、禁用或撤销，请求会得到 tenant/principal/credential 上下文；但任务、文件、知识和模型资源尚未绑定 owner，角色也尚未形成路由授权策略，因此这还不是完整多租户隔离或用户 quota。Streamlit 与 smoke 客户端仍通过 `X-API-Key` 发送共享 Key 或 principal token，并将目标锁定到规范化后的 `NANOLOOP_API_BASE_URL`。凭据只应在 TLS 后使用；当前 token bucket 仍是单进程保护，`API_RATE_LIMIT_REQUESTS=0` 可关闭。
+认证由 `AUTH_MODE=auto|disabled|shared_key|principal` 选择。默认 `auto` 完全兼容旧部署：存在 `NANOLOOP_API_KEY` 时使用共享门禁，否则关闭认证；`principal` 模式要求稳定的 32 字节以上 `CREDENTIAL_PEPPER`，并通过 `scripts/manage_identity.py` 预置 tenant、principal 和只显示一次的凭据。principal 凭据以摘要入库，可过期、禁用或撤销，请求会得到 tenant/principal/credential 上下文；但任务、文件、知识和模型资源尚未形成完整的路由授权策略，因此这还不是完整多租户隔离或用户 quota。Streamlit 与 smoke 客户端仍通过 `X-API-Key` 发送共享 Key 或 principal token，并将目标锁定到规范化后的 `NANOLOOP_API_BASE_URL`。凭据只应在 TLS 后使用。principal 限流分两阶段：认证前按直接 socket peer 使用严格有界 LRU 桶，认证成功后复用同一次查询得到的 `principal_id` 使用主体桶；捆绑的 Uvicorn 启动命令禁用 proxy-header 改写。两阶段都只在当前进程生效，不是分布式限流或 quota。
 
 SQLite 同时是 tenant/principal/凭据元数据、任务、运行、查询和 ROI revision 的事实源；原始 principal token 与 pepper 不入库。`query_history.jsonl`、`rag_citations.json` 与 `boxes_revision_*.json` 是可由数据库重建的审计投影；投影写失败会留下结构化降级日志，但不会把已经提交的业务事务伪装成失败。ROI revision ledger 会保留空 revision。
 

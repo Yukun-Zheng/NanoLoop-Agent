@@ -32,9 +32,10 @@ from app.api.routes import api_router
 from app.api.routes.health import health
 from app.authentication import RequestAuthenticator
 from app.contracts.common import ApiResponse, HealthData
+from app.contracts.identity import AuthMode
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging
-from app.core.rate_limit import TokenBucketLimiter
+from app.core.rate_limit import BoundedKeyedTokenBucketLimiter, TokenBucketLimiter
 from app.core.security import cors_origins, file_token_secret, trusted_hosts
 from app.db.repositories import SqlAlchemyUnitOfWork
 from app.db.session import Database
@@ -249,6 +250,34 @@ def create_app(
     # Transitional read-only state for extensions that introspect whether legacy shared-key mode
     # is active. Principal mode deliberately exposes a disabled verifier here.
     application.state.api_key_verifier = authenticator.shared_key_verifier
+    principal_limiter = (
+        BoundedKeyedTokenBucketLimiter(
+            capacity=configured.api_rate_limit_requests,
+            window_seconds=configured.api_rate_limit_window_seconds,
+            max_buckets=configured.api_rate_limit_max_buckets,
+        )
+        if (
+            authenticator.mode is AuthMode.PRINCIPAL
+            and configured.api_rate_limit_requests > 0
+        )
+        else None
+    )
+    principal_preauth_limiter = (
+        BoundedKeyedTokenBucketLimiter(
+            capacity=configured.api_principal_preauth_rate_limit_requests,
+            window_seconds=(
+                configured.api_principal_preauth_rate_limit_window_seconds
+            ),
+            max_buckets=configured.api_rate_limit_max_buckets,
+        )
+        if (
+            authenticator.mode is AuthMode.PRINCIPAL
+            and configured.api_principal_preauth_rate_limit_requests > 0
+        )
+        else None
+    )
+    application.state.principal_rate_limiter = principal_limiter
+    application.state.principal_preauth_rate_limiter = principal_preauth_limiter
     public_paths = tuple(
         path
         for path in (
@@ -267,9 +296,21 @@ def create_app(
     application.add_middleware(
         ApiKeyAuthMiddleware,
         authenticator=authenticator,
+        principal_limiter=principal_limiter,
         public_paths=public_paths,
     )
-    if configured.api_rate_limit_requests > 0:
+    if principal_preauth_limiter is not None:
+        application.add_middleware(
+            InMemoryRateLimitMiddleware,
+            authenticator=authenticator,
+            principal_preauth_limiter=principal_preauth_limiter,
+            prefer_downstream_rate_limit_headers=principal_limiter is not None,
+            public_paths=public_paths,
+        )
+    elif (
+        authenticator.mode is not AuthMode.PRINCIPAL
+        and configured.api_rate_limit_requests > 0
+    ):
         application.add_middleware(
             InMemoryRateLimitMiddleware,
             authenticator=authenticator,

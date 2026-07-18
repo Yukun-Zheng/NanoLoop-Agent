@@ -101,11 +101,14 @@ soffice --headless --convert-to pdf \
   和 OpenAPI/文档路径。合法 CORS 预检由更外层 `CORSMiddleware` 直接响应；普通 `OPTIONS` 仍须经过认证
   与限流。认证应在请求体解析前完成；错误响应与日志不得暴露 header、token、digest 或 body。当前
   principal 上下文不等于资源 owner、角色授权、租户隔离或 quota，新增业务授权前不得如此描述。
-- `API_RATE_LIMIT_REQUESTS` 启用的 token bucket 只使用关闭认证的 service、精确匹配的 shared key 和
-  anonymous 三个固定桶，避免按攻击者输入创建无界状态。principal 请求在预鉴权阶段一律进入 anonymous，
-  不得凭可伪造的 token 形状进入 authenticated 桶；后续如增加按主体限流，应复用一次认证结果。计数只在
-  当前 API 进程内存在并会随重启清空；多进程、
-  多副本或公网部署必须另接集中限流，不能把该机制当成用户 quota 或分布式 rate limit。
+- disabled/shared-key 继续使用 service/authenticated/anonymous 三个固定桶。principal 使用两阶段
+  严格有界 LRU：认证前只按规范化的直接 `scope.client` peer 分桶，认证成功后直接复用 middleware 已验证
+  `PrincipalContext.principal_id` 分桶，禁止第二次身份查询。应用和捆绑的 Uvicorn 启动命令都不得信任或
+  自动应用 `Forwarded`/`X-Forwarded-For`；IPv4-mapped IPv6 必须归一为同一 IPv4 key。LRU 达到上限时
+  淘汰最旧项并偏向 fail-open，不能创建可被单个攻击者耗尽的共享 overflow 桶。只有确实装配了内层主体桶
+  时，外层预鉴权层才允许保留下游 `X-RateLimit-*`；所有单层模式必须权威覆盖下游伪造值。计数只在当前
+  API 进程内存在并会随重启清空；NAT/反向代理会共享直接 peer 桶，多进程、多副本或公网部署必须另接
+  集中限流，不能把该机制当成用户 quota 或分布式 rate limit。详见 ADR 0007。
 - 图像在 `verify`/像素解码前检查声明尺寸和像素总数，人工修正 mask 在转数组前检查与原图尺寸一致。
   知识输入同时限制 PDF 页数、提取字符、单文档 chunk、材料别名和向量语料总量；文本读取在上限 + 1
   字符处停止，embedding 分批执行。数据工具的粒径总体统计在 SQL 完成，返回证据行有确定性上限。

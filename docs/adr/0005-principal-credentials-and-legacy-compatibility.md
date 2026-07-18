@@ -2,6 +2,8 @@
 
 - Status: Accepted
 - Date: 2026-07-18
+- Superseded in part: the rate-limit decision is replaced by
+  [ADR 0007](0007-bounded-two-stage-principal-rate-limiting.md).
 
 ## Context
 
@@ -75,10 +77,10 @@ only after middleware and resource checks are ready. Emergency rollback is an op
 the deployment boundary; it reopens the limitations of ADR 0004 and must not silently relabel
 legacy activity as individually authenticated activity.
 
-Principal-mode requests remain in the anonymous pre-authentication rate-limit bucket. Token syntax
-is forgeable and must not be used to consume the capacity reserved for verified callers. A future
-two-stage limiter may add bounded per-principal buckets after the single credential query succeeds;
-it must not perform a second authentication lookup.
+The original slice kept principal-mode requests in one anonymous pre-authentication bucket because
+token syntax is forgeable. That temporary rate-limit decision is superseded by ADR 0007: principal
+mode now uses a bounded direct-peer bucket before authentication and a bounded per-principal bucket
+after the same credential query succeeds. The no-second-query rule remains in force.
 
 ## Consequences
 

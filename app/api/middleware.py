@@ -6,6 +6,7 @@ import logging
 import re
 import time
 from collections.abc import Awaitable, Callable, Mapping, MutableMapping, Sequence
+from ipaddress import IPv6Address, ip_address
 from typing import Any
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -23,9 +24,14 @@ from app.authentication import (
     AUTHENTICATION_VERIFIED_STATE_KEY,
     RequestAuthenticator,
 )
-from app.contracts.identity import PrincipalContext
+from app.contracts.identity import AuthMode, PrincipalContext
 from app.core.logging import bind_log_context, log_context, reset_log_context
-from app.core.rate_limit import RateLimitBucket, TokenBucketLimiter
+from app.core.rate_limit import (
+    BoundedKeyedTokenBucketLimiter,
+    RateLimitBucket,
+    RateLimitDecision,
+    TokenBucketLimiter,
+)
 from app.core.security import ApiKeyVerifier, normalize_http_origin, trusted_request_id
 
 logger = logging.getLogger(__name__)
@@ -53,6 +59,7 @@ class ApiKeyAuthMiddleware:
         *,
         authenticator: RequestAuthenticator | None = None,
         verifier: ApiKeyVerifier | None = None,
+        principal_limiter: BoundedKeyedTokenBucketLimiter | None = None,
         public_paths: Sequence[str],
     ) -> None:
         if (authenticator is None) == (verifier is None):
@@ -63,6 +70,9 @@ class ApiKeyAuthMiddleware:
         else:
             assert verifier is not None
             self.authenticator = RequestAuthenticator.from_legacy_verifier(verifier)
+        if principal_limiter is not None and self.authenticator.mode is not AuthMode.PRINCIPAL:
+            raise ValueError("principal_limiter requires principal authentication mode")
+        self.principal_limiter = principal_limiter
         self.public_paths = frozenset(public_paths)
 
     async def __call__(self, scope: Message, receive: Receive, send: Send) -> None:
@@ -87,10 +97,38 @@ class ApiKeyAuthMiddleware:
             state["principal"] = principal
             state[AUTHENTICATION_VERIFIED_STATE_KEY] = True
             state["api_key_authenticated"] = True  # Transitional compatibility for extensions.
+            principal_decision: RateLimitDecision | None = None
+            if self.principal_limiter is not None:
+                principal_id = principal.principal_id
+                if not isinstance(principal_id, str) or not principal_id:
+                    await self._send_unavailable(scope, send)
+                    return
+                principal_decision = self.principal_limiter.consume(
+                    f"principal:{principal_id}"
+                )
+                if not principal_decision.allowed:
+                    await _send_rate_limit_rejection(
+                        scope,
+                        send,
+                        decision=principal_decision,
+                        window_seconds=self.principal_limiter.window_seconds,
+                    )
+                    return
             identity_context = _principal_log_context(principal)
             token = bind_log_context(**identity_context)
             try:
-                await self.app(scope, receive, send)
+                if principal_decision is None:
+                    await self.app(scope, receive, send)
+                else:
+                    await self.app(
+                        scope,
+                        receive,
+                        _send_with_rate_limit_headers(
+                            send,
+                            principal_decision,
+                            authoritative=True,
+                        ),
+                    )
             finally:
                 reset_log_context(token)
             return
@@ -147,7 +185,9 @@ class InMemoryRateLimitMiddleware:
         *,
         authenticator: RequestAuthenticator | None = None,
         verifier: ApiKeyVerifier | None = None,
-        limiter: TokenBucketLimiter,
+        limiter: TokenBucketLimiter | None = None,
+        principal_preauth_limiter: BoundedKeyedTokenBucketLimiter | None = None,
+        prefer_downstream_rate_limit_headers: bool = False,
         public_paths: Sequence[str],
     ) -> None:
         if (authenticator is None) == (verifier is None):
@@ -158,7 +198,23 @@ class InMemoryRateLimitMiddleware:
         else:
             assert verifier is not None
             self.authenticator = RequestAuthenticator.from_legacy_verifier(verifier)
+        if self.authenticator.mode is AuthMode.PRINCIPAL:
+            if limiter is not None or principal_preauth_limiter is None:
+                raise ValueError(
+                    "principal mode requires exactly one principal_preauth_limiter"
+                )
+        elif limiter is None or principal_preauth_limiter is not None:
+            raise ValueError("compatibility modes require exactly one fixed limiter")
+        if (
+            prefer_downstream_rate_limit_headers
+            and self.authenticator.mode is not AuthMode.PRINCIPAL
+        ):
+            raise ValueError(
+                "downstream rate-limit headers are only valid for principal two-stage limiting"
+            )
         self.limiter = limiter
+        self.principal_preauth_limiter = principal_preauth_limiter
+        self.prefer_downstream_rate_limit_headers = prefer_downstream_rate_limit_headers
         self.public_paths = frozenset(public_paths)
 
     async def __call__(self, scope: Message, receive: Receive, send: Send) -> None:
@@ -170,41 +226,103 @@ class InMemoryRateLimitMiddleware:
             return
 
         values = Headers(scope=scope).getlist("x-api-key")
-        bucket: RateLimitBucket = self.authenticator.rate_limit_bucket(values)
-        decision = self.limiter.consume(bucket)
-        rate_headers = {
-            "X-RateLimit-Limit": str(decision.limit),
-            "X-RateLimit-Remaining": str(decision.remaining),
-        }
+        if self.authenticator.mode is AuthMode.PRINCIPAL:
+            principal_limiter = self.principal_preauth_limiter
+            if principal_limiter is None:  # Construction invariant.
+                raise RuntimeError("principal pre-authentication limiter is unavailable")
+            decision = principal_limiter.consume(_direct_peer_rate_limit_key(scope))
+            window_seconds = principal_limiter.window_seconds
+        else:
+            limiter = self.limiter
+            if limiter is None:  # Construction invariant.
+                raise RuntimeError("fixed rate limiter is unavailable")
+            bucket: RateLimitBucket = self.authenticator.rate_limit_bucket(values)
+            decision = limiter.consume(bucket)
+            window_seconds = limiter.window_seconds
         if not decision.allowed:
-            retry_after = str(decision.retry_after_seconds)
-            logger.warning(
-                "api_rate_limit_exceeded",
-                extra={"event": "rate_limit_exceeded", "status_code": 429},
-            )
-            await _send_security_rejection(
+            await _send_rate_limit_rejection(
                 scope,
                 send,
-                status_code=429,
-                code="RATE_LIMITED",
-                message="请求过于频繁，请稍后重试",
-                details={
-                    "limit": decision.limit,
-                    "window_seconds": self.limiter.window_seconds,
-                },
-                retryable=True,
-                headers={**rate_headers, "Retry-After": retry_after},
+                decision=decision,
+                window_seconds=window_seconds,
             )
             return
+        await self.app(
+            scope,
+            receive,
+            _send_with_rate_limit_headers(
+                send,
+                decision,
+                authoritative=not self.prefer_downstream_rate_limit_headers,
+            ),
+        )
 
-        async def send_with_rate_limit(message: Message) -> None:
-            if message.get("type") == "http.response.start":
-                response_headers = MutableHeaders(scope=message)
-                for name, value in rate_headers.items():
+
+def _direct_peer_rate_limit_key(scope: Mapping[str, Any]) -> str:
+    """Return a bounded key from the socket peer, never from proxy-supplied headers."""
+
+    client = scope.get("client")
+    host = client[0] if isinstance(client, (list, tuple)) and client else None
+    if not isinstance(host, str):
+        return "peer:unknown"
+    try:
+        address = ip_address(host)
+    except ValueError:
+        return "peer:unknown"
+    if isinstance(address, IPv6Address) and address.ipv4_mapped is not None:
+        address = address.ipv4_mapped
+    normalized = address.compressed
+    return f"peer:{normalized}"
+
+
+def _rate_limit_headers(decision: RateLimitDecision) -> dict[str, str]:
+    return {
+        "X-RateLimit-Limit": str(decision.limit),
+        "X-RateLimit-Remaining": str(decision.remaining),
+    }
+
+
+def _send_with_rate_limit_headers(
+    send: Send,
+    decision: RateLimitDecision,
+    *,
+    authoritative: bool = False,
+) -> Send:
+    async def send_with_rate_limit(message: Message) -> None:
+        if message.get("type") == "http.response.start":
+            response_headers = MutableHeaders(scope=message)
+            for name, value in _rate_limit_headers(decision).items():
+                if authoritative:
                     response_headers[name] = value
-            await send(message)
+                else:
+                    response_headers.setdefault(name, value)
+        await send(message)
 
-        await self.app(scope, receive, send_with_rate_limit)
+    return send_with_rate_limit
+
+
+async def _send_rate_limit_rejection(
+    scope: Message,
+    send: Send,
+    *,
+    decision: RateLimitDecision,
+    window_seconds: float,
+) -> None:
+    retry_after = str(decision.retry_after_seconds)
+    logger.warning(
+        "api_rate_limit_exceeded",
+        extra={"event": "rate_limit_exceeded", "status_code": 429},
+    )
+    await _send_security_rejection(
+        scope,
+        send,
+        status_code=429,
+        code="RATE_LIMITED",
+        message="请求过于频繁，请稍后重试",
+        details={"limit": decision.limit, "window_seconds": window_seconds},
+        retryable=True,
+        headers={**_rate_limit_headers(decision), "Retry-After": retry_after},
+    )
 
 
 class _RequestBodyTooLarge(Exception):

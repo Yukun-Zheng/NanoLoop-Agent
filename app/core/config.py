@@ -72,6 +72,17 @@ class Settings(BaseSettings):
     credential_pepper: SecretStr | None = None
     api_rate_limit_requests: int = Field(default=0, ge=0, le=1_000_000)
     api_rate_limit_window_seconds: float = Field(default=60.0, gt=0, le=3_600)
+    api_principal_preauth_rate_limit_requests: int = Field(
+        default=600,
+        ge=0,
+        le=1_000_000,
+    )
+    api_principal_preauth_rate_limit_window_seconds: float = Field(
+        default=60.0,
+        gt=0,
+        le=3_600,
+    )
+    api_rate_limit_max_buckets: int = Field(default=4_096, ge=1, le=1_000_000)
 
     @field_validator(
         "embedding_model_revision",
