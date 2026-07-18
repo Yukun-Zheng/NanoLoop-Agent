@@ -36,6 +36,7 @@ _EXTRA_KEYS = frozenset(
         "status_code",
     }
 )
+_COUNT_KEYS = frozenset({"deferred_count", "error_count"})
 _HANDLER_MARKER = "_nanoloop_json_handler"
 
 
@@ -86,10 +87,22 @@ class JsonFormatter(logging.Formatter):
             "logger": record.name,
             "message": record.getMessage(),
         }
-        payload.update(get_log_context())
+        direct_context = {
+            key: value
+            for key in _CONTEXT_KEYS
+            if isinstance(value := getattr(record, key, None), str) and value
+        }
+        # Bound request/route context is authoritative when lower layers also
+        # provide an identifier through ``extra``.
+        direct_context.update(get_log_context())
+        payload.update(direct_context)
         for key in _EXTRA_KEYS:
             value = getattr(record, key, None)
             if value is not None:
+                payload[key] = value
+        for key in _COUNT_KEYS:
+            value = getattr(record, key, None)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
                 payload[key] = value
         if record.exc_info:
             payload["exception"] = self.formatException(record.exc_info)

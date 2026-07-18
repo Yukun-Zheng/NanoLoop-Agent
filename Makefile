@@ -3,12 +3,13 @@ VENV_DIR ?= .venv
 PYTHON_BIN ?= $(VENV_DIR)/bin/python
 BACKUP_ARCHIVE ?=
 BACKUP_CHECKSUM ?=
+BACKUP_REPORT ?=
 RESTORE_ROOT ?=
 
 .DEFAULT_GOAL := help
 
 .PHONY: help install lint typecheck test frontend-check openapi migration-check check serve frontend db-upgrade \
-	handoff-doc backup-create backup-verify backup-restore docker-build compose-config compose-up \
+	handoff-doc backup-create backup-verify backup-restore backup-drill docker-build compose-config compose-up \
 	compose-down compose-logs
 
 help:
@@ -22,6 +23,7 @@ help:
 	@echo "  make backup-create    Create BACKUP_ARCHIVE (offline writers only)"
 	@echo "  make backup-verify    Verify BACKUP_ARCHIVE and optional BACKUP_CHECKSUM"
 	@echo "  make backup-restore   Restore BACKUP_ARCHIVE into fresh RESTORE_ROOT"
+	@echo "  make backup-drill     Create, verify, and restore with a limited BACKUP_REPORT"
 	@echo "  make docker-build     Build the CPU API image"
 	@echo "  make compose-up       Start the hardened local container stack"
 	@echo "  make compose-down     Stop the local container stack"
@@ -78,6 +80,12 @@ backup-restore:
 	@test -n "$(BACKUP_ARCHIVE)" || { echo "BACKUP_ARCHIVE is required" >&2; exit 2; }
 	@test -n "$(RESTORE_ROOT)" || { echo "RESTORE_ROOT is required" >&2; exit 2; }
 	$(PYTHON_BIN) scripts/backup_restore.py restore "$(BACKUP_ARCHIVE)" "$(RESTORE_ROOT)" --offline-confirmed $(if $(BACKUP_CHECKSUM),--checksum-path "$(BACKUP_CHECKSUM)")
+
+backup-drill:
+	@test -n "$(BACKUP_ARCHIVE)" || { echo "BACKUP_ARCHIVE is required" >&2; exit 2; }
+	@test -n "$(RESTORE_ROOT)" || { echo "RESTORE_ROOT is required" >&2; exit 2; }
+	@test -n "$(BACKUP_REPORT)" || { echo "BACKUP_REPORT is required" >&2; exit 2; }
+	$(PYTHON_BIN) scripts/backup_restore.py drill "$(BACKUP_ARCHIVE)" "$(RESTORE_ROOT)" "$(BACKUP_REPORT)" --offline-confirmed
 
 docker-build:
 	docker build --tag nanoloop-agent:local .

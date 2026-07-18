@@ -10,7 +10,7 @@ import re
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import TextIO
+from typing import TextIO, cast
 
 from sqlalchemy.engine import make_url
 
@@ -24,6 +24,10 @@ from app.operations.backup import (  # noqa: E402
     create_backup,
     restore_backup,
     verify_backup,
+)
+from app.operations.drill import (  # noqa: E402
+    OfflineFilesystemRestoreDrillResult,
+    run_offline_filesystem_restore_drill,
 )
 
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
@@ -68,9 +72,9 @@ def _zip_path(value: str | Path) -> Path:
 def _value(result: object, names: Sequence[str]) -> object | None:
     for name in names:
         if isinstance(result, Mapping) and name in result:
-            return result[name]
+            return cast(object, result[name])
         if hasattr(result, name):
-            return getattr(result, name)
+            return cast(object, getattr(result, name))
     return None
 
 
@@ -102,10 +106,13 @@ def _safe_result_metrics(result: object) -> dict[str, object]:
     files = getattr(manifest, "files", None)
     if isinstance(files, (list, tuple)):
         metrics.setdefault("file_count", len(files))
-        sizes = [getattr(record, "size", None) for record in files]
-        if all(
-            isinstance(size, int) and not isinstance(size, bool) and size >= 0 for size in sizes
-        ):
+        sizes: list[int] = []
+        for record in files:
+            size = cast(object, getattr(record, "size", None))
+            if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+                break
+            sizes.append(size)
+        if len(sizes) == len(files):
             metrics.setdefault("total_bytes", sum(sizes))
     return metrics
 
@@ -171,14 +178,16 @@ def _layout_from_args(args: argparse.Namespace) -> BackupLayout:
     )
 
 
-def _add_create_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("archive", help="destination .zip archive")
+def _add_offline_confirmation(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--offline-confirmed",
         action="store_true",
         required=True,
         help="confirm the API and all writers are stopped",
     )
+
+
+def _add_layout_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--database-path", help="override the SQLite file path")
     parser.add_argument("--data-root", help="override the managed data root")
     parser.add_argument("--output-root", help="override the output artifact root")
@@ -191,9 +200,15 @@ def _add_create_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_create_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("archive", help="destination .zip archive")
+    _add_offline_confirmation(parser)
+    _add_layout_arguments(parser)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Create, verify, or restore an offline NanoLoop state backup."
+        description="Create, verify, restore, or drill an offline NanoLoop state backup."
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -208,12 +223,17 @@ def build_parser() -> argparse.ArgumentParser:
     restore_parser.add_argument("archive", help="source .zip archive")
     restore_parser.add_argument("destination_root", help="fresh restore destination")
     restore_parser.add_argument("--checksum-path", help="explicit SHA-256 sidecar path")
-    restore_parser.add_argument(
-        "--offline-confirmed",
-        action="store_true",
-        required=True,
-        help="confirm the API and all writers are stopped",
+    _add_offline_confirmation(restore_parser)
+
+    drill_parser = subparsers.add_parser(
+        "drill",
+        help="create, verify, and restore into a fresh root with a limited report",
     )
+    drill_parser.add_argument("archive", help="destination .zip archive")
+    drill_parser.add_argument("destination_root", help="fresh restore destination")
+    drill_parser.add_argument("report", help="destination JSON drill report")
+    _add_offline_confirmation(drill_parser)
+    _add_layout_arguments(drill_parser)
     return parser
 
 
@@ -275,6 +295,27 @@ def _run_restore(args: argparse.Namespace) -> dict[str, object]:
     return payload
 
 
+def _run_drill(args: argparse.Namespace) -> dict[str, object]:
+    result = run_offline_filesystem_restore_drill(
+        _layout_from_args(args),
+        _zip_path(args.archive),
+        _path(args.destination_root),
+        _path(args.report),
+        offline_confirmed=True,
+    )
+    return _safe_drill_payload(result)
+
+
+def _safe_drill_payload(
+    result: OfflineFilesystemRestoreDrillResult,
+) -> dict[str, object]:
+    """Expose the strict report only; never emit any drill filesystem path."""
+
+    payload: dict[str, object] = {"command": "drill"}
+    payload.update(result.report.model_dump(mode="json"))
+    return payload
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
@@ -282,8 +323,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             payload = _run_create(args)
         elif args.command == "verify":
             payload = _run_verify(args)
-        else:
+        elif args.command == "restore":
             payload = _run_restore(args)
+        else:
+            payload = _run_drill(args)
     except CliUsageError as error:
         _emit(
             {"error": {"message": str(error), "type": type(error).__name__}, "status": "error"},
