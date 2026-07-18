@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 import scripts.backup_restore as cli
-from app.operations.backup import BackupComponent
+from app.operations.backup import BackupComponent, BackupSourceChangedError
 from app.operations.drill import (
     DrillCounts,
     DrillDurations,
@@ -472,5 +472,45 @@ def test_core_failure_has_stable_exit_code_and_redacted_message(
     payload = json.loads(captured.err)
     assert payload == {
         "error": {"message": "backup operation failed", "type": "RuntimeError"},
+        "status": "error",
+    }
+
+
+@pytest.mark.parametrize(
+    ("message", "reason"),
+    [
+        ("database changed during SQLite backup", "database_snapshot_changed"),
+        ("database or SQLite sidecar changed during backup", "database_files_changed"),
+        (
+            "backup source membership changed while the archive was assembled",
+            "source_membership_changed",
+        ),
+        ("backup source changed: /private/managed/source", "source_file_changed"),
+    ],
+)
+def test_source_change_failure_emits_only_a_safe_reason_code(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    message: str,
+    reason: str,
+) -> None:
+    monkeypatch.setattr(
+        cli,
+        "verify_backup",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(BackupSourceChangedError(message)),
+    )
+
+    assert cli.main(["verify", str(tmp_path / "state.zip")]) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "/private/managed/source" not in captured.err
+    assert json.loads(captured.err) == {
+        "error": {
+            "message": "backup operation failed",
+            "reason": reason,
+            "type": "BackupSourceChangedError",
+        },
         "status": "error",
     }

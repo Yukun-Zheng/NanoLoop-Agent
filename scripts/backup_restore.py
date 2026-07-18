@@ -21,6 +21,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 from app.core.config import Settings  # noqa: E402
 from app.operations.backup import (  # noqa: E402
     BackupLayout,
+    BackupSourceChangedError,
     create_backup,
     restore_backup,
     verify_backup,
@@ -131,6 +132,25 @@ def _emit(payload: Mapping[str, object], *, stream: TextIO | None = None) -> Non
         json.dumps(payload, ensure_ascii=False, sort_keys=True),
         file=sys.stdout if stream is None else stream,
     )
+
+
+def _safe_failure_reason(error: Exception) -> str | None:
+    """Classify source-change failures without exposing managed filesystem paths."""
+
+    if not isinstance(error, BackupSourceChangedError):
+        return None
+    message = str(error)
+    if message == "database changed during SQLite backup":
+        return "database_snapshot_changed"
+    if message == "database or SQLite sidecar changed during backup":
+        return "database_files_changed"
+    if message == "backup source membership changed while the archive was assembled":
+        return "source_membership_changed"
+    if message == "backup archive changed while it was being restored":
+        return "archive_changed_during_restore"
+    if message.startswith(("backup source changed", "file changed")):
+        return "source_file_changed"
+    return "source_changed"
 
 
 def _layout_from_args(args: argparse.Namespace) -> BackupLayout:
@@ -337,13 +357,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         # Core errors can contain absolute managed paths. Keep CLI failure output deliberately
         # narrow; operators can enable application diagnostics without leaking source layout or
         # persisted secret material through automation logs.
-        _emit(
-            {
-                "error": {"message": "backup operation failed", "type": type(error).__name__},
-                "status": "error",
-            },
-            stream=sys.stderr,
-        )
+        safe_error: dict[str, object] = {
+            "message": "backup operation failed",
+            "type": type(error).__name__,
+        }
+        if (reason := _safe_failure_reason(error)) is not None:
+            safe_error["reason"] = reason
+        _emit({"error": safe_error, "status": "error"}, stream=sys.stderr)
         return 1
     _emit(payload)
     return 0
