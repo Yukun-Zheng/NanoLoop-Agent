@@ -15,7 +15,7 @@ import zipfile
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO
 
 from app.core.errors import StorageError
@@ -23,6 +23,13 @@ from app.storage.paths import StoragePathError, StoragePaths
 
 _CHUNK_SIZE = 1024 * 1024
 _MAX_TOKEN_LENGTH = 4096
+_MAX_TOKEN_PATH_LENGTH = 2048
+_MAX_UNIX_TIMESTAMP = 253_402_300_799
+_TOKEN_NONCE_BYTES = 8
+_TOKEN_PAYLOAD_KEYS = frozenset({"exp", "nonce", "path", "v"})
+_TOKEN_SIGNATURE_LENGTH = len(
+    base64.urlsafe_b64encode(bytes(hashlib.sha256().digest_size)).rstrip(b"=")
+)
 
 
 class UploadSizeExceededError(ValueError):
@@ -35,6 +42,38 @@ class UploadSizeExceededError(ValueError):
 
 class FileTokenError(ValueError):
     """Raised for malformed, forged, expired, or stale file tokens."""
+
+
+def _positive_int(value: object, *, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{field} must be a positive integer")
+    if value > _MAX_UNIX_TIMESTAMP:
+        raise ValueError(f"{field} exceeds the supported range")
+    return value
+
+
+def _unix_timestamp(value: object, *, field: str, minimum: int = 0) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value < minimum
+        or value > _MAX_UNIX_TIMESTAMP
+    ):
+        raise ValueError(f"{field} must be a supported integer Unix timestamp")
+    return value
+
+
+def _json_object_without_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in payload:
+            raise ValueError("duplicate JSON object key")
+        payload[key] = value
+    return payload
+
+
+def _contains_control_character(value: str) -> bool:
+    return any(ord(character) < 32 or 127 <= ord(character) <= 159 for character in value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,15 +100,25 @@ class LocalFileStore:
         max_upload_bytes: int,
         token_secret: str | bytes | None = None,
         default_token_ttl_seconds: int = 900,
+        max_token_ttl_seconds: int = 86_400,
     ) -> None:
         if max_upload_bytes <= 0:
             raise ValueError("max_upload_bytes must be positive")
-        if default_token_ttl_seconds <= 0:
-            raise ValueError("default_token_ttl_seconds must be positive")
+        default_token_ttl_seconds = _positive_int(
+            default_token_ttl_seconds,
+            field="default_token_ttl_seconds",
+        )
+        max_token_ttl_seconds = _positive_int(
+            max_token_ttl_seconds,
+            field="max_token_ttl_seconds",
+        )
+        if default_token_ttl_seconds > max_token_ttl_seconds:
+            raise ValueError("default_token_ttl_seconds must not exceed max_token_ttl_seconds")
 
         self.paths = paths
         self.max_upload_bytes = max_upload_bytes
         self.default_token_ttl_seconds = default_token_ttl_seconds
+        self.max_token_ttl_seconds = max_token_ttl_seconds
         if token_secret is None:
             self._token_secret = secrets.token_bytes(32)
         elif isinstance(token_secret, str):
@@ -89,9 +138,15 @@ class LocalFileStore:
     ) -> StoredFile:
         """Stream an upload to a canonical input path while hashing and limiting it."""
 
+        if _contains_control_character(filename):
+            raise StoragePathError("filename contains a control character")
         destination = self.paths.require_managed(
             self.paths.upload_file(job_id, filename, image_id=image_id)
         )
+        try:
+            self._issuable_token_relative_path(self.paths.relative_path(destination))
+        except ValueError:
+            raise StoragePathError("upload path cannot be represented by a file token") from None
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination = self.paths.require_managed(destination)
 
@@ -156,13 +211,16 @@ class LocalFileStore:
         existing_version = payload.setdefault("schema_version", version)
         if not isinstance(existing_version, str) or not existing_version.strip():
             raise ValueError("schema_version must be a non-empty string")
-        serialized = json.dumps(
-            payload,
-            ensure_ascii=False,
-            indent=2,
-            sort_keys=True,
-            allow_nan=False,
-        ).encode("utf-8") + b"\n"
+        serialized = (
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+                allow_nan=False,
+            ).encode("utf-8")
+            + b"\n"
+        )
         self.atomic_write_bytes(path, serialized)
 
     def atomic_write_bytes(self, path: str | Path, data: bytes) -> None:
@@ -226,14 +284,13 @@ class LocalFileStore:
         """
 
         job_dir = self.paths.require_managed(self.paths.job_dir(job_id))
-        job_dir.mkdir(parents=True, exist_ok=True)
-        job_dir = self.paths.require_managed(job_dir, must_exist=True)
         content_addressed = filename is None
         destination: Path | None = None
         if filename is not None:
-            destination = self.paths.require_managed(
-                self.paths.export_zip(job_id, filename)
-            )
+            destination = self.paths.require_managed(self.paths.export_zip(job_id, filename))
+            self._issuable_token_relative_path(self.paths.relative_path(destination))
+        job_dir.mkdir(parents=True, exist_ok=True)
+        job_dir = self.paths.require_managed(job_dir, must_exist=True)
 
         selected: dict[str, Path] = {}
         for requested in files:
@@ -313,13 +370,16 @@ class LocalFileStore:
                     }
                     if not content_addressed:
                         manifest["generated_at"] = datetime.now(UTC).isoformat()
-                    manifest_bytes = json.dumps(
-                        manifest,
-                        ensure_ascii=False,
-                        indent=2,
-                        sort_keys=True,
-                        allow_nan=False,
-                    ).encode("utf-8") + b"\n"
+                    manifest_bytes = (
+                        json.dumps(
+                            manifest,
+                            ensure_ascii=False,
+                            indent=2,
+                            sort_keys=True,
+                            allow_nan=False,
+                        ).encode("utf-8")
+                        + b"\n"
+                    )
                     archive.writestr(
                         self._deterministic_zip_info("export_manifest.json"),
                         manifest_bytes,
@@ -338,6 +398,7 @@ class LocalFileStore:
                         f"nanoloop-export-{selection_sha256}.zip",
                     )
                 )
+                self._issuable_token_relative_path(self.paths.relative_path(destination))
                 manifest_path = self.paths.content_addressed_export_manifest(
                     job_id, selection_sha256
                 )
@@ -413,14 +474,21 @@ class LocalFileStore:
         """Issue a compact HMAC-signed token for one managed regular file."""
 
         managed = self._require_regular_file(path)
-        ttl = ttl_seconds or self.default_token_ttl_seconds
-        if ttl <= 0:
-            raise ValueError("ttl_seconds must be positive")
-        issued_at = int(time.time()) if now is None else now
+        relative_path = self._issuable_token_relative_path(self.paths.relative_path(managed))
+        ttl = (
+            self.default_token_ttl_seconds
+            if ttl_seconds is None
+            else _positive_int(ttl_seconds, field="ttl_seconds")
+        )
+        if ttl > self.max_token_ttl_seconds:
+            raise ValueError("ttl_seconds must not exceed max_token_ttl_seconds")
+        issued_at = self._token_now(now)
+        if issued_at > _MAX_UNIX_TIMESTAMP - ttl:
+            raise ValueError("token expiration exceeds the supported timestamp range")
         payload = {
             "exp": issued_at + ttl,
-            "nonce": secrets.token_urlsafe(8),
-            "path": self.paths.relative_path(managed),
+            "nonce": secrets.token_urlsafe(_TOKEN_NONCE_BYTES),
+            "path": relative_path,
             "v": 1,
         }
         encoded_payload = self._base64url_encode(
@@ -430,12 +498,15 @@ class LocalFileStore:
         signature = self._base64url_encode(
             hmac.new(self._token_secret, signed_value, hashlib.sha256).digest()
         )
-        return f"v1.{encoded_payload}.{signature}"
+        token = f"v1.{encoded_payload}.{signature}"
+        if len(token) > _MAX_TOKEN_LENGTH:
+            raise ValueError("file token exceeds the supported length")
+        return token
 
     def resolve_file_token(self, token: str, *, now: int | None = None) -> Path:
         """Verify a file token and resolve it to an existing managed file."""
 
-        if not token or len(token) > _MAX_TOKEN_LENGTH:
+        if not isinstance(token, str) or not token or len(token) > _MAX_TOKEN_LENGTH:
             raise FileTokenError("invalid file token")
         parts = token.split(".")
         if len(parts) != 3 or parts[0] != "v1":
@@ -443,8 +514,8 @@ class LocalFileStore:
 
         try:
             signed_value = f"{parts[0]}.{parts[1]}".encode("ascii", errors="strict")
-        except UnicodeEncodeError as error:
-            raise FileTokenError("invalid file token") from error
+        except UnicodeEncodeError:
+            raise FileTokenError("invalid file token") from None
         expected_signature = hmac.new(
             self._token_secret,
             signed_value,
@@ -452,27 +523,90 @@ class LocalFileStore:
         ).digest()
         try:
             supplied_signature = self._base64url_decode(parts[2])
-        except (ValueError, UnicodeError) as error:
-            raise FileTokenError("invalid file token") from error
+        except (TypeError, ValueError, UnicodeError):
+            raise FileTokenError("invalid file token") from None
+        if len(supplied_signature) != hashlib.sha256().digest_size:
+            raise FileTokenError("invalid file token")
         if not hmac.compare_digest(supplied_signature, expected_signature):
             raise FileTokenError("invalid file token")
 
         try:
-            payload = json.loads(self._base64url_decode(parts[1]))
+            payload_bytes = self._base64url_decode(parts[1])
+            payload: Any = json.loads(
+                payload_bytes,
+                object_pairs_hook=_json_object_without_duplicate_keys,
+            )
+            if not isinstance(payload, dict) or set(payload) != _TOKEN_PAYLOAD_KEYS:
+                raise ValueError("invalid token payload shape")
+            canonical_payload = json.dumps(
+                payload,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+            if payload_bytes != canonical_payload:
+                raise ValueError("non-canonical token payload")
             version = payload["v"]
-            relative_path = payload["path"]
-            expires_at = payload["exp"]
-        except (KeyError, TypeError, ValueError, json.JSONDecodeError, UnicodeError) as error:
-            raise FileTokenError("invalid file token") from error
-        if version != 1 or not isinstance(relative_path, str) or not isinstance(expires_at, int):
-            raise FileTokenError("invalid file token")
-        current_time = int(time.time()) if now is None else now
+            if isinstance(version, bool) or not isinstance(version, int) or version != 1:
+                raise ValueError("unsupported token version")
+            relative_path = self._token_relative_path(payload["path"])
+            expires_at = _unix_timestamp(payload["exp"], field="exp", minimum=1)
+            nonce = payload["nonce"]
+            if not isinstance(nonce, str):
+                raise ValueError("invalid token nonce")
+            nonce_bytes = self._base64url_decode(nonce)
+            if len(nonce_bytes) != _TOKEN_NONCE_BYTES:
+                raise ValueError("invalid token nonce")
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError, UnicodeError):
+            raise FileTokenError("invalid file token") from None
+        current_time = self._token_now(now)
         if current_time >= expires_at:
             raise FileTokenError("file token has expired")
         try:
             return self._require_regular_file(relative_path)
-        except (StoragePathError, FileNotFoundError, OSError) as error:
-            raise FileTokenError("file token does not resolve to an available file") from error
+        except (StoragePathError, FileNotFoundError, OSError):
+            raise FileTokenError("file token does not resolve to an available file") from None
+
+    @staticmethod
+    def _token_now(now: int | None) -> int:
+        observed = int(time.time()) if now is None else now
+        return _unix_timestamp(observed, field="now")
+
+    @staticmethod
+    def _token_relative_path(value: object) -> str:
+        if (
+            not isinstance(value, str)
+            or not value
+            or len(value) > _MAX_TOKEN_PATH_LENGTH
+            or "\\" in value
+            or _contains_control_character(value)
+        ):
+            raise ValueError("invalid token path")
+        path = PurePosixPath(value)
+        if (
+            path.is_absolute()
+            or path.as_posix() != value
+            or value in {".", ".."}
+            or any(part in {".", ".."} for part in path.parts)
+        ):
+            raise ValueError("invalid token path")
+        return value
+
+    @classmethod
+    def _issuable_token_relative_path(cls, value: object) -> str:
+        relative_path = cls._token_relative_path(value)
+        maximum_payload = {
+            "exp": _MAX_UNIX_TIMESTAMP,
+            "nonce": cls._base64url_encode(bytes(_TOKEN_NONCE_BYTES)),
+            "path": relative_path,
+            "v": 1,
+        }
+        encoded_payload = cls._base64url_encode(
+            json.dumps(maximum_payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        )
+        maximum_token_length = len("v1.") + len(encoded_payload) + 1 + _TOKEN_SIGNATURE_LENGTH
+        if maximum_token_length > _MAX_TOKEN_LENGTH:
+            raise ValueError("file token exceeds the supported length")
+        return relative_path
 
     def _stored_file(
         self,
@@ -524,5 +658,14 @@ class LocalFileStore:
 
     @staticmethod
     def _base64url_decode(value: str) -> bytes:
+        if not isinstance(value, str) or not value or "=" in value:
+            raise ValueError("invalid base64url value")
+        try:
+            value.encode("ascii", errors="strict")
+        except UnicodeEncodeError as error:
+            raise ValueError("invalid base64url value") from error
         padding = "=" * (-len(value) % 4)
-        return base64.b64decode(value + padding, altchars=b"-_", validate=True)
+        decoded = base64.b64decode(value + padding, altchars=b"-_", validate=True)
+        if LocalFileStore._base64url_encode(decoded) != value:
+            raise ValueError("non-canonical base64url value")
+        return decoded

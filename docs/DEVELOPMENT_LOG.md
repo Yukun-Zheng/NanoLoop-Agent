@@ -145,3 +145,25 @@
   当前 Uvicorn `--no-proxy-headers` 能力检查通过。
 - 保留边界：桶状态只在单进程内生效，重启和多副本不共享；LRU 淘汰是有界内存下的 fail-open
   取舍，NAT 下多个客户端会共享 pre-auth 桶。这不是计费 quota，也不能替代网关或分布式限流。
+
+## 2026-07-18 16:36 +08:00 — v1 文件令牌严格编解码边界
+
+- 分支：`yukun`，未合入 `main`；本批保持 `v1.<payload>.<signature>`、HMAC-SHA256 算法、签名输入
+  和既有 canonical wire format，不引入尚未设计完成的 v2。
+- 编解码合同：只有 `ttl_seconds=None` 使用默认值，显式 TTL、`now`、`exp`、version 均做精确类型和
+  上界检查；payload 必须是无重复/缺失/额外字段的 compact sorted JSON，payload、signature 与 nonce
+  必须是 canonical unpadded base64url，签名长度固定为一个 SHA-256 digest。
+- 路径与发布：token path 必须是有界、无控制字符、无反斜杠、无遍历或冗余分隔的相对 POSIX 路径；
+  签发器复用同一校验，并按最坏 exp/nonce 预检完整 token 的 4096 字符上限。上传会在建目录和读流前
+  拒绝不可签发文件名；固定导出在建目录/写 ZIP 前预检，内容寻址导出在发布最终产物前预检并清理
+  临时文件，避免返回自身无法解析的下载 URL。
+- 兼容边界：同一密钥下，形状符合新合同且 `exp <= 253402300799` 的历史 canonical v1 token 继续有效；
+  极端 year 9999 之后的整数 `exp` 明确 fail closed。错误只返回固定域消息，不回显 token/path，也不把
+  输入相关的解码或文件系统异常保留为公开 cause。
+- 审查与证据：独立复审发现并验证上述签发一致性及兼容表述问题，修复后二次只读复核确认 resolved；
+  storage 全组 74 项、下载相关聚焦 53 项通过。最终整仓门禁为 Ruff、严格 Mypy 114 个源文件、651 项
+  Pytest、OpenAPI、六页 Streamlit AppTest、Alembic 往返与 ORM 漂移全部通过，`git diff --check`
+  通过。
+- 保留边界：v1 仍是持有即用的签名路径，不包含 tenant/principal、artifact identity、purpose、撤销或
+  key id，也未消除 FileResponse 再次按路径打开的 TOCTOU；这些必须在资源授权完成后通过独立 v2
+  协议与安全文件描述符流式下载处理。
