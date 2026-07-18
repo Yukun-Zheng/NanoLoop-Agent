@@ -1,8 +1,34 @@
 from __future__ import annotations
 
+import stat
+import subprocess
+import sys
 from pathlib import Path
 
+import yaml
+
+from app.storage.file_token_keyring_store import FileTokenV2KeyRingStore
+
 _REPOSITORY_ROOT = Path(__file__).parents[3]
+
+
+def _entrypoint_keyring_program() -> str:
+    entrypoint = (_REPOSITORY_ROOT / "scripts" / "docker-entrypoint.sh").read_text(
+        encoding="utf-8"
+    )
+    marker = 'if ! python - "${FILE_TOKEN_V2_KEYRING_PATH}" <<\'PY\'\n'
+    return entrypoint.split(marker, maxsplit=1)[1].split("\nPY\n", maxsplit=1)[0]
+
+
+def _run_entrypoint_keyring_program(path: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-", str(path)],
+        input=_entrypoint_keyring_program(),
+        text=True,
+        capture_output=True,
+        cwd=_REPOSITORY_ROOT,
+        check=False,
+    )
 
 
 def test_bundled_uvicorn_commands_disable_proxy_header_rewriting() -> None:
@@ -23,3 +49,73 @@ def test_bundled_uvicorn_commands_disable_proxy_header_rewriting() -> None:
     assert '"--no-proxy-headers"' in docker_command
     assert "--no-proxy-headers" in entrypoint_command
     assert "--no-proxy-headers" in make_serve_command
+
+
+def test_production_entrypoint_initializes_missing_v2_keyring_via_store(
+    tmp_path: Path,
+) -> None:
+    keyring_path = tmp_path / "private-v2-keyring.json"
+
+    completed = _run_entrypoint_keyring_program(keyring_path)
+
+    assert completed.returncode == 0
+    assert completed.stdout == completed.stderr == ""
+    assert stat.S_IMODE(keyring_path.stat().st_mode) == 0o600
+    loaded = FileTokenV2KeyRingStore(keyring_path).load()
+    assert loaded.active_kid == "initial"
+    assert loaded.retained_kids == ("initial",)
+
+
+def test_production_entrypoint_rejects_existing_corrupt_or_symlink_keyring_without_leak(
+    tmp_path: Path,
+) -> None:
+    corrupt = tmp_path / "do-not-log-corrupt-keyring.json"
+    secret_payload = "secret-key-material-must-not-appear"
+    corrupt.write_text(secret_payload, encoding="utf-8")
+    corrupt.chmod(0o600)
+
+    corrupt_result = _run_entrypoint_keyring_program(corrupt)
+
+    assert corrupt_result.returncode == 1
+    assert corrupt_result.stdout == ""
+    assert "invalid_payload" in corrupt_result.stderr
+    assert str(corrupt) not in corrupt_result.stderr
+    assert secret_payload not in corrupt_result.stderr
+
+    target = tmp_path / "target-keyring.json"
+    FileTokenV2KeyRingStore(target).initialize(key=b"s" * 32)
+    symlink = tmp_path / "do-not-log-symlink.json"
+    symlink.symlink_to(target)
+
+    symlink_result = _run_entrypoint_keyring_program(symlink)
+
+    assert symlink_result.returncode == 1
+    assert "unsafe_type" in symlink_result.stderr
+    assert str(symlink) not in symlink_result.stderr
+    assert str(target) not in symlink_result.stderr
+
+
+def test_compose_and_example_use_the_settings_keyring_environment_name() -> None:
+    compose = yaml.safe_load(
+        (_REPOSITORY_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    )
+    api_environment = compose["services"]["api"]["environment"]
+    assert (
+        api_environment["FILE_TOKEN_V2_KEYRING_PATH"]
+        == "/app/data/.file_token_v2_keyring.json"
+    )
+    assert "NANOLOOP_FILE_TOKEN_V2_KEYRING_PATH" not in api_environment
+
+    example = (_REPOSITORY_ROOT / ".env.example").read_text(encoding="utf-8")
+    assert "FILE_TOKEN_V2_KEYRING_PATH=./data/.file_token_v2_keyring.json" in example
+
+
+def test_api_image_includes_the_non_secret_keyring_operator_cli() -> None:
+    dockerfile = (_REPOSITORY_ROOT / "Dockerfile").read_text(encoding="utf-8")
+
+    assert "FILE_TOKEN_V2_KEYRING_PATH=/app/data/.file_token_v2_keyring.json" in dockerfile
+    assert (
+        "COPY --chown=nanoloop:nanoloop scripts/manage_file_token_keyring.py "
+        "./scripts/manage_file_token_keyring.py"
+    ) in dockerfile
+    assert "/app/scripts/manage_file_token_keyring.py" in dockerfile

@@ -16,6 +16,7 @@ from app.core.errors import ApiNotImplementedError, ServiceUnavailableError
 from app.core.logging import bind_log_context, reset_log_context
 from app.db.repositories import SqlAlchemyRepositorySet
 from app.db.session import Database
+from app.files import FileArtifactAccessService
 from app.rag.application import KnowledgeApplicationService
 from app.storage.file_store import LocalFileStore
 from app.storage.knowledge_store import KnowledgeSourceStore
@@ -89,6 +90,13 @@ def get_file_store(request: Request) -> LocalFileStore:
     if not isinstance(file_store, LocalFileStore):
         raise ServiceUnavailableError(details={"component": "file_store"})
     return file_store
+
+
+def get_file_artifact_access_service(request: Request) -> FileArtifactAccessService:
+    service = getattr(request.app.state, "file_artifact_access_service", None)
+    if not isinstance(service, FileArtifactAccessService):
+        raise ServiceUnavailableError(details={"component": "file_artifact_access"})
+    return service
 
 
 def get_inference_gateway(request: Request) -> Any:

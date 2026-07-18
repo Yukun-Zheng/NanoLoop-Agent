@@ -7,15 +7,22 @@ from fastapi.concurrency import run_in_threadpool
 
 from app.analysis.authorization import require_read
 from app.analysis.reporting import JobExportSnapshot, ReportWriter
-from app.api.deps import get_file_store, get_repositories, require_api_key_contract
+from app.api.deps import (
+    get_file_artifact_access_service,
+    get_file_store,
+    get_repositories,
+    require_api_key_contract,
+)
 from app.api.responses import success_response
 from app.api.routing import COMMON_ERROR_RESPONSES
 from app.contracts.analyses import ExportData
 from app.contracts.common import ApiResponse
 from app.contracts.enums import JobStatus
+from app.contracts.file_artifacts import FileArtifactKind
 from app.contracts.identity import PrincipalContext
 from app.core.errors import ExportNotReadyError, ResourceNotFoundError
 from app.db.repositories import SqlAlchemyRepositorySet
+from app.files import FileArtifactAccessService
 from app.storage import LocalFileStore
 
 router = APIRouter(tags=["exports"], responses=COMMON_ERROR_RESPONSES)
@@ -31,6 +38,10 @@ async def export_analysis(
     request: Request,
     repositories: Annotated[SqlAlchemyRepositorySet, Depends(get_repositories)],
     file_store: Annotated[LocalFileStore, Depends(get_file_store)],
+    file_access: Annotated[
+        FileArtifactAccessService,
+        Depends(get_file_artifact_access_service),
+    ],
     principal: Annotated[PrincipalContext, Depends(require_api_key_contract)],
     run_ids: Annotated[list[str] | None, Query()] = None,
 ) -> ApiResponse[ExportData]:
@@ -73,11 +84,21 @@ async def export_analysis(
             box_revisions=tuple(box_revisions),
         ),
     )
+    token = file_access.issue_download_token(
+        principal=principal,
+        job_id=job_id,
+        artifact_kind=FileArtifactKind.ANALYSIS_EXPORT,
+        storage_path=exported.relative_path,
+        filename=exported.filename,
+        media_type="application/zip",
+        expected_sha256=exported.sha256,
+        expected_size_bytes=exported.size_bytes,
+    )
     prefix = request.app.state.settings.api_prefix.rstrip("/")
     return success_response(
         ExportData(
             job_id=job_id,
-            download_url=f"{prefix}/files/{exported.file_token}",
+            download_url=f"{prefix}/files/{token}",
             sha256=exported.sha256,
             filename=exported.filename,
         ),

@@ -24,8 +24,16 @@ from app.contracts.analyses import (
     RunStatusEventDTO,
     SegmentationRunDTO,
 )
+from app.contracts.common import utc_now
 from app.contracts.enums import JobStatus, QualityStatus, RoiMode
 from app.contracts.execution import ExecutionRuntimeProvenance
+from app.contracts.file_artifacts import (
+    FileArtifactDTO,
+    FileArtifactKind,
+    FileArtifactRegistration,
+    FileArtifactState,
+    validate_artifact_id,
+)
 from app.contracts.identity import validate_principal_id, validate_tenant_id
 from app.contracts.queries import (
     QueryActorAuthMode,
@@ -39,6 +47,7 @@ from app.core.errors import BoxRevisionConflictError, InvalidBoxError, ResourceN
 from app.core.state_machine import ensure_transition
 from app.db.models import (
     AnalysisJob,
+    FileArtifact,
     ImageAsset,
     ImageSummary,
     ParticleRecord,
@@ -109,6 +118,26 @@ def _require_scoped_image(
         raise ResourceNotFoundError(
             details={"resource": "image", "job_id": job_id, "image_id": image_id}
         )
+    return record
+
+
+def _require_scoped_run_record(
+    session: Session,
+    job_id: str,
+    run_id: str,
+    tenant_id: str,
+) -> SegmentationRun:
+    record = session.scalar(
+        select(SegmentationRun)
+        .join(AnalysisJob, AnalysisJob.job_id == SegmentationRun.job_id)
+        .where(
+            SegmentationRun.run_id == run_id,
+            SegmentationRun.job_id == job_id,
+            AnalysisJob.tenant_id == validate_tenant_id(tenant_id),
+        )
+    )
+    if record is None:
+        raise ResourceNotFoundError(details={"resource": "run", "job_id": job_id, "run_id": run_id})
     return record
 
 
@@ -196,6 +225,25 @@ def _run_dto(record: SegmentationRun) -> SegmentationRunDTO:
         ],
         created_at=_utc(record.created_at),
         updated_at=_utc(record.updated_at),
+    )
+
+
+def _file_artifact_dto(record: FileArtifact) -> FileArtifactDTO:
+    return FileArtifactDTO(
+        artifact_id=record.artifact_id,
+        job_id=record.job_id,
+        image_id=record.image_id,
+        run_id=record.run_id,
+        artifact_kind=FileArtifactKind(record.artifact_kind),
+        storage_path=record.storage_path,
+        filename=record.filename,
+        media_type=record.media_type,
+        sha256=record.sha256,
+        size_bytes=record.size_bytes,
+        state=FileArtifactState(record.state),
+        created_at=_utc(record.created_at),
+        consumed_at=(_utc(record.consumed_at) if record.consumed_at is not None else None),
+        revoked_at=(_utc(record.revoked_at) if record.revoked_at is not None else None),
     )
 
 
@@ -633,9 +681,7 @@ class SqlAlchemyRunRepository:
                 inference_json=run.inference.model_dump(mode="json"),
                 run_config_json=run.configuration.model_dump(mode="json"),
                 execution_json=(
-                    run.execution.model_dump(mode="json")
-                    if run.execution is not None
-                    else None
+                    run.execution.model_dump(mode="json") if run.execution is not None else None
                 ),
                 paths_json=run.artifacts.model_dump(mode="json"),
                 runtime_ms=run.runtime_ms,
@@ -878,6 +924,269 @@ class SqlAlchemyRunRepository:
         self.session.flush()
 
 
+class SqlAlchemyFileArtifactRepository:
+    """Immutable artifact facts and tenant-scoped one-way lifecycle operations."""
+
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def register(
+        self,
+        registration: FileArtifactRegistration,
+        *,
+        tenant_id: str,
+    ) -> FileArtifactDTO:
+        validated_tenant_id = validate_tenant_id(tenant_id)
+        _require_scoped_job(self.session, registration.job_id, validated_tenant_id)
+        if registration.image_id is not None:
+            _require_scoped_image(
+                self.session,
+                registration.job_id,
+                registration.image_id,
+                validated_tenant_id,
+            )
+        if registration.run_id is not None:
+            run = _require_scoped_run_record(
+                self.session,
+                registration.job_id,
+                registration.run_id,
+                validated_tenant_id,
+            )
+            if run.image_id != registration.image_id:
+                raise ResourceNotFoundError(
+                    details={
+                        "resource": "artifact_relationship",
+                        "job_id": registration.job_id,
+                    }
+                )
+
+        existing = self.session.scalar(
+            select(FileArtifact)
+            .join(AnalysisJob, AnalysisJob.job_id == FileArtifact.job_id)
+            .where(
+                FileArtifact.storage_path == registration.storage_path,
+                AnalysisJob.tenant_id == validated_tenant_id,
+            )
+        )
+        if existing is not None:
+            self._require_identical_facts(existing, registration)
+            # An idempotent retry observes, but never reverses, a terminal state.
+            return _file_artifact_dto(existing)
+
+        # A globally unique path owned by another tenant is deliberately indistinguishable from
+        # a missing artifact. Do not leak its registry ID or immutable metadata.
+        foreign_path_exists = self.session.scalar(
+            select(FileArtifact.artifact_id).where(
+                FileArtifact.storage_path == registration.storage_path
+            )
+        )
+        if foreign_path_exists is not None:
+            raise ResourceNotFoundError(details={"resource": "file_artifact"})
+
+        record = FileArtifact(
+            artifact_id=f"art_{uuid4().hex}",
+            job_id=registration.job_id,
+            image_id=registration.image_id,
+            run_id=registration.run_id,
+            artifact_kind=registration.artifact_kind.value,
+            storage_path=registration.storage_path,
+            filename=registration.filename,
+            media_type=registration.media_type,
+            sha256=registration.sha256,
+            size_bytes=registration.size_bytes,
+            state=FileArtifactState.ACTIVE.value,
+            created_at=utc_now(),
+            consumed_at=None,
+            revoked_at=None,
+        )
+        self.session.add(record)
+        self.session.flush()
+        return _file_artifact_dto(record)
+
+    def get_active(
+        self,
+        artifact_id: str,
+        *,
+        tenant_id: str,
+    ) -> FileArtifactDTO:
+        record = self.session.scalar(
+            select(FileArtifact)
+            .join(AnalysisJob, AnalysisJob.job_id == FileArtifact.job_id)
+            .where(
+                FileArtifact.artifact_id == validate_artifact_id(artifact_id),
+                FileArtifact.state == FileArtifactState.ACTIVE.value,
+                AnalysisJob.tenant_id == validate_tenant_id(tenant_id),
+            )
+        )
+        if record is None:
+            raise ResourceNotFoundError(
+                details={"resource": "file_artifact", "artifact_id": artifact_id}
+            )
+        return _file_artifact_dto(record)
+
+    def get_active_by_storage_path(
+        self,
+        storage_path: str,
+        *,
+        tenant_id: str,
+    ) -> FileArtifactDTO:
+        record = self.session.scalar(
+            select(FileArtifact)
+            .join(AnalysisJob, AnalysisJob.job_id == FileArtifact.job_id)
+            .where(
+                FileArtifact.storage_path == storage_path,
+                FileArtifact.state == FileArtifactState.ACTIVE.value,
+                AnalysisJob.tenant_id == validate_tenant_id(tenant_id),
+            )
+        )
+        if record is None:
+            raise ResourceNotFoundError(details={"resource": "file_artifact"})
+        return _file_artifact_dto(record)
+
+    def consume_corrected_mask(
+        self,
+        artifact_id: str,
+        *,
+        tenant_id: str,
+        consumed_at: datetime | None = None,
+    ) -> bool:
+        validated_artifact_id = validate_artifact_id(artifact_id)
+        validated_tenant_id = validate_tenant_id(tenant_id)
+        record = self.session.scalar(
+            select(FileArtifact)
+            .join(AnalysisJob, AnalysisJob.job_id == FileArtifact.job_id)
+            .where(
+                FileArtifact.artifact_id == validated_artifact_id,
+                AnalysisJob.tenant_id == validated_tenant_id,
+            )
+        )
+        if record is None:
+            raise ResourceNotFoundError(
+                details={"resource": "file_artifact", "artifact_id": artifact_id}
+            )
+        if record.artifact_kind != FileArtifactKind.CORRECTED_MASK_INPUT.value:
+            raise ValueError("only corrected-mask inputs may be consumed")
+        if record.state != FileArtifactState.ACTIVE.value:
+            return False
+
+        transition_at = consumed_at or utc_now()
+        if transition_at.tzinfo is None or transition_at.utcoffset() is None:
+            raise ValueError("consumed_at must be timezone-aware")
+        transition_at = _utc(transition_at)
+        if transition_at < _utc(record.created_at):
+            raise ValueError("consumed_at cannot precede artifact creation")
+
+        result = cast(
+            CursorResult[Any],
+            self.session.execute(
+                update(FileArtifact)
+                .where(
+                    FileArtifact.artifact_id == validated_artifact_id,
+                    FileArtifact.artifact_kind == FileArtifactKind.CORRECTED_MASK_INPUT.value,
+                    FileArtifact.state == FileArtifactState.ACTIVE.value,
+                    FileArtifact.job_id.in_(
+                        select(AnalysisJob.job_id).where(
+                            AnalysisJob.tenant_id == validated_tenant_id
+                        )
+                    ),
+                )
+                .values(
+                    state=FileArtifactState.CONSUMED.value,
+                    consumed_at=transition_at,
+                    revoked_at=None,
+                )
+            ),
+        )
+        self.session.flush()
+        return result.rowcount == 1
+
+    def revoke(
+        self,
+        artifact_id: str,
+        *,
+        tenant_id: str,
+        revoked_at: datetime | None = None,
+    ) -> bool:
+        """Atomically revoke any active tenant-owned artifact without reactivating terminals."""
+
+        validated_artifact_id = validate_artifact_id(artifact_id)
+        validated_tenant_id = validate_tenant_id(tenant_id)
+        record = self.session.scalar(
+            select(FileArtifact)
+            .join(AnalysisJob, AnalysisJob.job_id == FileArtifact.job_id)
+            .where(
+                FileArtifact.artifact_id == validated_artifact_id,
+                AnalysisJob.tenant_id == validated_tenant_id,
+            )
+        )
+        if record is None:
+            raise ResourceNotFoundError(
+                details={"resource": "file_artifact", "artifact_id": artifact_id}
+            )
+        if record.state != FileArtifactState.ACTIVE.value:
+            return False
+
+        transition_at = revoked_at or utc_now()
+        if transition_at.tzinfo is None or transition_at.utcoffset() is None:
+            raise ValueError("revoked_at must be timezone-aware")
+        transition_at = _utc(transition_at)
+        if transition_at < _utc(record.created_at):
+            raise ValueError("revoked_at cannot precede artifact creation")
+
+        result = cast(
+            CursorResult[Any],
+            self.session.execute(
+                update(FileArtifact)
+                .where(
+                    FileArtifact.artifact_id == validated_artifact_id,
+                    FileArtifact.state == FileArtifactState.ACTIVE.value,
+                    FileArtifact.job_id.in_(
+                        select(AnalysisJob.job_id).where(
+                            AnalysisJob.tenant_id == validated_tenant_id
+                        )
+                    ),
+                )
+                .values(
+                    state=FileArtifactState.REVOKED.value,
+                    consumed_at=None,
+                    revoked_at=transition_at,
+                )
+            ),
+        )
+        self.session.flush()
+        return result.rowcount == 1
+
+    @staticmethod
+    def _require_identical_facts(
+        record: FileArtifact,
+        registration: FileArtifactRegistration,
+    ) -> None:
+        persisted = (
+            record.job_id,
+            record.image_id,
+            record.run_id,
+            record.artifact_kind,
+            record.storage_path,
+            record.filename,
+            record.media_type,
+            record.sha256,
+            record.size_bytes,
+        )
+        requested = (
+            registration.job_id,
+            registration.image_id,
+            registration.run_id,
+            registration.artifact_kind.value,
+            registration.storage_path,
+            registration.filename,
+            registration.media_type,
+            registration.sha256,
+            registration.size_bytes,
+        )
+        if persisted != requested:
+            raise ValueError("artifact storage path is registered with different immutable facts")
+
+
 class SqlAlchemyQueryRepository:
     """Query audit reads, including a tenant-scoped export snapshot boundary."""
 
@@ -1003,6 +1312,7 @@ class SqlAlchemyRepositorySet:
         self.boxes = SqlAlchemyBoxRepository(session)
         self.runs = SqlAlchemyRunRepository(session)
         self.queries = SqlAlchemyQueryRepository(session)
+        self.file_artifacts = SqlAlchemyFileArtifactRepository(session)
 
 
 class SqlAlchemyUnitOfWork:

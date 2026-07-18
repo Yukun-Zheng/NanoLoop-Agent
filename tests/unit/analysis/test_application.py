@@ -3,6 +3,7 @@ from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -47,6 +48,7 @@ from app.contracts.enums import (
     RoiMode,
     ScaleMode,
 )
+from app.contracts.file_artifacts import FileArtifactKind, FileArtifactState
 from app.contracts.identity import (
     LEGACY_PRINCIPAL_ID,
     LEGACY_TENANT_ID,
@@ -56,7 +58,7 @@ from app.contracts.identity import (
     PrincipalRole,
 )
 from app.contracts.inference import SegmentationOutput, SegmentationRequest
-from app.contracts.models import ModelHealth, ModelMetadata
+from app.contracts.models import ModelBundleReference, ModelHealth, ModelMetadata
 from app.contracts.repositories import AnalysisResourceScope, StoredImageAsset, UnitOfWork
 from app.core.config import Settings
 from app.core.errors import (
@@ -69,12 +71,13 @@ from app.core.errors import (
 )
 from app.core.identity import legacy_principal_context
 from app.db.base import Base
+from app.db.models import FileArtifact, ModelRegistryRecord, SegmentationRun
 from app.db.models import ImageAsset as ImageAssetRecord
-from app.db.models import ModelRegistryRecord, SegmentationRun
 from app.db.repositories import SqlAlchemyRepositorySet, SqlAlchemyUnitOfWork
 from app.db.session import Database
+from app.files import FileAccessTokenError, FileArtifactAccessService
 from app.inference.gateway import InferenceGateway
-from app.storage import FileTokenError, LocalFileStore, StoragePaths
+from app.storage import FileTokenV2KeyRing, LocalFileStore, StoragePaths
 from tests.unit.inference.fakes import FakeAdapter
 from tests.unit.inference.helpers import build_registry, model_entry
 
@@ -84,6 +87,11 @@ ApplicationHarness = tuple[
     Callable[[], UnitOfWork],
 ]
 LEGACY_ADMIN = legacy_principal_context(AuthMode.DISABLED)
+_FILE_TOKEN_V2_TEST_KEYRING = FileTokenV2KeyRing(
+    {"analysis-test": b"analysis-file-token-v2-test-key-0001"},
+    active_kid="analysis-test",
+    clock_skew_seconds=0,
+)
 
 
 def _principal(
@@ -102,7 +110,22 @@ def _principal(
     )
 
 
+def _file_artifact_access_service(
+    factory: Callable[[], UnitOfWork],
+    file_store: LocalFileStore,
+) -> FileArtifactAccessService:
+    return FileArtifactAccessService(
+        uow_factory=factory,
+        file_store=file_store,
+        keyring=_FILE_TOKEN_V2_TEST_KEYRING,
+    )
+
+
 class FakeGateway:
+    # Keep these lightweight fakes on the legacy, non-bundled execution path while
+    # remaining structurally compatible with the production gateway protocol.
+    freeze_model_bundle: Any = None
+
     def __init__(self, *, fail: bool = False) -> None:
         self.fail = fail
         self.predict_calls = 0
@@ -146,6 +169,8 @@ class FakeGateway:
         expected_weight_sha256: str | None = None,
         expected_config_sha256: str | None = None,
         expected_model_card_sha256: str | None = None,
+        expected_adapter_sha256: str | None = None,
+        model_bundle: ModelBundleReference | None = None,
     ) -> SegmentationOutput:
         self.predict_calls += 1
         assert request.image_bytes is not None
@@ -186,6 +211,8 @@ class HoleGateway(FakeGateway):
         expected_weight_sha256: str | None = None,
         expected_config_sha256: str | None = None,
         expected_model_card_sha256: str | None = None,
+        expected_adapter_sha256: str | None = None,
+        model_bundle: ModelBundleReference | None = None,
     ) -> SegmentationOutput:
         output = super().predict(
             model_id,
@@ -195,6 +222,8 @@ class HoleGateway(FakeGateway):
             expected_weight_sha256=expected_weight_sha256,
             expected_config_sha256=expected_config_sha256,
             expected_model_card_sha256=expected_model_card_sha256,
+            expected_adapter_sha256=expected_adapter_sha256,
+            model_bundle=model_bundle,
         )
         with Image.open(output.binary_mask_path) as image:
             mask = np.asarray(image).copy()
@@ -214,6 +243,8 @@ class BoundaryGateway(FakeGateway):
         expected_weight_sha256: str | None = None,
         expected_config_sha256: str | None = None,
         expected_model_card_sha256: str | None = None,
+        expected_adapter_sha256: str | None = None,
+        model_bundle: ModelBundleReference | None = None,
     ) -> SegmentationOutput:
         assert expected_model_version == self.model.version
         assert expected_adapter_path == self.model.adapter_path
@@ -233,6 +264,8 @@ class BoundaryGateway(FakeGateway):
 
 
 class CartesianGateway:
+    freeze_model_bundle: Any = None
+
     def __init__(self) -> None:
         self.models = [
             ModelMetadata(
@@ -310,6 +343,8 @@ class CartesianGateway:
         expected_weight_sha256: str | None = None,
         expected_config_sha256: str | None = None,
         expected_model_card_sha256: str | None = None,
+        expected_adapter_sha256: str | None = None,
+        model_bundle: ModelBundleReference | None = None,
     ) -> SegmentationOutput:
         raise AssertionError("Cartesian-product creation must not execute inference")
 
@@ -478,7 +513,7 @@ def test_queued_run_executes_complete_bundle_after_config_and_card_sources_chang
     application_harness: ApplicationHarness,
     tmp_path: Path,
 ) -> None:
-    _database, file_store, factory = application_harness
+    database, file_store, factory = application_harness
     artifact_root = tmp_path / "model"
     artifact_root.mkdir()
     entry = model_entry(
@@ -513,10 +548,12 @@ def test_queued_run_executes_complete_bundle_after_config_and_card_sources_chang
         resolver=lambda _: QueuedBundleAdapter,
     )
     gateway = InferenceGateway(registry)
+    file_access = _file_artifact_access_service(factory, file_store)
     service = AnalysisApplicationService(
         uow_factory=factory,
         file_store=file_store,
         inference_gateway=gateway,
+        file_artifact_access_service=file_access,
     )
     run_id = service.create_runs(
         "job_1",
@@ -568,15 +605,32 @@ def test_queued_run_executes_complete_bundle_after_config_and_card_sources_chang
         "corrected.png",
         principal=LEGACY_ADMIN,
     )
-    staged_path = file_store.resolve_file_token(staged.corrected_mask_token)
+    assert staged.corrected_mask_token.startswith("v2.analysis-test.")
+    artifact_id = file_access.keyring.verify(staged.corrected_mask_token).aid
+    with database.session() as session:
+        staged_artifact = session.get(FileArtifact, artifact_id)
+        assert staged_artifact is not None
+        assert staged_artifact.state == FileArtifactState.ACTIVE.value
+        staged_path = file_store.paths.root / staged_artifact.storage_path
+    assert staged_path.is_file()
     corrected_review_id = service.create_review_run(
         run_id,
         ReviewRunRequest(corrected_mask_token=staged.corrected_mask_token),
         principal=LEGACY_ADMIN,
     )
     assert not staged_path.exists()
-    with pytest.raises(FileTokenError, match="available"):
-        file_store.resolve_file_token(staged.corrected_mask_token)
+    with database.session() as session:
+        consumed_artifact = session.get(FileArtifact, artifact_id)
+        assert consumed_artifact is not None
+        assert consumed_artifact.state == FileArtifactState.CONSUMED.value
+        assert consumed_artifact.consumed_at is not None
+    with pytest.raises(InvalidImageError) as replay:
+        service.create_review_run(
+            run_id,
+            ReviewRunRequest(corrected_mask_token=staged.corrected_mask_token),
+            principal=LEGACY_ADMIN,
+        )
+    assert replay.value.details["reason"] == "invalid_corrected_mask_token"
     with factory() as uow:
         inference_review = uow.repositories.runs.get(inference_review_id)
         corrected_review = uow.repositories.runs.get(corrected_review_id)
@@ -1169,7 +1223,9 @@ def test_create_analysis_validates_and_persists_upload(
     assert (image.width, image.height, image.bit_depth) == (17, 13, 16)
     assert image.scale_nm_per_pixel == 0.75
     assert image.analysis_roi.valid_rect == PixelRect(x1=0, y1=0, x2=17, y2=13)
-    assert image.original_download_url is not None
+    # The service persists storage facts only; the HTTP route decorates authorized
+    # responses with a subject-bound v2 download URL.
+    assert image.original_download_url is None
     assert file_store.paths.job_config(detail.job.job_id).is_file()
     assert file_store.paths.job_manifest(detail.job.job_id).is_file()
     assert file_store.paths.image_metadata(detail.job.job_id, image.image_id).is_file()
@@ -1369,10 +1425,12 @@ def test_corrected_mask_review_bypasses_model_and_preserves_hash(
 ) -> None:
     database, file_store, factory = application_harness
     gateway = FakeGateway()
+    file_access = _file_artifact_access_service(factory, file_store)
     service = AnalysisApplicationService(
         uow_factory=factory,
         file_store=file_store,
         inference_gateway=gateway,
+        file_artifact_access_service=file_access,
     )
     parent_id = service.create_runs(
         "job_1",
@@ -1389,14 +1447,22 @@ def test_corrected_mask_review_bypasses_model_and_preserves_hash(
     corrected[10:18, 11:19] = 255
     buffer = BytesIO()
     Image.fromarray(corrected).save(buffer, format="PNG")
-    staged_path = file_store.paths.job_dir("job_1") / "review-mask.png"
-    file_store.atomic_write_bytes(staged_path, buffer.getvalue())
-    token = file_store.create_file_token(staged_path)
+    buffer.seek(0)
+    staged = service.stage_corrected_mask(
+        parent_id,
+        buffer,
+        "corrected.png",
+        principal=LEGACY_ADMIN,
+    )
+    assert staged.corrected_mask_token.startswith("v2.analysis-test.")
 
     gateway.fail = True
     child_id = service.create_review_run(
         parent_id,
-        ReviewRunRequest(corrected_mask_token=token, min_area_px=4),
+        ReviewRunRequest(
+            corrected_mask_token=staged.corrected_mask_token,
+            min_area_px=4,
+        ),
         principal=LEGACY_ADMIN,
     )
     completed = service.execute_run(child_id)
@@ -1413,14 +1479,91 @@ def test_corrected_mask_review_bypasses_model_and_preserves_hash(
     )
 
 
-def test_corrected_mask_review_never_deletes_a_referenced_original(
+def test_corrected_mask_token_is_consumed_once_without_duplicate_child(
     application_harness: ApplicationHarness,
 ) -> None:
     database, file_store, factory = application_harness
+    file_access = _file_artifact_access_service(factory, file_store)
     service = AnalysisApplicationService(
         uow_factory=factory,
         file_store=file_store,
         inference_gateway=FakeGateway(),
+        file_artifact_access_service=file_access,
+    )
+    parent_id = service.create_runs(
+        "job_1",
+        CreateRunsRequest(
+            image_ids=["img_1"],
+            model_ids=["unet-general-balanced-v1"],
+            roi_mode=RoiMode.FULL_IMAGE,
+        ),
+        principal=LEGACY_ADMIN,
+    )[0]
+    service.execute_run(parent_id)
+    mask = BytesIO()
+    Image.new("L", (64, 64), color=255).save(mask, format="PNG")
+    mask.seek(0)
+    staged = service.stage_corrected_mask(
+        parent_id,
+        mask,
+        "single-use.png",
+        principal=LEGACY_ADMIN,
+    )
+    artifact_id = file_access.keyring.verify(staged.corrected_mask_token).aid
+
+    child_id = service.create_review_run(
+        parent_id,
+        ReviewRunRequest(corrected_mask_token=staged.corrected_mask_token),
+        principal=LEGACY_ADMIN,
+    )
+    with database.session() as session:
+        consumed = session.get(FileArtifact, artifact_id)
+        assert consumed is not None
+        assert consumed.state == FileArtifactState.CONSUMED.value
+        consumed_at = consumed.consumed_at
+        assert consumed_at is not None
+        staged_path = file_store.paths.root / consumed.storage_path
+    assert not staged_path.exists()
+    with factory() as uow:
+        first_children = [
+            run.run_id
+            for run in uow.repositories.runs.list_by_job("job_1")
+            if run.parent_run_id == parent_id
+        ]
+    assert first_children == [child_id]
+
+    with pytest.raises(InvalidImageError) as replay:
+        service.create_review_run(
+            parent_id,
+            ReviewRunRequest(corrected_mask_token=staged.corrected_mask_token),
+            principal=LEGACY_ADMIN,
+        )
+
+    assert replay.value.details["reason"] == "invalid_corrected_mask_token"
+    with factory() as uow:
+        final_children = [
+            run.run_id
+            for run in uow.repositories.runs.list_by_job("job_1")
+            if run.parent_run_id == parent_id
+        ]
+    assert final_children == first_children
+    with database.session() as session:
+        still_consumed = session.get(FileArtifact, artifact_id)
+        assert still_consumed is not None
+        assert still_consumed.state == FileArtifactState.CONSUMED.value
+        assert still_consumed.consumed_at == consumed_at
+
+
+def test_original_image_download_token_is_rejected_as_corrected_mask_and_preserved(
+    application_harness: ApplicationHarness,
+) -> None:
+    database, file_store, factory = application_harness
+    file_access = _file_artifact_access_service(factory, file_store)
+    service = AnalysisApplicationService(
+        uow_factory=factory,
+        file_store=file_store,
+        inference_gateway=FakeGateway(),
+        file_artifact_access_service=file_access,
     )
     parent_id = service.create_runs(
         "job_1",
@@ -1434,36 +1577,93 @@ def test_corrected_mask_review_never_deletes_a_referenced_original(
     service.execute_run(parent_id)
     with database.session() as session:
         repositories = SqlAlchemyRepositorySet(session)
+        original = repositories.images.get("img_1")
+        storage_path = repositories.images.get_storage_path("img_1")
         original_path = file_store.paths.require_managed(
-            repositories.images.get_storage_path("img_1"), must_exist=True
+            storage_path,
+            must_exist=True,
         )
     original_bytes = original_path.read_bytes()
-    original_token = file_store.create_file_token(original_path)
-
-    service.create_review_run(
-        parent_id,
-        ReviewRunRequest(corrected_mask_token=original_token, min_area_px=4),
+    original_token = file_access.issue_download_token(
         principal=LEGACY_ADMIN,
+        job_id="job_1",
+        image_id="img_1",
+        artifact_kind=FileArtifactKind.ORIGINAL_IMAGE,
+        storage_path=storage_path,
+        filename=original.filename,
+        media_type="image/png",
+        expected_sha256=original.sha256,
     )
 
+    with pytest.raises(InvalidImageError) as captured:
+        service.create_review_run(
+            parent_id,
+            ReviewRunRequest(corrected_mask_token=original_token, min_area_px=4),
+            principal=LEGACY_ADMIN,
+        )
+
+    assert captured.value.details["reason"] == "invalid_corrected_mask_token"
     assert original_path.read_bytes() == original_bytes
-    assert file_store.resolve_file_token(original_token) == original_path
 
 
-def test_corrected_mask_rejects_wrong_dimensions_before_pixel_decode(
+def test_principal_mode_rejects_legacy_v1_original_and_corrected_mask_tokens(
     application_harness: ApplicationHarness,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _database, file_store, factory = application_harness
-    service = AnalysisApplicationService(
+    file_access = _file_artifact_access_service(factory, file_store)
+    run_service = AnalysisApplicationService(
         uow_factory=factory,
         file_store=file_store,
         inference_gateway=FakeGateway(),
     )
-    staged_path = file_store.paths.job_dir("job_1") / "oversized-review.png"
-    file_store.atomic_write_bytes(staged_path, b"header-only-test-double")
-    token = file_store.create_file_token(staged_path)
+    parent_id = run_service.create_runs(
+        "job_1",
+        CreateRunsRequest(
+            image_ids=["img_1"],
+            model_ids=["unet-general-balanced-v1"],
+            roi_mode=RoiMode.FULL_IMAGE,
+        ),
+        principal=LEGACY_ADMIN,
+    )[0]
+    with factory() as uow:
+        original_storage_path = uow.repositories.images.get_storage_path("img_1")
+    original_path = file_store.paths.require_managed(
+        original_storage_path,
+        must_exist=True,
+    )
+    original_token = file_store.create_file_token(original_path)
+    corrected = BytesIO()
+    Image.new("L", (64, 64), color=255).save(corrected, format="PNG")
+    corrected.seek(0)
+    staged = file_store.save_upload(
+        "job_1",
+        corrected,
+        "legacy-corrected.png",
+        image_id="review_mask_legacy_v1",
+    )
+    principal = _principal(PrincipalRole.TENANT_ADMIN, principal_hex="0")
 
+    with pytest.raises(FileAccessTokenError, match=r"^invalid file token$"):
+        file_access.resolve_download(original_token, principal=principal)
+    with pytest.raises(
+        FileAccessTokenError,
+        match=r"^invalid corrected-mask token$",
+    ):
+        file_access.resolve_corrected_mask(
+            file_store.create_file_token(staged.path),
+            principal=principal,
+            job_id="job_1",
+            image_id="img_1",
+            run_id=parent_id,
+        )
+
+    assert original_path.is_file()
+    assert staged.path.is_file()
+
+
+def test_corrected_mask_rejects_wrong_dimensions_before_pixel_decode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     class WrongSizeImage:
         size = (50_001, 50_001)
         width = 50_001
@@ -1481,7 +1681,11 @@ def test_corrected_mask_rejects_wrong_dimensions_before_pixel_decode(
     monkeypatch.setattr(Image, "open", lambda _path: WrongSizeImage())
 
     with pytest.raises(InvalidImageError) as exc_info:
-        service._load_corrected_mask(token, expected_shape=(64, 64))
+        AnalysisApplicationService._decode_corrected_mask(
+            b"header-only-test-double",
+            filename="oversized-review.png",
+            expected_shape=(64, 64),
+        )
 
     assert exc_info.value.details["reason"] == "corrected_mask_shape_mismatch"
 
@@ -1495,7 +1699,7 @@ def test_viewer_create_is_forbidden_before_stream_or_managed_file_side_effect(
     class UnreadableUpload(BytesIO):
         read_calls = 0
 
-        def read(self, _size: int = -1) -> bytes:
+        def read(self, _size: int | None = -1) -> bytes:
             self.read_calls += 1
             raise AssertionError("forbidden create must not read the upload stream")
 
@@ -1564,10 +1768,12 @@ def test_corrected_mask_forbidden_before_upload_stream_read(
     application_harness: ApplicationHarness,
 ) -> None:
     _database, file_store, factory = application_harness
+    file_access = _file_artifact_access_service(factory, file_store)
     service = AnalysisApplicationService(
         uow_factory=factory,
         file_store=file_store,
         inference_gateway=FakeGateway(),
+        file_artifact_access_service=file_access,
     )
     run_id = service.create_runs(
         "job_1",
@@ -1582,7 +1788,7 @@ def test_corrected_mask_forbidden_before_upload_stream_read(
     class UnreadableMask(BytesIO):
         read_calls = 0
 
-        def read(self, _size: int = -1) -> bytes:
+        def read(self, _size: int | None = -1) -> bytes:
             self.read_calls += 1
             raise AssertionError("forbidden corrected mask must not be read")
 

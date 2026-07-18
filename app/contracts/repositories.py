@@ -17,6 +17,7 @@ from app.contracts.analyses import (
 from app.contracts.common import ContractModel
 from app.contracts.enums import JobStatus
 from app.contracts.execution import ExecutionRuntimeProvenance
+from app.contracts.file_artifacts import FileArtifactDTO, FileArtifactRegistration
 from app.contracts.queries import (
     QueryActorDTO,
     QueryAuditRecordDTO,
@@ -213,6 +214,45 @@ class QueryRepository(Protocol):
     ) -> list[QueryAuditRecordDTO]: ...
 
 
+class FileArtifactRepository(Protocol):
+    def register(
+        self,
+        registration: FileArtifactRegistration,
+        *,
+        tenant_id: str,
+    ) -> FileArtifactDTO: ...
+
+    def get_active(
+        self,
+        artifact_id: str,
+        *,
+        tenant_id: str,
+    ) -> FileArtifactDTO: ...
+
+    def get_active_by_storage_path(
+        self,
+        storage_path: str,
+        *,
+        tenant_id: str,
+    ) -> FileArtifactDTO: ...
+
+    def consume_corrected_mask(
+        self,
+        artifact_id: str,
+        *,
+        tenant_id: str,
+        consumed_at: datetime | None = None,
+    ) -> bool: ...
+
+    def revoke(
+        self,
+        artifact_id: str,
+        *,
+        tenant_id: str,
+        revoked_at: datetime | None = None,
+    ) -> bool: ...
+
+
 class RepositorySet(Protocol):
     @property
     def jobs(self) -> JobRepository: ...
@@ -228,6 +268,9 @@ class RepositorySet(Protocol):
 
     @property
     def queries(self) -> QueryRepository: ...
+
+    @property
+    def file_artifacts(self) -> FileArtifactRepository: ...
 
 
 class UnitOfWork(AbstractContextManager["UnitOfWork"], Protocol):

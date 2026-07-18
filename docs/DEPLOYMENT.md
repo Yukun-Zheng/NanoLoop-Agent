@@ -34,20 +34,60 @@ Docker secret；principal credential 可单独撤销和轮换。
 配额的受信任反向代理时使用。捆绑的 Uvicorn 命令显式使用 `--no-proxy-headers`，应用不读取
 `Forwarded`/`X-Forwarded-For`；因此反向代理后的所有请求默认会共享代理 socket peer 的预鉴权桶。
 如需真实客户端级边缘限流，应由受信任 ingress 完成，并可把应用预鉴权阶段设为 `0`，不能在应用内
-直接信任客户端可伪造的转发头。principal authentication 能提供 tenant/principal/credential 调用者上下文，
-但角色策略和完整租户隔离仍未实施，应用仍不应裸露到公网。
+直接信任客户端可伪造的转发头。principal authentication 能提供 tenant/principal/credential 调用者上下文；
+Analysis、Query 与文件能力已经执行 tenant/角色/主体边界，但知识文档仍未租户化，分布式限流、
+调用/磁盘配额和 retention 也尚未实现，因此应用仍不应裸露到公网。
 
 ## 持久数据
 
 | 卷 | 内容 | 恢复优先级 |
 | --- | --- | --- |
-| `nanoloop-data` | SQLite、稳定下载签名密钥、multipart 临时文件 | 最高 |
+| `nanoloop-data` | SQLite、legacy v1 secret、v2 keyring、multipart 临时文件 | 最高 |
 | `nanoloop-outputs` | 原图、运行制品、报告与不可变导出 ZIP | 最高 |
 | `nanoloop-knowledge-sources` | 内容寻址知识源 | 高 |
 | `nanoloop-knowledge-index` | 可重建索引 | 中 |
 | `nanoloop-logs` | 应用与迁移日志 | 中 |
 
-备份时先停止写入并执行 `docker compose stop`，随后对上述卷做同一时间点快照。恢复时必须同时恢复 `nanoloop-data` 与 `nanoloop-outputs`，否则数据库记录、身份摘要、文件路径和下载签名密钥会不一致。`CREDENTIAL_PEPPER` 不在卷和数据库内，必须由秘密管理系统独立备份并与快照配对；更换它会使现有 principal token 全部失效。索引可以通过 reindex API 重建，但原始知识源不能丢失。
+备份时先停止写入并执行 `docker compose stop`，随后对上述卷做同一时间点快照。恢复时必须同时恢复
+`nanoloop-data` 与 `nanoloop-outputs`，否则数据库记录、身份摘要、artifact registry、文件路径和下载
+签名材料会不一致。`CREDENTIAL_PEPPER` 不在卷和数据库内，必须由秘密管理系统独立备份并与快照配对；
+更换它会使现有 principal token 全部失效。索引可以通过 reindex API 重建，但原始知识源不能丢失。
+
+源码部署还提供严格的离线备份工具；所有目标必须是尚不存在的新路径，恢复只写入新的 destination，
+不会覆盖当前状态：
+
+```bash
+docker compose stop
+.venv/bin/python scripts/backup_restore.py create --offline-confirmed backups/state.zip
+.venv/bin/python scripts/backup_restore.py verify backups/state.zip
+.venv/bin/python scripts/backup_restore.py restore --offline-confirmed \
+  backups/state.zip restore-validation
+```
+
+`create` 会自动纳入 `data/.file_token_secret` 与 `data/.file_token_v2_keyring.json`；production 模式下
+缺少或无法安全加载 v2 keyring 会拒绝创建可恢复备份。旧 archive 仍可验证/恢复，但 JSON 结果会明确
+返回 `production_ready=false` 和 `missing_production_requirements=["file_token_v2_keyring"]`，不能直接
+作为生产切换依据。需要演练时使用 `backup_restore.py drill --help`；当前 drill 只证明离线文件系统
+create/verify/restore，不声称应用启动已验证，也不声称测得 RPO/RTO。
+
+## 文件令牌 v2 密钥环
+
+生产 keyring 由 `FILE_TOKEN_V2_KEYRING_PATH` 指定，默认位于
+`/app/data/.file_token_v2_keyring.json`。文件必须是当前运行 UID 所有的普通非软链文件且 mode 为
+`0600`；入口脚本只在路径确实不存在时初始化，已有但损坏、权限过宽或类型不安全时失败关闭。状态与
+轮换命令只输出公开 `kid`，不输出路径或密钥：
+
+```bash
+python scripts/manage_file_token_keyring.py status
+python scripts/manage_file_token_keyring.py rotate --new-kid 2026-07-rotation-01
+```
+
+轮换应由单一运维者在维护窗口执行：先停止 API，执行 rotate，再重启 API，使进程加载新 active key。
+旧 key 会继续保留，因此轮换前签发的 token 在有效期内仍可验证。当前 runtime 的最大允许 TTL 为
+3600 秒、clock skew 为 30 秒；任何删除旧 key 的后续工具都必须从“最后一个仍使用旧 key 的 API
+进程停止签发”起至少等待 3630 秒。当前版本故意没有 retire/prune 命令，也不支持并发 rotate 或运行中
+热加载；keyring 最多保留 8 个 key，到达上限会安全拒绝轮换。不要手工编辑 JSON，达到上限前应先用
+后续受审计版本完成退休流程。
 
 API 以 UID/GID `10001:10001` 运行。Compose 新建的命名卷会从镜像中的预创建目录取得可写
 属主，入口脚本也会在启动时验证 data、snapshot、output、log 和知识目录可写；若改用预先存在的

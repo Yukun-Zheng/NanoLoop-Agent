@@ -85,7 +85,6 @@ class StoredFile:
     filename: str
     size_bytes: int
     sha256: str
-    file_token: str
 
 
 class LocalFileStore:
@@ -506,6 +505,20 @@ class LocalFileStore:
     def resolve_file_token(self, token: str, *, now: int | None = None) -> Path:
         """Verify a file token and resolve it to an existing managed file."""
 
+        relative_path = self.decode_file_token_path(token, now=now)
+        try:
+            return self._require_regular_file(relative_path)
+        except (StoragePathError, FileNotFoundError, OSError):
+            raise FileTokenError("file token does not resolve to an available file") from None
+
+    def decode_file_token_path(self, token: str, *, now: int | None = None) -> str:
+        """Verify v1 token metadata without touching its referenced filesystem path.
+
+        This narrow compatibility primitive lets callers authorize the signed job
+        identifier before opening any path.  New capabilities must use file-token
+        v2 and the artifact registry instead.
+        """
+
         if not isinstance(token, str) or not token or len(token) > _MAX_TOKEN_LENGTH:
             raise FileTokenError("invalid file token")
         parts = token.split(".")
@@ -561,10 +574,7 @@ class LocalFileStore:
         current_time = self._token_now(now)
         if current_time >= expires_at:
             raise FileTokenError("file token has expired")
-        try:
-            return self._require_regular_file(relative_path)
-        except (StoragePathError, FileNotFoundError, OSError):
-            raise FileTokenError("file token does not resolve to an available file") from None
+        return relative_path
 
     @staticmethod
     def _token_now(now: int | None) -> int:
@@ -622,7 +632,6 @@ class LocalFileStore:
             filename=managed.name,
             size_bytes=managed.stat().st_size if size_bytes is None else size_bytes,
             sha256=self.calculate_sha256(managed) if sha256 is None else sha256,
-            file_token=self.create_file_token(managed),
         )
 
     def _require_regular_file(self, path: str | Path) -> Path:

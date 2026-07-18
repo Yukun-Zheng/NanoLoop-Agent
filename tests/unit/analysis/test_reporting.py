@@ -181,9 +181,7 @@ def test_write_reports_and_export_have_versioned_auditable_files(tmp_path: Path)
                 query_id="query_1",
                 job_id="job_1",
                 image_id="img_1",
-                actor=QueryActorDTO.from_principal(
-                    legacy_principal_context(AuthMode.DISABLED)
-                ),
+                actor=QueryActorDTO.from_principal(legacy_principal_context(AuthMode.DISABLED)),
                 request=UnifiedQueryRequest(
                     question="有多少颗粒？",
                     query_type=QueryType.ANALYSIS_DATA,
@@ -255,7 +253,7 @@ def test_write_reports_and_export_have_versioned_auditable_files(tmp_path: Path)
     assert repeated.path == issued_path
     assert repeated.sha256 == exported.sha256
     assert issued_path.read_bytes() == issued_bytes
-    assert file_store.resolve_file_token(exported.file_token) == issued_path
+    assert file_store.resolve_file_token(file_store.create_file_token(exported.path)) == issued_path
 
     changed_query = snapshot.queries[0].model_copy(
         update={
@@ -276,4 +274,4 @@ def test_write_reports_and_export_have_versioned_auditable_files(tmp_path: Path)
     )
     assert changed.path != issued_path
     assert issued_path.read_bytes() == issued_bytes
-    assert file_store.resolve_file_token(exported.file_token) == issued_path
+    assert file_store.resolve_file_token(file_store.create_file_token(exported.path)) == issued_path

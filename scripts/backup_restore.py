@@ -32,6 +32,7 @@ from app.operations.drill import (  # noqa: E402
 )
 
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_SAFE_PRODUCTION_REQUIREMENTS = frozenset({"file_token_v2_keyring"})
 
 
 class CliUsageError(ValueError):
@@ -115,6 +116,19 @@ def _safe_result_metrics(result: object) -> dict[str, object]:
             sizes.append(size)
         if len(sizes) == len(files):
             metrics.setdefault("total_bytes", sum(sizes))
+    production_ready = getattr(manifest, "production_ready", None)
+    missing_requirements = getattr(
+        manifest,
+        "missing_production_requirements",
+        None,
+    )
+    if isinstance(production_ready, bool):
+        metrics["production_ready"] = production_ready
+    if isinstance(missing_requirements, (list, tuple)) and all(
+        isinstance(item, str) and item in _SAFE_PRODUCTION_REQUIREMENTS
+        for item in missing_requirements
+    ):
+        metrics["missing_production_requirements"] = list(missing_requirements)
     return metrics
 
 
@@ -187,6 +201,23 @@ def _layout_from_args(args: argparse.Namespace) -> BackupLayout:
         file_token_secret_file = (
             default_secret_file if os.path.lexists(default_secret_file) else None
         )
+    configured_v2_keyring_file = (
+        os.environ.get("FILE_TOKEN_V2_KEYRING_PATH")
+        or os.environ.get("NANOLOOP_FILE_TOKEN_V2_KEYRING_PATH")
+        or getattr(settings, "file_token_v2_keyring_path", None)
+    )
+    selected_v2_keyring_file = (
+        args.file_token_v2_keyring_file or configured_v2_keyring_file
+    )
+    if selected_v2_keyring_file:
+        file_token_v2_keyring_file: Path | None = _path(selected_v2_keyring_file)
+    else:
+        default_v2_keyring_file = data_root / ".file_token_v2_keyring.json"
+        file_token_v2_keyring_file = (
+            default_v2_keyring_file
+            if os.path.lexists(default_v2_keyring_file)
+            else None
+        )
     return BackupLayout(
         database_path=database_path,
         data_root=data_root,
@@ -195,6 +226,10 @@ def _layout_from_args(args: argparse.Namespace) -> BackupLayout:
         knowledge_source_root=knowledge_source_root,
         knowledge_index_root=knowledge_index_root,
         file_token_secret_file=file_token_secret_file,
+        file_token_v2_keyring_file=file_token_v2_keyring_file,
+        require_file_token_v2_keyring=(
+            getattr(settings, "app_env", "development") == "production"
+        ),
     )
 
 
@@ -217,6 +252,10 @@ def _add_layout_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--file-token-secret-file",
         help="override the persisted download-token secret file",
+    )
+    parser.add_argument(
+        "--file-token-v2-keyring-file",
+        help="override the persisted file-token v2 key-ring file",
     )
 
 

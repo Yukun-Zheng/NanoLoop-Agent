@@ -13,7 +13,7 @@
 | 人工矩形 ROI 编辑 | 支持 | 前端内置离线 canvas 与同步数值编辑器；单元测试覆盖坐标/载荷，本地 headless Chrome 已验证拖拽、CAS 保存、重载与 REST revision round-trip。 |
 | 真实 SEM 分割与模型对比演示 | 阻塞 | 没有真实 checkpoint、共同 fixture、模型卡评测和冷启动证据，见 [FR-06](requirements-traceability.md)。 |
 | 生产向量 RAG | 资产阻塞 | FTS5 与引用摘录是稳定基线；可选向量 runtime 已实现持久恢复、模型/维度/数据库映射、原子发布和降级测试，但没有固定真实 embedding 模型与正式许可语料完成资产级验收。 |
-| 公网或多租户服务 | 不支持 | 可撤销 principal credential、Analysis 聚合授权，以及 query actor/深层数据工具 tenant scope 已接通；但 tenant/job-bound 文件 token、知识文档租户化、分布式限流、调用/磁盘 quota 和 retention 尚未完成。 |
+| 公网或多租户服务 | 不支持 | 可撤销 principal credential、Analysis/Query tenant scope，以及 subject-bound file-token v2、artifact registry 与 pinned-fd 下载已接通；但知识文档租户化、分布式限流、调用/磁盘 quota 和 retention 尚未完成。 |
 | 多 Uvicorn worker / 多 API replica | 不支持 | SQLite 写协调、进程内 dispatcher、Adapter 缓存和导出协调按单进程/单 API 实例设计。 |
 
 ## 数据权威与可恢复投影
@@ -37,6 +37,16 @@ SQLite 是 tenant、principal、凭据摘要与身份审计，以及任务、图
 每个运行状态转换写入 `run_status_events`，并通过 `SegmentationRunDTO.status_history` 和导出
 审计暴露。迁移旧数据库时只能写入最后已知状态的单事件快照，不能声称恢复了迁移前的完整
 时间线。
+
+`file_artifacts` 是公开文件能力的权威元数据：job/image/run 关系、相对路径、显示文件名、媒体
+类型、SHA-256、大小和 active/consumed/revoked 生命周期均不可变或单向转换。v2 token 只携带
+tenant/principal/job/artifact/purpose/audience/hash/times，不携带 path 或 credential；解析后以同一
+固定 fd 完整性校验并流式返回。生产 keyring 必须位于数据卷、mode 0600，并与数据库和输出一起
+备份；轮换期间保留旧 key 至所有已签 token 的最大 TTL 与 clock skew 都过去。principal 模式不接受
+v1；disabled/shared 的 v1 兼容只覆盖数据库证明属于 legacy job 的历史链接，不能作为新发放路径。
+当前 operator CLI 支持只读 status 和保留旧 key 的 rotate；API 不热加载轮换结果，并发 rotate 与旧 key
+retire/prune 尚未支持，因此必须单运维者在停机窗口轮换、随后重启，且在 8-key 上限前完成后续受审计
+退休流程。这些限制不影响现有 token 验签，但属于生产密钥全生命周期尚待补齐的运维边界。
 
 启动恢复对普通陈旧运行可以从数据库复制冻结的科学输入并创建新 run。人工 corrected-mask
 运行还依赖其原始二进制制品；若崩溃恢复时该制品不可用，恢复器会将父运行标记失败、报告

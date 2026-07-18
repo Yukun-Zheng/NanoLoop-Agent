@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     app_env: Literal["development", "test", "production"] = "development"
     database_url: str = "sqlite:///./data/nanoloop.db"
     output_root: Path = Path("./outputs")
+    file_token_v2_keyring_path: Path | None = None
     model_registry_path: Path = Path("./model_artifacts/registry.yaml")
     model_snapshot_root: Path = Path("./data/model-snapshots")
     model_device: str = "auto"
@@ -91,6 +92,7 @@ class Settings(BaseSettings):
         "llm_model",
         "nanoloop_api_key",
         "credential_pepper",
+        "file_token_v2_keyring_path",
         mode="before",
     )
     @classmethod
@@ -138,11 +140,7 @@ class Settings(BaseSettings):
         """Resolve the compatibility ``auto`` mode without changing explicit modes."""
 
         if self.auth_mode == "auto":
-            return (
-                AuthMode.SHARED_KEY
-                if self.nanoloop_api_key is not None
-                else AuthMode.DISABLED
-            )
+            return AuthMode.SHARED_KEY if self.nanoloop_api_key is not None else AuthMode.DISABLED
         return AuthMode(self.auth_mode)
 
 

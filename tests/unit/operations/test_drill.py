@@ -27,6 +27,7 @@ from app.operations.drill import (
     OfflineFilesystemRestoreDrillReport,
     run_offline_filesystem_restore_drill,
 )
+from app.storage.file_token_keyring_store import FileTokenV2KeyRingStore
 
 _SNAPSHOT_AT = datetime(2026, 7, 18, 2, 3, 4, tzinfo=UTC)
 
@@ -57,6 +58,11 @@ def _state_layout(tmp_path: Path) -> BackupLayout:
     token = data / ".file_token_secret"
     token.write_text("secret-value-that-must-never-appear-in-a-report", encoding="utf-8")
     os.chmod(token, 0o600)
+    v2_keyring = data / ".file_token_v2_keyring.json"
+    FileTokenV2KeyRingStore(v2_keyring).initialize(
+        active_kid="drill-test",
+        key=b"d" * 32,
+    )
     return BackupLayout(
         database_path=database,
         data_root=data,
@@ -65,6 +71,8 @@ def _state_layout(tmp_path: Path) -> BackupLayout:
         knowledge_source_root=sources,
         knowledge_index_root=index,
         file_token_secret_file=token,
+        file_token_v2_keyring_file=v2_keyring,
+        require_file_token_v2_keyring=True,
     )
 
 
@@ -185,10 +193,15 @@ def test_real_drill_publishes_strict_private_report_without_sensitive_values(
     assert parsed.counts.component_count == len(BackupComponent)
     assert parsed.counts.file_count >= len(BackupComponent)
     assert parsed.counts.files_by_component[BackupComponent.DATABASE] == 1
+    restored_keyring = destination / "data" / ".file_token_v2_keyring.json"
+    assert stat.S_IMODE(restored_keyring.stat().st_mode) == 0o600
+    assert FileTokenV2KeyRingStore(restored_keyring).load().active_kid == "drill-test"
     serialized = report_path.read_text(encoding="utf-8")
     assert str(tmp_path) not in serialized
     assert "secret-value-that-must-never-appear-in-a-report" not in serialized
     assert "file_token_secret" not in serialized
+    assert "file_token_v2_keyring" not in serialized
+    assert "drill-test" not in serialized
     assert "nanoloop.db" not in serialized
 
 

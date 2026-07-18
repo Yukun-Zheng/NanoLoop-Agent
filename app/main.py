@@ -39,6 +39,7 @@ from app.core.rate_limit import BoundedKeyedTokenBucketLimiter, TokenBucketLimit
 from app.core.security import cors_origins, file_token_secret, trusted_hosts
 from app.db.repositories import SqlAlchemyUnitOfWork
 from app.db.session import Database
+from app.files import FileArtifactAccessService
 from app.operations.backup import StateDirectoryLock
 from app.orchestration import (
     InProcessTaskDispatcher,
@@ -57,7 +58,14 @@ from app.rag.retrieval import RetrievalService
 from app.rag.service import KnowledgeService
 from app.rag.vector_index import DatabaseVectorIndexPublisher, VectorIndexPublisher
 from app.rag.vector_store import PersistentFaissVectorStore
-from app.storage import KnowledgeSourceStore, LocalFileStore, StoragePaths
+from app.storage import (
+    FileTokenV2KeyRing,
+    FileTokenV2KeyRingStore,
+    FileTokenV2KeyRingStoreError,
+    KnowledgeSourceStore,
+    LocalFileStore,
+    StoragePaths,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +75,8 @@ def create_app(
     settings: Settings | None = None,
     database: Database | None = None,
     file_store: LocalFileStore | None = None,
+    file_token_v2_keyring: FileTokenV2KeyRing | None = None,
+    file_artifact_access_service: FileArtifactAccessService | None = None,
     inference_gateway: Any | None = None,
     analysis_creation_service: AnalysisCreationService | None = None,
     analysis_application_service: AnalysisApplicationService | None = None,
@@ -85,6 +95,14 @@ def create_app(
         max_upload_bytes=configured.max_upload_mb * 1024 * 1024,
         token_secret=file_token_secret(),
     )
+    active_file_artifact_access = file_artifact_access_service
+    if active_file_artifact_access is None:
+        active_keyring = file_token_v2_keyring or _load_file_token_v2_keyring(configured)
+        active_file_artifact_access = FileArtifactAccessService(
+            uow_factory=lambda: SqlAlchemyUnitOfWork(active_database.session_factory),
+            file_store=active_file_store,
+            keyring=active_keyring,
+        )
 
     @asynccontextmanager
     async def _service_lifespan(application: FastAPI) -> AsyncIterator[None]:
@@ -123,9 +141,7 @@ def create_app(
                         max_pdf_pages=configured.knowledge_max_pdf_pages,
                         max_extracted_chars=configured.knowledge_max_extracted_chars,
                     ),
-                    max_chunks_per_document=(
-                        configured.knowledge_max_chunks_per_document
-                    ),
+                    max_chunks_per_document=(configured.knowledge_max_chunks_per_document),
                 ),
                 vector_index_publisher=vector_index_publisher,
             )
@@ -146,6 +162,7 @@ def create_app(
                 uow_factory=lambda: SqlAlchemyUnitOfWork(active_database.session_factory),
                 file_store=active_file_store,
                 inference_gateway=application.state.inference_gateway,
+                file_artifact_access_service=(application.state.file_artifact_access_service),
                 dispatcher=application.state.dispatcher,
             )
             if application.state.owns_dispatcher:
@@ -232,6 +249,7 @@ def create_app(
     application.state.settings = configured
     application.state.database = active_database
     application.state.file_store = active_file_store
+    application.state.file_artifact_access_service = active_file_artifact_access
     application.state.inference_gateway = inference_gateway
     application.state.analysis_creation_service = analysis_creation_service
     application.state.analysis_application_service = analysis_application_service
@@ -256,18 +274,13 @@ def create_app(
             window_seconds=configured.api_rate_limit_window_seconds,
             max_buckets=configured.api_rate_limit_max_buckets,
         )
-        if (
-            authenticator.mode is AuthMode.PRINCIPAL
-            and configured.api_rate_limit_requests > 0
-        )
+        if (authenticator.mode is AuthMode.PRINCIPAL and configured.api_rate_limit_requests > 0)
         else None
     )
     principal_preauth_limiter = (
         BoundedKeyedTokenBucketLimiter(
             capacity=configured.api_principal_preauth_rate_limit_requests,
-            window_seconds=(
-                configured.api_principal_preauth_rate_limit_window_seconds
-            ),
+            window_seconds=(configured.api_principal_preauth_rate_limit_window_seconds),
             max_buckets=configured.api_rate_limit_max_buckets,
         )
         if (
@@ -307,10 +320,7 @@ def create_app(
             prefer_downstream_rate_limit_headers=principal_limiter is not None,
             public_paths=public_paths,
         )
-    elif (
-        authenticator.mode is not AuthMode.PRINCIPAL
-        and configured.api_rate_limit_requests > 0
-    ):
+    elif authenticator.mode is not AuthMode.PRINCIPAL and configured.api_rate_limit_requests > 0:
         application.add_middleware(
             InMemoryRateLimitMiddleware,
             authenticator=authenticator,
@@ -373,6 +383,52 @@ def _state_directory_lock(settings: Settings) -> StateDirectoryLock | None:
         return None
     data_root = Path(database_path).expanduser().absolute().parent
     return StateDirectoryLock(data_root, exclusive=False)
+
+
+def _load_file_token_v2_keyring(settings: Settings) -> FileTokenV2KeyRing:
+    """Load stable signing material, initializing only in development and tests."""
+
+    configured_path = settings.file_token_v2_keyring_path
+    if configured_path is not None:
+        path = configured_path.expanduser().absolute()
+    else:
+        database_url = make_url(settings.database_url)
+        database_path = database_url.database
+        if (
+            database_url.get_backend_name() == "sqlite"
+            and database_path is not None
+            and database_path != ":memory:"
+            and not database_path.startswith("file:")
+            and str(database_url.query.get("mode", "")).casefold() != "memory"
+        ):
+            path = (
+                Path(database_path).expanduser().absolute().parent / ".file_token_v2_keyring.json"
+            )
+        elif settings.app_env in {"development", "test"}:
+            path = (
+                settings.output_root.expanduser().absolute().parent / ".file_token_v2_keyring.json"
+            )
+        else:
+            raise FileTokenV2KeyRingStoreError(
+                "path_required",
+                "production requires an explicit file-token v2 key-ring path",
+            )
+
+    if settings.app_env in {"development", "test"}:
+        try:
+            path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        except OSError:
+            raise FileTokenV2KeyRingStoreError(
+                "parent_unavailable",
+                "key-ring parent directory cannot be created safely",
+            ) from None
+    store = FileTokenV2KeyRingStore(path, max_ttl_seconds=3_600)
+    try:
+        return store.load()
+    except FileTokenV2KeyRingStoreError as error:
+        if error.code != "missing" or settings.app_env not in {"development", "test"}:
+            raise
+    return store.initialize(active_kid="initial")
 
 
 def _build_inference_gateway(settings: Settings) -> Any | None:

@@ -103,8 +103,15 @@ soffice --headless --convert-to pdf \
   Analysis 聚合的 HTTP 路径必须先用 tenant-scoped repository 查询，再执行角色/owner 策略；跨租户
   与缺失统一 404，同租户权限不足为 403，mutation 必须在写入 UoW 内重检。Query 路由与数据工具必须
   各自在 SQL 层重复 tenant scope，最终 QueryLog 事务重检 job/image/run 并写入 actor；principal 的
-  knowledge/mixed 路径在语料租户化前必须于任何检索/提供器调用前安全 503。上述局部能力不等于 file、
-  knowledge 已完成租户隔离，也不等于 quota 或公网多租户就绪。详见 ADR 0010。
+  knowledge/mixed 路径在语料租户化前必须于任何检索/提供器调用前安全 503。上述局部能力不等于
+  knowledge 已租户化，也不等于 quota 或公网多租户就绪。详见 ADR 0010。
+- 所有新下载和 corrected-mask 引用必须经 `file_artifacts` 登记并签发 subject-bound v2 token：claims
+  绑定 tenant、principal、job、artifact、purpose/audience、SHA-256 与短 TTL，不能包含 path 或 credential。
+  下载先验上下文和 active registry，再逐段 `openat/O_NOFOLLOW` 固定并校验同一 fd，最终也从该 fd 流出；
+  响应在正常结束、取消或客户端断连时都必须立即关闭 pinned fd，不得只依赖可能被跳过的 background
+  task，也不得退回 `FileResponse(path)`。corrected-mask 只在最终 child UoW 内 CAS 消费。principal 模式必须在
+  decode/文件 I/O 前拒绝 v1；disabled/shared 仅可在数据库证明 legacy job 后兼容 v1。生产必须加载
+  0600 持久 keyring，轮换时至少保留旧 key 一个最大 TTL + clock skew。详见 ADR 0011。
 - disabled/shared-key 继续使用 service/authenticated/anonymous 三个固定桶。principal 使用两阶段
   严格有界 LRU：认证前只按规范化的直接 `scope.client` peer 分桶，认证成功后直接复用 middleware 已验证
   `PrincipalContext.principal_id` 分桶，禁止第二次身份查询。应用和捆绑的 Uvicorn 启动命令都不得信任或

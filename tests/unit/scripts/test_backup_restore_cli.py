@@ -20,8 +20,10 @@ from app.operations.drill import (
 
 def _settings(tmp_path: Path, *, database_url: str | None = None) -> SimpleNamespace:
     return SimpleNamespace(
+        app_env="development",
         database_url=database_url or "sqlite:///data/nanoloop.db",
         output_root=tmp_path / "outputs",
+        file_token_v2_keyring_path=None,
         model_snapshot_root=tmp_path / "data" / "model-snapshots",
         knowledge_source_dir=tmp_path / "knowledge" / "sources",
         faiss_index_path=tmp_path / "knowledge" / "index" / "faiss.index",
@@ -47,6 +49,8 @@ def test_create_maps_settings_and_default_secret_without_leaking_it(
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "Settings", lambda: _settings(tmp_path))
     monkeypatch.delenv("NANOLOOP_FILE_TOKEN_SECRET_FILE", raising=False)
+    monkeypatch.delenv("FILE_TOKEN_V2_KEYRING_PATH", raising=False)
+    monkeypatch.delenv("NANOLOOP_FILE_TOKEN_V2_KEYRING_PATH", raising=False)
     layout = _capture_layout(monkeypatch)
     captured_call: dict[str, object] = {}
 
@@ -83,6 +87,8 @@ def test_create_maps_settings_and_default_secret_without_leaking_it(
         "knowledge_source_root": (tmp_path / "knowledge" / "sources").resolve(),
         "knowledge_index_root": (tmp_path / "knowledge" / "index").resolve(),
         "file_token_secret_file": None,
+        "file_token_v2_keyring_file": None,
+        "require_file_token_v2_keyring": False,
     }
     assert captured_call["offline_confirmed"] is True
     assert captured_call["archive_path"] == archive.resolve()
@@ -119,6 +125,7 @@ def test_create_honors_all_path_overrides_and_secret_environment(
         "knowledge_source_root": tmp_path / "custom-sources",
         "knowledge_index_root": tmp_path / "custom-index",
         "file_token_secret_file": tmp_path / "explicit-secret",
+        "file_token_v2_keyring_file": tmp_path / "custom-data" / "v2-keyring",
     }
     arguments = ["create", str(tmp_path / "state.zip"), "--offline-confirmed"]
     for name, path in overrides.items():
@@ -126,10 +133,53 @@ def test_create_honors_all_path_overrides_and_secret_environment(
 
     assert cli.main(arguments) == 0
 
-    assert layout == {name: path.resolve() for name, path in overrides.items()}
+    assert layout == {
+        **{name: path.resolve() for name, path in overrides.items()},
+        "require_file_token_v2_keyring": False,
+    }
     output = capsys.readouterr().out
     assert str(environment_secret) not in output
     assert str(overrides["file_token_secret_file"]) not in output
+    assert str(overrides["file_token_v2_keyring_file"]) not in output
+
+
+@pytest.mark.parametrize(
+    "environment_name",
+    ["FILE_TOKEN_V2_KEYRING_PATH", "NANOLOOP_FILE_TOKEN_V2_KEYRING_PATH"],
+)
+def test_create_honors_v2_keyring_environment_without_leaking_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    environment_name: str,
+) -> None:
+    monkeypatch.setattr(cli, "Settings", lambda: _settings(tmp_path))
+    monkeypatch.delenv("FILE_TOKEN_V2_KEYRING_PATH", raising=False)
+    monkeypatch.delenv("NANOLOOP_FILE_TOKEN_V2_KEYRING_PATH", raising=False)
+    configured = tmp_path / "data" / "private-v2-keyring.json"
+    monkeypatch.setenv(environment_name, str(configured))
+    layout = _capture_layout(monkeypatch)
+    monkeypatch.setattr(cli, "create_backup", lambda *_args, **_kwargs: None)
+
+    assert cli.main(["create", str(tmp_path / "state.zip"), "--offline-confirmed"]) == 0
+
+    assert layout["file_token_v2_keyring_file"] == configured.resolve()
+    assert str(configured) not in capsys.readouterr().out
+
+
+def test_production_layout_requires_v2_keyring_for_new_backup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings(tmp_path)
+    settings.app_env = "production"
+    monkeypatch.setattr(cli, "Settings", lambda: settings)
+    layout = _capture_layout(monkeypatch)
+    monkeypatch.setattr(cli, "create_backup", lambda *_args, **_kwargs: None)
+
+    assert cli.main(["create", str(tmp_path / "state.zip"), "--offline-confirmed"]) == 0
+
+    assert layout["require_file_token_v2_keyring"] is True
 
 
 def test_create_uses_environment_secret_file_when_not_explicitly_overridden(
@@ -262,6 +312,23 @@ def test_metrics_are_derived_from_the_strict_manifest_without_printing_members()
         "archive_sha256": "d" * 64,
         "file_count": 2,
         "total_bytes": 30,
+    }
+
+
+def test_metrics_report_legacy_archive_readiness_gap_with_safe_codes_only() -> None:
+    report = SimpleNamespace(
+        manifest=SimpleNamespace(
+            files=(),
+            production_ready=False,
+            missing_production_requirements=("file_token_v2_keyring",),
+        )
+    )
+
+    assert cli._safe_result_metrics(report) == {
+        "file_count": 0,
+        "total_bytes": 0,
+        "production_ready": False,
+        "missing_production_requirements": ["file_token_v2_keyring"],
     }
 
 

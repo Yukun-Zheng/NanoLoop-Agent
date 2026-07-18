@@ -6,6 +6,7 @@ from typing import Any
 from sqlalchemy import (
     DDL,
     JSON,
+    BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -34,6 +35,7 @@ from app.db.base import Base
 
 JsonObject = dict[str, Any]
 _HEX_32_GLOB = "[0-9a-f]" * 32
+_HEX_64_GLOB = "[0-9a-f]" * 64
 
 
 class TimestampMixin:
@@ -220,6 +222,12 @@ class SegmentationRun(TimestampMixin, Base):
             name="fk_segmentation_runs_parent_job",
         ),
         UniqueConstraint("run_id", "job_id", name="uq_segmentation_runs_run_job"),
+        UniqueConstraint(
+            "run_id",
+            "image_id",
+            "job_id",
+            name="uq_segmentation_runs_run_image_job",
+        ),
         CheckConstraint(
             "threshold IS NULL OR (threshold >= 0 AND threshold <= 1)", name="threshold"
         ),
@@ -286,6 +294,146 @@ class RunStatusEvent(Base):
     )
 
     run: Mapped[SegmentationRun] = relationship(back_populates="status_events")
+
+
+class FileArtifact(Base):
+    """Immutable file facts with a one-way active/terminal lifecycle."""
+
+    __tablename__ = "file_artifacts"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["job_id"],
+            ["analysis_jobs.job_id"],
+            name="fk_file_artifacts_job",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["image_id", "job_id"],
+            ["image_assets.image_id", "image_assets.job_id"],
+            name="fk_file_artifacts_image_job",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["run_id", "job_id"],
+            ["segmentation_runs.run_id", "segmentation_runs.job_id"],
+            name="fk_file_artifacts_run_job",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["run_id", "image_id", "job_id"],
+            [
+                "segmentation_runs.run_id",
+                "segmentation_runs.image_id",
+                "segmentation_runs.job_id",
+            ],
+            name="fk_file_artifacts_run_image_job",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint("length(artifact_id) = 36", name="artifact_id_length"),
+        CheckConstraint(
+            f"artifact_id GLOB 'art_{_HEX_32_GLOB}'",
+            name="artifact_id_canonical",
+        ),
+        CheckConstraint(
+            "artifact_kind IN "
+            "('original_image', 'run_artifact', 'analysis_export', "
+            "'corrected_mask_input')",
+            name="artifact_kind_known",
+        ),
+        CheckConstraint(
+            "(artifact_kind = 'original_image' AND image_id IS NOT NULL "
+            "AND run_id IS NULL) OR "
+            "(artifact_kind IN ('run_artifact', 'corrected_mask_input') "
+            "AND image_id IS NOT NULL AND run_id IS NOT NULL) OR "
+            "(artifact_kind = 'analysis_export' AND image_id IS NULL AND run_id IS NULL)",
+            name="artifact_relationship_shape",
+        ),
+        CheckConstraint(
+            "length(storage_path) BETWEEN 1 AND 4096 "
+            "AND substr(storage_path, 1, 1) <> '/' "
+            "AND substr(storage_path, -1, 1) <> '/' "
+            "AND instr(storage_path, char(92)) = 0 "
+            "AND instr(storage_path, char(0)) = 0 "
+            "AND instr(storage_path, char(10)) = 0 "
+            "AND instr(storage_path, char(13)) = 0 "
+            "AND storage_path NOT LIKE '%//%' "
+            "AND storage_path <> '.' AND storage_path <> '..' "
+            "AND storage_path NOT LIKE './%' "
+            "AND storage_path NOT LIKE '../%' "
+            "AND storage_path NOT LIKE '%/./%' "
+            "AND storage_path NOT LIKE '%/../%' "
+            "AND storage_path NOT LIKE '%/.' "
+            "AND storage_path NOT LIKE '%/..'",
+            name="storage_path_managed_relative",
+        ),
+        CheckConstraint(
+            "length(trim(filename)) BETWEEN 1 AND 255 "
+            "AND filename = trim(filename) "
+            "AND filename NOT IN ('.', '..') "
+            "AND instr(filename, '/') = 0 "
+            "AND instr(filename, char(92)) = 0 "
+            "AND instr(filename, char(0)) = 0 "
+            "AND instr(filename, char(10)) = 0 "
+            "AND instr(filename, char(13)) = 0",
+            name="filename_basename",
+        ),
+        CheckConstraint(
+            "length(media_type) BETWEEN 3 AND 255 "
+            "AND media_type = lower(media_type) "
+            "AND instr(media_type, '/') > 1 "
+            "AND instr(media_type, ' ') = 0 "
+            "AND instr(media_type, char(0)) = 0 "
+            "AND instr(media_type, char(10)) = 0 "
+            "AND instr(media_type, char(13)) = 0",
+            name="media_type_canonical",
+        ),
+        CheckConstraint("length(sha256) = 64", name="sha256_length"),
+        CheckConstraint(
+            f"sha256 GLOB '{_HEX_64_GLOB}'",
+            name="sha256_canonical",
+        ),
+        CheckConstraint("size_bytes >= 0", name="size_bytes_nonnegative"),
+        CheckConstraint(
+            "state IN ('active', 'consumed', 'revoked')",
+            name="state_known",
+        ),
+        CheckConstraint(
+            "state <> 'consumed' OR artifact_kind = 'corrected_mask_input'",
+            name="consumed_kind",
+        ),
+        CheckConstraint(
+            "(state = 'active' AND consumed_at IS NULL AND revoked_at IS NULL) OR "
+            "(state = 'consumed' AND consumed_at IS NOT NULL AND revoked_at IS NULL "
+            "AND consumed_at >= created_at) OR "
+            "(state = 'revoked' AND consumed_at IS NULL AND revoked_at IS NOT NULL "
+            "AND revoked_at >= created_at)",
+            name="state_timestamp_shape",
+        ),
+        UniqueConstraint("storage_path", name="uq_file_artifacts_storage_path"),
+        Index(
+            "ix_file_artifacts_job_kind_state",
+            "job_id",
+            "artifact_kind",
+            "state",
+        ),
+    )
+
+    artifact_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    job_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    image_id: Mapped[str | None] = mapped_column(String(64))
+    run_id: Mapped[str | None] = mapped_column(String(64))
+    artifact_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    storage_path: Mapped[str] = mapped_column(Text, nullable=False)
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    media_type: Mapped[str] = mapped_column(String(255), nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class ParticleRecord(Base):
@@ -636,9 +784,50 @@ class IdentityAuditEvent(Base):
     )
 
 
-# Alembic owns production schema changes and installs the same triggers in revision
-# f5c1d8a4b2e9. These metadata listeners cover isolated/test databases built with
+# Alembic owns production schema changes and installs these triggers in their owning
+# revisions. The metadata listeners cover isolated/test databases built with
 # ``Base.metadata.create_all()`` so their direct-SQL integrity guarantees do not differ.
+event.listen(
+    FileArtifact.__table__,
+    "after_create",
+    DDL(  # type: ignore[no-untyped-call]
+        """
+        CREATE TRIGGER trg_file_artifacts_immutable_facts
+        BEFORE UPDATE ON file_artifacts
+        WHEN NEW.artifact_id IS NOT OLD.artifact_id
+          OR NEW.job_id IS NOT OLD.job_id
+          OR NEW.image_id IS NOT OLD.image_id
+          OR NEW.run_id IS NOT OLD.run_id
+          OR NEW.artifact_kind IS NOT OLD.artifact_kind
+          OR NEW.storage_path IS NOT OLD.storage_path
+          OR NEW.filename IS NOT OLD.filename
+          OR NEW.media_type IS NOT OLD.media_type
+          OR NEW.sha256 IS NOT OLD.sha256
+          OR NEW.size_bytes IS NOT OLD.size_bytes
+          OR NEW.created_at IS NOT OLD.created_at
+        BEGIN
+            SELECT RAISE(ABORT, 'file artifact facts are immutable');
+        END
+        """
+    ).execute_if(dialect="sqlite"),
+)
+event.listen(
+    FileArtifact.__table__,
+    "after_create",
+    DDL(  # type: ignore[no-untyped-call]
+        """
+        CREATE TRIGGER trg_file_artifacts_terminal_state
+        BEFORE UPDATE OF state, consumed_at, revoked_at ON file_artifacts
+        WHEN OLD.state IN ('consumed', 'revoked')
+          AND (NEW.state IS NOT OLD.state
+               OR NEW.consumed_at IS NOT OLD.consumed_at
+               OR NEW.revoked_at IS NOT OLD.revoked_at)
+        BEGIN
+            SELECT RAISE(ABORT, 'terminal file artifact state is immutable');
+        END
+        """
+    ).execute_if(dialect="sqlite"),
+)
 event.listen(
     IdentityAuditEvent.__table__,
     "after_create",

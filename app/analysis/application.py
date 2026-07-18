@@ -70,7 +70,9 @@ from app.core.errors import (
     ServiceUnavailableError,
 )
 from app.core.state_machine import aggregate_job_status
-from app.storage.file_store import FileTokenError, LocalFileStore, UploadSizeExceededError
+from app.files import FileAccessTokenError, FileArtifactAccessService
+from app.storage import open_pinned_managed_file
+from app.storage.file_store import LocalFileStore, UploadSizeExceededError
 from app.storage.paths import StoragePathError
 
 
@@ -258,7 +260,9 @@ class AnalysisCreationService:
                     experiment_conditions=item.experiment_conditions,
                     scale_nm_per_pixel=scale,
                     analysis_roi=analysis_roi,
-                    original_download_url=f"/api/v1/files/{stored.file_token}",
+                    # The HTTP boundary decorates this persisted record only after
+                    # tenant authorization, artifact registration, and v2 signing.
+                    original_download_url=None,
                 )
                 stored_images.append(
                     StoredImageAsset(asset=asset, storage_path=stored.relative_path)
@@ -373,6 +377,7 @@ class AnalysisApplicationService:
         uow_factory: UnitOfWorkFactory,
         file_store: LocalFileStore,
         inference_gateway: InferenceGatewayProtocol,
+        file_artifact_access_service: FileArtifactAccessService | None = None,
         dispatcher: DispatcherProtocol | None = None,
         postprocess_config: PostprocessProfile | None = None,
         morphometry_config: MorphometryConfig | None = None,
@@ -381,6 +386,7 @@ class AnalysisApplicationService:
         self.uow_factory = uow_factory
         self.file_store = file_store
         self.inference_gateway = inference_gateway
+        self.file_artifact_access_service = file_artifact_access_service
         self.dispatcher = dispatcher
         self.postprocess_config = (postprocess_config or PostprocessProfile()).model_copy(deep=True)
         self.morphometry_config = (morphometry_config or MorphometryConfig()).model_copy(deep=True)
@@ -772,11 +778,32 @@ class AnalysisApplicationService:
                     }
                 )
         staged_corrected_path: Path | None = None
+        staged_artifact_id: str | None = None
+        corrected_path: Path | None = None
         if request.corrected_mask_token is not None:
-            corrected_mask, staged_corrected_path = self._load_corrected_mask(
-                request.corrected_mask_token,
+            file_access = self.file_artifact_access_service
+            if file_access is None:
+                raise ServiceUnavailableError(details={"component": "file_artifact_access"})
+            try:
+                resolved_mask = file_access.resolve_corrected_mask(
+                    request.corrected_mask_token,
+                    principal=principal,
+                    job_id=parent.job_id,
+                    image_id=parent.image_id,
+                    run_id=parent_run_id,
+                )
+            except FileAccessTokenError as error:
+                raise InvalidImageError(
+                    "人工修正掩膜令牌无效或已过期",
+                    details={"reason": "invalid_corrected_mask_token"},
+                ) from error
+            corrected_mask = self._decode_corrected_mask(
+                resolved_mask.content,
+                filename=resolved_mask.filename,
                 expected_shape=(image.height, image.width),
             )
+            staged_corrected_path = self.file_store.paths.root / resolved_mask.relative_path
+            staged_artifact_id = resolved_mask.artifact_id
             corrected_path = self.file_store.paths.run_artifact(
                 parent.job_id,
                 parent.image_id,
@@ -814,16 +841,32 @@ class AnalysisApplicationService:
             created_at=now,
             updated_at=now,
         )
-        with self.uow_factory() as uow:
-            repositories = uow.repositories
-            _current_parent, scope = repositories.runs.get_with_scope(
-                parent_run_id,
-                tenant_id=tenant_id,
-            )
-            require_mutation(principal, scope)
-            repositories.runs.create_many([child])
-            repositories.jobs.update_status(parent.job_id, JobStatus.QUEUED)
-            uow.commit()
+        try:
+            with self.uow_factory() as uow:
+                repositories = uow.repositories
+                _current_parent, scope = repositories.runs.get_with_scope(
+                    parent_run_id,
+                    tenant_id=tenant_id,
+                )
+                require_mutation(principal, scope)
+                if staged_artifact_id is not None and not (
+                    repositories.file_artifacts.consume_corrected_mask(
+                        staged_artifact_id,
+                        tenant_id=tenant_id,
+                        consumed_at=now,
+                    )
+                ):
+                    raise InvalidImageError(
+                        "人工修正掩膜令牌无效或已被使用",
+                        details={"reason": "invalid_corrected_mask_token"},
+                    )
+                repositories.runs.create_many([child])
+                repositories.jobs.update_status(parent.job_id, JobStatus.QUEUED)
+                uow.commit()
+        except Exception:
+            if corrected_path is not None:
+                corrected_path.unlink(missing_ok=True)
+            raise
 
         if staged_corrected_path is not None:
             self._delete_consumed_corrected_mask(
@@ -873,15 +916,37 @@ class AnalysisApplicationService:
                 details={"filename": filename, "reason": "unsafe_filename"}
             ) from error
         try:
-            self._load_corrected_mask(
-                stored.file_token,
+            file_access = self.file_artifact_access_service
+            if file_access is None:
+                raise ServiceUnavailableError(details={"component": "file_artifact_access"})
+            with open_pinned_managed_file(
+                self.file_store.paths.root,
+                stored.relative_path,
+                expected_size_bytes=stored.size_bytes,
+                expected_sha256=stored.sha256,
+            ) as pinned:
+                content = b"".join(pinned.iter_chunks())
+            self._decode_corrected_mask(
+                content,
+                filename=filename,
                 expected_shape=(image.height, image.width),
+            )
+            token = file_access.issue_corrected_mask_token(
+                principal=principal,
+                job_id=run.job_id,
+                image_id=run.image_id,
+                run_id=run.run_id,
+                storage_path=stored.relative_path,
+                filename=filename,
+                media_type=self._corrected_mask_media_type(filename),
+                expected_sha256=stored.sha256,
+                expected_size_bytes=stored.size_bytes,
             )
         except Exception:
             stored.path.unlink(missing_ok=True)
             raise
         return CorrectedMaskUploadData(
-            corrected_mask_token=stored.file_token,
+            corrected_mask_token=token,
             sha256=stored.sha256,
             width=image.width,
             height=image.height,
@@ -1402,24 +1467,21 @@ class AnalysisApplicationService:
                 }
             )
 
-    def _load_corrected_mask(
-        self,
-        token: str,
+    @staticmethod
+    def _decode_corrected_mask(
+        content: bytes,
         *,
+        filename: str,
         expected_shape: tuple[int, int],
-    ) -> tuple[np.ndarray, Path]:
+    ) -> np.ndarray:
+        if not isinstance(content, bytes):
+            raise TypeError("corrected mask content must be bytes")
         try:
-            path = self.file_store.resolve_file_token(token)
-        except (FileTokenError, FileNotFoundError, OSError, StoragePathError) as error:
-            raise InvalidImageError(
-                "人工修正掩膜令牌无效或已过期",
-                details={"reason": "invalid_corrected_mask_token"},
-            ) from error
-        try:
-            if path.suffix.casefold() == ".npy":
-                data = np.load(path, allow_pickle=False)
+            source = BytesIO(content)
+            if Path(filename).suffix.casefold() == ".npy":
+                data = np.load(source, allow_pickle=False)
             else:
-                with Image.open(path) as image:
+                with Image.open(source) as image:
                     expected_size = (expected_shape[1], expected_shape[0])
                     if image.size != expected_size:
                         raise InvalidImageError(
@@ -1453,7 +1515,18 @@ class AnalysisApplicationService:
                 "人工修正掩膜必须是二值图像",
                 details={"reason": "corrected_mask_not_binary", "unique_values": unique.size},
             )
-        return np.asarray(data > 0, dtype=bool), path
+        return np.asarray(data > 0, dtype=bool)
+
+    @staticmethod
+    def _corrected_mask_media_type(filename: str) -> str:
+        suffix = Path(filename).suffix.casefold()
+        return {
+            ".bmp": "image/bmp",
+            ".npy": "application/x-npy",
+            ".png": "image/png",
+            ".tif": "image/tiff",
+            ".tiff": "image/tiff",
+        }.get(suffix, "application/octet-stream")
 
     def _delete_consumed_corrected_mask(self, *, job_id: str, path: Path) -> None:
         """Consume one staged review upload without touching durable image originals."""

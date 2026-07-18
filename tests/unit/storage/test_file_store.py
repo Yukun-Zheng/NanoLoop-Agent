@@ -91,9 +91,10 @@ def test_save_upload_streams_hashes_and_uses_canonical_path(
     assert stored.relative_path == "job_001/input/img_001/original.tif"
     assert stored.size_bytes == len(content)
     assert stored.sha256 == hashlib.sha256(content).hexdigest()
+    assert not hasattr(stored, "file_token")
     assert stored.path.read_bytes() == content
     assert upload.requested_sizes == [1024 * 1024, 1024 * 1024, 1024 * 1024]
-    assert store.resolve_file_token(stored.file_token) == stored.path
+    assert store.resolve_file_token(store.create_file_token(stored.path)) == stored.path
 
 
 def test_save_upload_enforces_limit_and_removes_temporary_file(paths: StoragePaths) -> None:
@@ -192,7 +193,7 @@ def test_build_zip_hashes_exact_members_and_writes_matching_manifest(
 
     assert exported.path == paths.export_zip("job_001", "job_001.zip")
     assert exported.sha256 == store.calculate_sha256(exported.path)
-    assert store.resolve_file_token(exported.file_token) == exported.path
+    assert store.resolve_file_token(store.create_file_token(exported.path)) == exported.path
     with zipfile.ZipFile(exported.path) as archive:
         names = set(archive.namelist())
         assert names == {
@@ -244,7 +245,7 @@ def test_content_addressed_zip_reuses_exact_selection_and_preserves_old_token_by
     changed = store.build_zip("job_001", [summary], filename=None)
     assert changed.path != first.path
     assert first.path.read_bytes() == first_bytes
-    assert store.resolve_file_token(first.file_token) == first.path
+    assert store.resolve_file_token(store.create_file_token(first.path)) == first.path
 
 
 def test_content_addressed_zip_publish_is_concurrent_and_never_replaces_mismatch(

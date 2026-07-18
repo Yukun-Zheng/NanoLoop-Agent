@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import shutil
 import sqlite3
@@ -22,12 +24,14 @@ from app.operations.backup import (
     restore_backup,
     verify_backup,
 )
+from app.storage.file_token_keyring_store import FileTokenV2KeyRingStore
 
 
 @dataclass(frozen=True)
 class _StateTree:
     layout: BackupLayout
     token: Path
+    v2_keyring: Path
     readonly_output: Path
 
 
@@ -76,6 +80,11 @@ def _make_state_tree(tmp_path: Path) -> _StateTree:
     token = data_root / ".file_token_secret"
     token.write_bytes(b"persisted-file-token-secret")
     os.chmod(token, 0o600)
+    v2_keyring = data_root / ".file_token_v2_keyring.json"
+    FileTokenV2KeyRingStore(v2_keyring).initialize(
+        active_kid="backup-test",
+        key=b"v" * 32,
+    )
     return _StateTree(
         layout=BackupLayout(
             database_path=database,
@@ -87,6 +96,7 @@ def _make_state_tree(tmp_path: Path) -> _StateTree:
             file_token_secret_file=None,
         ),
         token=token,
+        v2_keyring=v2_keyring,
         readonly_output=readonly_output,
     )
 
@@ -103,6 +113,8 @@ def test_create_verify_restore_roundtrip_preserves_unicode_hidden_readonly_and_t
     restored = restore_backup(archive, destination, offline_confirmed=True)
 
     assert created.archive_sha256 == verified.archive_sha256 == restored.archive_sha256
+    assert created.manifest.production_ready is True
+    assert verified.manifest.missing_production_requirements == ()
     assert stat.S_IMODE(archive.stat().st_mode) == 0o600
     assert stat.S_IMODE(created.checksum_path.stat().st_mode) == 0o600
     with zipfile.ZipFile(archive) as bundle:
@@ -120,6 +132,10 @@ def test_create_verify_restore_roundtrip_preserves_unicode_hidden_readonly_and_t
     restored_token = destination / "data" / ".file_token_secret"
     assert restored_token.read_bytes() == state.token.read_bytes()
     assert stat.S_IMODE(restored_token.stat().st_mode) == 0o600
+    restored_v2_keyring = destination / "data" / ".file_token_v2_keyring.json"
+    assert restored_v2_keyring.read_bytes() == state.v2_keyring.read_bytes()
+    assert stat.S_IMODE(restored_v2_keyring.stat().st_mode) == 0o600
+    assert FileTokenV2KeyRingStore(restored_v2_keyring).load().active_kid == "backup-test"
     assert not (destination / "data" / "tmp" / "ignored.tmp").exists()
     assert not (destination / "data" / StateDirectoryLock.filename).exists()
     assert (destination / "data" / "unrelated.db-wal").read_bytes() == (
@@ -127,6 +143,121 @@ def test_create_verify_restore_roundtrip_preserves_unicode_hidden_readonly_and_t
     )
     with sqlite3.connect(destination / "data" / "nanoloop.db") as connection:
         assert connection.execute("SELECT parent_id FROM child").fetchall() == [(1,)]
+
+
+def test_old_archive_without_v2_keyring_remains_compatible_and_reports_gap(
+    tmp_path: Path,
+) -> None:
+    state = _make_state_tree(tmp_path)
+    state.v2_keyring.unlink()
+    archive = tmp_path / "legacy-state.zip"
+
+    created = create_backup(state.layout, archive, offline_confirmed=True)
+    verified = verify_backup(archive)
+    destination = tmp_path / "legacy-restored"
+    restored = restore_backup(archive, destination, offline_confirmed=True)
+
+    for manifest in (created.manifest, verified.manifest, restored.manifest):
+        assert manifest.production_ready is False
+        assert manifest.missing_production_requirements == ("file_token_v2_keyring",)
+    assert (destination / "data" / ".file_token_secret").is_file()
+    assert not (destination / "data" / ".file_token_v2_keyring.json").exists()
+
+
+def test_restore_rejects_semantically_invalid_v2_keyring_before_publication(
+    tmp_path: Path,
+) -> None:
+    state = _make_state_tree(tmp_path)
+    archive = tmp_path / "invalid-restored-keyring.zip"
+    created = create_backup(state.layout, archive, offline_confirmed=True)
+    keyring_member = "data/.file_token_v2_keyring.json"
+    invalid_keyring = b"not-a-valid-keyring"
+
+    with zipfile.ZipFile(archive, mode="r") as source:
+        infos = {info.filename: info for info in source.infolist()}
+        members = {info.filename: source.read(info) for info in source.infolist()}
+    manifest = json.loads(members["manifest.json"])
+    for record in manifest["files"]:
+        if record["path"] == keyring_member:
+            record["size"] = len(invalid_keyring)
+            record["sha256"] = hashlib.sha256(invalid_keyring).hexdigest()
+            break
+    members[keyring_member] = invalid_keyring
+    members["manifest.json"] = (
+        json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8") + b"\n"
+    )
+    with zipfile.ZipFile(archive, mode="w", compression=zipfile.ZIP_STORED) as target:
+        for name, payload in members.items():
+            target.writestr(infos[name], payload)
+    created.checksum_path.write_text(
+        f"{hashlib.sha256(archive.read_bytes()).hexdigest()}\n",
+        encoding="ascii",
+    )
+    destination = tmp_path / "must-not-publish"
+
+    with pytest.raises(BackupValidationError, match="v2 key ring is invalid"):
+        restore_backup(archive, destination, offline_confirmed=True)
+
+    assert not destination.exists()
+
+
+def test_production_ready_backup_requires_a_valid_v2_keyring(tmp_path: Path) -> None:
+    state = _make_state_tree(tmp_path)
+    state.v2_keyring.unlink()
+    required_layout = replace(state.layout, require_file_token_v2_keyring=True)
+
+    with pytest.raises(BackupPreconditionError, match="production-ready backup"):
+        create_backup(required_layout, tmp_path / "required.zip", offline_confirmed=True)
+
+
+def test_explicit_v2_keyring_inside_data_root_maps_to_canonical_member(
+    tmp_path: Path,
+) -> None:
+    state = _make_state_tree(tmp_path)
+    explicit = state.layout.data_root / "operator" / "rotating-keyring.json"
+    explicit.parent.mkdir()
+    state.v2_keyring.rename(explicit)
+    layout = replace(state.layout, file_token_v2_keyring_file=explicit)
+    archive = tmp_path / "explicit.zip"
+
+    created = create_backup(layout, archive, offline_confirmed=True)
+
+    paths = {record.path for record in created.manifest.files}
+    assert "data/.file_token_v2_keyring.json" in paths
+    assert "data/operator/rotating-keyring.json" not in paths
+    with zipfile.ZipFile(archive) as bundle:
+        assert bundle.read("data/.file_token_v2_keyring.json") == explicit.read_bytes()
+
+
+def test_v2_keyring_must_be_protected_valid_and_inside_data_root(tmp_path: Path) -> None:
+    state = _make_state_tree(tmp_path)
+    outside = tmp_path / "outside-keyring.json"
+    state.v2_keyring.rename(outside)
+    outside_layout = replace(state.layout, file_token_v2_keyring_file=outside)
+
+    with pytest.raises(BackupPreconditionError, match="inside data_root"):
+        create_backup(outside_layout, tmp_path / "outside.zip", offline_confirmed=True)
+
+    inside = state.layout.data_root / ".file_token_v2_keyring.json"
+    outside.rename(inside)
+    inside.chmod(0o640)
+    with pytest.raises(BackupPreconditionError, match="mode 0600"):
+        create_backup(state.layout, tmp_path / "mode.zip", offline_confirmed=True)
+
+    inside.chmod(0o600)
+    inside.write_text("not-a-keyring", encoding="utf-8")
+    with pytest.raises(BackupPreconditionError, match="valid protected key ring"):
+        create_backup(state.layout, tmp_path / "invalid.zip", offline_confirmed=True)
+
+
+def test_v2_keyring_source_symlink_is_rejected_without_following_it(tmp_path: Path) -> None:
+    state = _make_state_tree(tmp_path)
+    target = state.layout.data_root / "target-keyring.json"
+    state.v2_keyring.rename(target)
+    state.v2_keyring.symlink_to(target)
+
+    with pytest.raises(BackupPreconditionError, match="non-symlink regular file"):
+        create_backup(state.layout, tmp_path / "symlink.zip", offline_confirmed=True)
 
 
 def test_backup_accepts_committed_wal_without_ephemeral_shm(
@@ -283,5 +414,17 @@ def test_manifest_rejects_reserved_runtime_members(path: str) -> None:
             size=0,
             sha256="0" * 64,
             mode=0o600,
+            mtime_ns=0,
+        )
+
+
+def test_manifest_requires_0600_for_v2_keyring_member() -> None:
+    with pytest.raises(ValueError, match="mode 0600"):
+        BackupFileRecord(
+            path="data/.file_token_v2_keyring.json",
+            component=BackupComponent.RUNTIME_DATA,
+            size=1,
+            sha256="0" * 64,
+            mode=0o640,
             mtime_ns=0,
         )

@@ -241,3 +241,39 @@
 - 保留边界：v1 下载 token 仍是未绑定 tenant/principal 的 bearer capability；知识文档、FTS 和向量
   generation 尚未租户化，故 principal 知识/混合查询刻意不可用。file-token v2、knowledge ownership、
   quota/retention、分布式 rate limit 和多副本协调继续作为后续批次，不宣称公网生产就绪。
+
+## 2026-07-18 18:27 +08:00 — Query actor 批次云端验收
+
+- 分支与提交：`yukun@bbbcd6e0b7ae5938f8fd62c5d774f69d0d69eed7`，已推送，未合入 `main`。
+- 云端证据：GitHub Actions run `29640755223` 全绿；Python 3.11、Python 3.12、Ruff/严格 Mypy、
+  OpenAPI/Alembic 门禁与 CPU 双容器 smoke 四个 job 均成功。
+- 结论边界：云端通过验收 Query actor、双层 tenant scope 与知识路径安全封堵，不改变 principal
+  knowledge/mixed 暂不可用、v1 下载仍为 bearer capability、单实例拓扑及无 quota/retention 的边界。
+- 下一批：安全审计已把 principal 下可被泄漏 v1 token 跨租户下载、corrected-mask purpose 未绑定和
+  `FileResponse` 二次按路径打开列为优先风险；进入固定文件描述符流、不可变 artifact registry、v2
+  principal/purpose 绑定 token 与重叠密钥轮换，继续不修改前端、不合入 `main`。
+
+## 2026-07-18 19:45 +08:00 — Subject-bound 文件能力、制品登记与可恢复密钥环
+
+- 分支：`yukun`，未合入 `main`；本批提交哈希以本条所在提交为准。未修改前端源码，也未纳入工作区中
+  由其他来源改动的 v3 DOCX/Markdown。
+- 文件能力：新增不可变 `file_artifacts` 权威表及终态不可逆触发器，登记 job/image/run、相对路径、
+  basename、MIME、SHA-256、大小和 active/consumed/revoked。v2 HMAC token 精确绑定 tenant、principal、
+  job、artifact、purpose/audience、hash、时间窗和随机 jti，不携带 path 或 credential；principal 模式在
+  decode/文件 I/O 前拒绝 v1，compatibility v1 只限数据库证明属于 legacy principal 的历史 job。
+- TOCTOU 与 replay：下载逐级使用 `openat`/`O_NOFOLLOW` 打开、哈希、回绕并从同一 pinned fd 流出，
+  registry 在固定 fd 后重检；正常结束、取消和客户端断连都由响应生命周期立即关闭 fd。人工修正 mask
+  绑定确切 parent job/image/run，在 child-run 最终事务中以 CAS 一次性消费，竞争失败回滚且清理子制品。
+- 密钥与恢复：新增 canonical、0600、owner-only、bounded keyring store，初始化 no-replace，轮换原子替换
+  并保留旧 key；production 入口只在 missing 时初始化，损坏/软链/宽权限失败关闭。备份/验证/恢复同时
+  覆盖 legacy secret 与 v2 keyring，旧 archive 可恢复但明确报告 production readiness 缺口；新增只输出
+  非秘密 kid 的 `status`/`rotate` CLI，并打入 API runtime 镜像。
+- 独立审查：应用/DB/HTTP 复审未发现租户、主体、purpose、CAS 或约束阻断；运维复审无 P1。HTTP 复审
+  额外复现 Starlette ASGI 2.4 断连跳过 BackgroundTask 导致 fd 泄漏，已改为 response-level `finally`，
+  新回归证明首块发送失败后 descriptor 立即关闭。
+- 本地证据：`make check` 全绿；Ruff、严格 Mypy 121 个源文件、953 项 Pytest、OpenAPI、六页
+  Streamlit AppTest、Alembic 全 upgrade/downgrade/upgrade、单 head 与 ORM metadata drift 均通过；
+  `sh -n scripts/docker-entrypoint.sh`、`docker compose config --quiet` 和 `git diff --check` 通过。
+- 保留边界：正式支持仍是单 API 进程；同 inode 原地修改依赖所有 writer 保持 atomic replace。keyring
+  不热加载、不支持并发 rotate，当前也无旧 key retire/prune；单运维者须停机轮换并重启，8-key 上限前
+  需要后续受审计退休流程。知识文档租户化、quota/retention、分布式限流和多副本协调仍未完成。

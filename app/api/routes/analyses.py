@@ -13,7 +13,7 @@ from app.analysis.application import AnalysisCreationService, AnalysisUpload
 from app.analysis.authorization import require_read
 from app.api.deps import (
     get_analysis_creation_service,
-    get_file_store,
+    get_file_artifact_access_service,
     get_repositories,
     require_api_key_contract,
 )
@@ -29,7 +29,7 @@ from app.contracts.common import ApiResponse
 from app.contracts.identity import PrincipalContext
 from app.core.errors import InvalidImageError
 from app.db.repositories import SqlAlchemyRepositorySet
-from app.storage import LocalFileStore
+from app.files import FileArtifactAccessService
 
 router = APIRouter(
     prefix="/analyses",
@@ -50,6 +50,11 @@ async def create_analysis(
     files: Annotated[list[UploadFile], File(min_length=1, max_length=20)],
     metadata_json: Annotated[str, Form(min_length=2)],
     service: Annotated[AnalysisCreationService, Depends(get_analysis_creation_service)],
+    repositories: Annotated[SqlAlchemyRepositorySet, Depends(get_repositories)],
+    file_access: Annotated[
+        FileArtifactAccessService,
+        Depends(get_file_artifact_access_service),
+    ],
     principal: Annotated[PrincipalContext, Depends(require_api_key_contract)],
 ) -> ApiResponse[JobDetailDTO]:
     try:
@@ -67,6 +72,27 @@ async def create_analysis(
         uploads,
         principal=principal,
     )
+    tenant_id = principal.tenant_id
+    if tenant_id is None:
+        raise ValueError("principal must carry a tenant ID")
+    detail = detail.model_copy(
+        update={
+            "images": [
+                decorate_image_download(
+                    image,
+                    storage_path=repositories.images.get_storage_path_scoped(
+                        detail.job.job_id,
+                        image.image_id,
+                        tenant_id=tenant_id,
+                    ),
+                    request=request,
+                    file_access=file_access,
+                    principal=principal,
+                )
+                for image in detail.images
+            ]
+        }
+    )
     return success_response(
         detail,
         request=request,
@@ -82,7 +108,10 @@ def get_analysis(
     job_id: str,
     request: Request,
     repositories: Annotated[SqlAlchemyRepositorySet, Depends(get_repositories)],
-    file_store: Annotated[LocalFileStore, Depends(get_file_store)],
+    file_access: Annotated[
+        FileArtifactAccessService,
+        Depends(get_file_artifact_access_service),
+    ],
     principal: Annotated[PrincipalContext, Depends(require_api_key_contract)],
 ) -> ApiResponse[JobDetailDTO]:
     tenant_id = principal.tenant_id
@@ -100,7 +129,8 @@ def get_analysis(
                 tenant_id=tenant_id,
             ),
             request=request,
-            file_store=file_store,
+            file_access=file_access,
+            principal=principal,
         )
         for image in repositories.images.list_by_job_scoped(
             job_id,
@@ -115,7 +145,8 @@ def get_analysis(
                 tenant_id=tenant_id,
             ),
             request=request,
-            file_store=file_store,
+            file_access=file_access,
+            principal=principal,
         )
         for run in repositories.runs.list_by_job_scoped(
             job_id,

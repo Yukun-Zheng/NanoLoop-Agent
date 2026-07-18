@@ -9,7 +9,7 @@ from app.analysis.application import AnalysisApplicationService
 from app.analysis.authorization import require_read
 from app.api.deps import (
     get_analysis_application_service,
-    get_file_store,
+    get_file_artifact_access_service,
     get_repositories,
     require_api_key_contract,
 )
@@ -28,7 +28,7 @@ from app.contracts.common import ApiResponse
 from app.contracts.identity import PrincipalContext
 from app.core.errors import InvalidImageError
 from app.db.repositories import SqlAlchemyRepositorySet
-from app.storage import LocalFileStore
+from app.files import FileArtifactAccessService
 
 router = APIRouter(
     tags=["runs"],
@@ -97,7 +97,10 @@ def get_run(
     run_id: str,
     request: Request,
     repositories: Annotated[SqlAlchemyRepositorySet, Depends(get_repositories)],
-    file_store: Annotated[LocalFileStore, Depends(get_file_store)],
+    file_access: Annotated[
+        FileArtifactAccessService,
+        Depends(get_file_artifact_access_service),
+    ],
     principal: Annotated[PrincipalContext, Depends(require_api_key_contract)],
 ) -> ApiResponse[SegmentationRunDTO]:
     tenant_id = principal.tenant_id
@@ -112,7 +115,8 @@ def get_run(
             tenant_id=tenant_id,
         ),
         request=request,
-        file_store=file_store,
+        file_access=file_access,
+        principal=principal,
     )
     return success_response(decorated, request=request)
 
