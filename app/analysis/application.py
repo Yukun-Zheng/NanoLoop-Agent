@@ -12,6 +12,7 @@ from uuid import uuid4
 import numpy as np
 from PIL import Image
 
+from app.analysis.authorization import require_create, require_mutation
 from app.analysis.config import (
     ExecutionBuildProvenance,
     MorphometryConfig,
@@ -164,10 +165,11 @@ class AnalysisCreationService:
         *,
         principal: PrincipalContext,
     ) -> JobDetailDTO:
-        if not isinstance(metadata, CreateAnalysisMetadata):
-            raise TypeError("metadata must be CreateAnalysisMetadata")
         if not isinstance(principal, PrincipalContext):
             raise TypeError("principal must be PrincipalContext")
+        require_create(principal)
+        if not isinstance(metadata, CreateAnalysisMetadata):
+            raise TypeError("metadata must be CreateAnalysisMetadata")
         tenant_id = principal.tenant_id
         owner_principal_id = principal.principal_id
         if tenant_id is None or owner_principal_id is None:
@@ -380,16 +382,27 @@ class AnalysisApplicationService:
         self.file_store = file_store
         self.inference_gateway = inference_gateway
         self.dispatcher = dispatcher
-        self.postprocess_config = (postprocess_config or PostprocessProfile()).model_copy(
-            deep=True
-        )
-        self.morphometry_config = (morphometry_config or MorphometryConfig()).model_copy(
-            deep=True
-        )
+        self.postprocess_config = (postprocess_config or PostprocessProfile()).model_copy(deep=True)
+        self.morphometry_config = (morphometry_config or MorphometryConfig()).model_copy(deep=True)
         self.quality_config = (quality_config or QualityGateConfig()).model_copy(deep=True)
         self.report_writer = ReportWriter(file_store)
 
-    def create_runs(self, job_id: str, request: CreateRunsRequest) -> list[str]:
+    def create_runs(
+        self,
+        job_id: str,
+        request: CreateRunsRequest,
+        *,
+        principal: PrincipalContext,
+    ) -> list[str]:
+        tenant_id = principal.tenant_id
+        if tenant_id is None:
+            raise ValueError("principal must carry a tenant ID")
+        # Fail before model discovery, health probes, or bundle freezing can
+        # cause observable work for an unauthorized resource identifier.
+        with self.uow_factory() as uow:
+            scope = uow.repositories.jobs.get_scope(job_id, tenant_id=tenant_id)
+            require_mutation(principal, scope)
+
         models = {model.model_id: model for model in self.inference_gateway.list_models()}
         selected_models = [
             self._require_ready_model(model_id, models) for model_id in request.model_ids
@@ -435,7 +448,9 @@ class AnalysisApplicationService:
 
         with self.uow_factory() as uow:
             repositories = uow.repositories
-            job = repositories.jobs.get(job_id)
+            scope = repositories.jobs.get_scope(job_id, tenant_id=tenant_id)
+            require_mutation(principal, scope)
+            job = scope.job
             allowed_job_states = {
                 JobStatus.READY_FOR_CONFIGURATION,
                 JobStatus.COMPLETED,
@@ -447,7 +462,13 @@ class AnalysisApplicationService:
                     "任务尚未完成上传校验，不能创建运行",
                     details={"job_id": job_id, "status": job.status.value},
                 )
-            images = {image.image_id: image for image in repositories.images.list_by_job(job_id)}
+            images = {
+                image.image_id: image
+                for image in repositories.images.list_by_job_scoped(
+                    job_id,
+                    tenant_id=tenant_id,
+                )
+            }
             if not images:
                 raise JobStateConflictError(
                     "任务没有可分析的已验证图像",
@@ -462,7 +483,11 @@ class AnalysisApplicationService:
                         details={"resource": "image", "image_id": image_id, "job_id": job_id}
                     )
                 selected_images.append(image)
-                box_set = repositories.boxes.get_active(image_id)
+                box_set = repositories.boxes.get_active_scoped(
+                    job_id,
+                    image_id,
+                    tenant_id=tenant_id,
+                )
                 boxes_by_image[image_id] = box_set
                 if request.roi_mode == RoiMode.BOXES:
                     expected = request.box_revisions[image_id]
@@ -491,9 +516,7 @@ class AnalysisApplicationService:
                     inference = request.inference.model_copy(
                         update={"threshold": effective_threshold}
                     )
-                    box_revision = (
-                        box_set.revision if request.roi_mode == RoiMode.BOXES else None
-                    )
+                    box_revision = box_set.revision if request.roi_mode == RoiMode.BOXES else None
                     model_health = health.get(model.model_id)
                     resolved_weight_sha256 = model.weight_sha256 or (
                         model_health.weight_sha256 if model_health else None
@@ -570,14 +593,31 @@ class AnalysisApplicationService:
         self._dispatch_runs(run_ids)
         return run_ids
 
-    def create_review_run(self, parent_run_id: str, request: ReviewRunRequest) -> str:
+    def create_review_run(
+        self,
+        parent_run_id: str,
+        request: ReviewRunRequest,
+        *,
+        principal: PrincipalContext,
+    ) -> str:
         """Create an immutable child run with reviewed inference parameters."""
 
+        tenant_id = principal.tenant_id
+        if tenant_id is None:
+            raise ValueError("principal must carry a tenant ID")
         now = utc_now()
         with self.uow_factory() as uow:
             repositories = uow.repositories
-            parent = repositories.runs.get(parent_run_id)
-            image = repositories.images.get(parent.image_id)
+            parent, scope = repositories.runs.get_with_scope(
+                parent_run_id,
+                tenant_id=tenant_id,
+            )
+            require_mutation(principal, scope)
+            image = repositories.images.get_scoped(
+                parent.job_id,
+                parent.image_id,
+                tenant_id=tenant_id,
+            )
             if parent.status not in {
                 JobStatus.COMPLETED,
                 JobStatus.COMPLETED_WITH_WARNINGS,
@@ -597,13 +637,11 @@ class AnalysisApplicationService:
             "adapter_sha256",
         )
         needs_model_lookup = (
-            request.corrected_mask_token is None
-            and parent.configuration.model_bundle is None
+            request.corrected_mask_token is None and parent.configuration.model_bundle is None
         ) or (
             legacy_parent
             and any(
-                getattr(parent.configuration, field) is None
-                for field in model_provenance_fields
+                getattr(parent.configuration, field) is None for field in model_provenance_fields
             )
         )
         current_model_provenance: dict[str, object] = {}
@@ -656,8 +694,7 @@ class AnalysisApplicationService:
             missing_current = [
                 field
                 for field, value in current_model_provenance.items()
-                if value is None
-                and (field != "adapter_sha256" or supports_bundle_freeze)
+                if value is None and (field != "adapter_sha256" or supports_bundle_freeze)
             ]
             if missing_current:
                 raise ModelNotReadyError(
@@ -691,9 +728,7 @@ class AnalysisApplicationService:
         )
         child_run_id = f"run_{uuid4().hex}"
         configuration_updates: dict[str, object] = {
-            "schema_version": (
-                3 if parent.configuration.schema_version == 3 else 2
-            ),
+            "schema_version": (3 if parent.configuration.schema_version == 3 else 2),
             "provenance_status": "complete",
             "provenance_warnings": (
                 ["review_configuration_resolved_from_legacy_parent"]
@@ -701,9 +736,7 @@ class AnalysisApplicationService:
                 else list(parent.configuration.provenance_warnings)
             ),
             "inference": inference,
-            "image_sha256": (
-                image.sha256 if legacy_parent else parent.configuration.image_sha256
-            ),
+            "image_sha256": (image.sha256 if legacy_parent else parent.configuration.image_sha256),
             "scale_nm_per_pixel": (
                 image.scale_nm_per_pixel
                 if legacy_parent
@@ -728,9 +761,7 @@ class AnalysisApplicationService:
                     expected_adapter_path=current_model_provenance["adapter_path"],
                     expected_weight_sha256=current_model_provenance["weight_sha256"],
                     expected_config_sha256=current_model_provenance["config_sha256"],
-                    expected_model_card_sha256=current_model_provenance[
-                        "model_card_sha256"
-                    ],
+                    expected_model_card_sha256=current_model_provenance["model_card_sha256"],
                     expected_adapter_sha256=current_model_provenance["adapter_sha256"],
                 )
                 configuration_updates.update(
@@ -785,6 +816,11 @@ class AnalysisApplicationService:
         )
         with self.uow_factory() as uow:
             repositories = uow.repositories
+            _current_parent, scope = repositories.runs.get_with_scope(
+                parent_run_id,
+                tenant_id=tenant_id,
+            )
+            require_mutation(principal, scope)
             repositories.runs.create_many([child])
             repositories.jobs.update_status(parent.job_id, JobStatus.QUEUED)
             uow.commit()
@@ -802,12 +838,25 @@ class AnalysisApplicationService:
         run_id: str,
         stream: BinaryIO,
         filename: str,
+        *,
+        principal: PrincipalContext,
     ) -> CorrectedMaskUploadData:
         """Store and validate a short-lived corrected-mask input for the review API."""
 
+        tenant_id = principal.tenant_id
+        if tenant_id is None:
+            raise ValueError("principal must carry a tenant ID")
         with self.uow_factory() as uow:
-            run = uow.repositories.runs.get(run_id)
-            image = uow.repositories.images.get(run.image_id)
+            run, scope = uow.repositories.runs.get_with_scope(
+                run_id,
+                tenant_id=tenant_id,
+            )
+            require_mutation(principal, scope)
+            image = uow.repositories.images.get_scoped(
+                run.job_id,
+                run.image_id,
+                tenant_id=tenant_id,
+            )
         try:
             stored = self.file_store.save_upload(
                 run.job_id,
@@ -1091,9 +1140,7 @@ class AnalysisApplicationService:
         build_mismatches: list[str],
         output: SegmentationOutput,
     ) -> ExecutionRuntimeProvenance:
-        warnings = [
-            f"execution_build_mismatch:{field}" for field in build_mismatches
-        ]
+        warnings = [f"execution_build_mismatch:{field}" for field in build_mismatches]
         evidence = output.execution
         if configuration.review_source == "corrected_mask":
             warnings.append("model_inference_not_applicable_corrected_mask")
@@ -1203,9 +1250,7 @@ class AnalysisApplicationService:
             return
 
     @staticmethod
-    def _require_ready_model(
-        model_id: str, models: dict[str, ModelMetadata]
-    ) -> ModelMetadata:
+    def _require_ready_model(model_id: str, models: dict[str, ModelMetadata]) -> ModelMetadata:
         model = models.get(model_id)
         if model is None:
             raise ModelNotFoundError(details={"model_id": model_id})
@@ -1421,10 +1466,7 @@ class AnalysisApplicationService:
         if (
             len(relative.parts) != 2
             or not relative.parts[0].startswith("review_mask_")
-            or (
-                relative.parts[1] != "original"
-                and not relative.parts[1].startswith("original.")
-            )
+            or (relative.parts[1] != "original" and not relative.parts[1].startswith("original."))
         ):
             return
 

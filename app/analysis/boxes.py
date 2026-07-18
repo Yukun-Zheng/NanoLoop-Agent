@@ -3,9 +3,10 @@
 import logging
 from collections.abc import Callable
 
+from app.analysis.authorization import require_mutation
 from app.contracts.analyses import BoxSetDTO, ROIBox
+from app.contracts.identity import PrincipalContext
 from app.contracts.repositories import UnitOfWork
-from app.core.errors import ResourceNotFoundError
 from app.core.logging import log_context
 from app.storage import LocalFileStore
 
@@ -29,15 +30,21 @@ class BoxApplicationService:
         image_id: str,
         expected_revision: int,
         boxes: list[ROIBox],
+        principal: PrincipalContext,
     ) -> BoxSetDTO:
+        tenant_id = principal.tenant_id
+        if tenant_id is None:
+            raise ValueError("principal must carry a tenant ID")
         with self.uow_factory() as uow:
-            uow.repositories.jobs.get(job_id)
-            image = uow.repositories.images.get(image_id)
-            if image.job_id != job_id:
-                raise ResourceNotFoundError(
-                    details={"resource": "image", "job_id": job_id, "image_id": image_id}
-                )
-            result = uow.repositories.boxes.replace(image_id, expected_revision, boxes)
+            scope = uow.repositories.jobs.get_scope(job_id, tenant_id=tenant_id)
+            require_mutation(principal, scope)
+            result = uow.repositories.boxes.replace_scoped(
+                job_id,
+                image_id,
+                expected_revision,
+                boxes,
+                tenant_id=tenant_id,
+            )
             uow.commit()
 
         # The relational revision is authoritative.  This JSON snapshot is a

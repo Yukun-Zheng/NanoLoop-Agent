@@ -167,3 +167,38 @@
 - 保留边界：v1 仍是持有即用的签名路径，不包含 tenant/principal、artifact identity、purpose、撤销或
   key id，也未消除 FileResponse 再次按路径打开的 TOCTOU；这些必须在资源授权完成后通过独立 v2
   协议与安全文件描述符流式下载处理。
+
+## 2026-07-18 17:22 +08:00 — 所有权、限流与文件令牌批次云端验收
+
+- 分支与提交：`yukun@2c91d2a6baa544faea76d42e2cdaa92940dced66`，包含
+  `31a88a7`（Analysis ownership）、`3983a1e`（二阶段 principal 限流）和 `2c91d2a`（v1 file-token
+  hardening），已推送，未合入 `main`。
+- 云端证据：GitHub Actions run `29637781904` 全绿；Python 3.11、Python 3.12、Ruff/严格 Mypy、
+  OpenAPI/Alembic 门禁与 CPU 双容器 smoke 全部通过。
+- 结论边界：云端通过只验收这三个提交中记录的事实，不把 ownership schema 当成授权完成，也不把
+  单进程限流当成 quota，亦不把 v1 bearer token 当成 tenant 授权证明。
+
+## 2026-07-18 17:24 +08:00 — Analysis 聚合 tenant/role/owner 授权
+
+- 分支：`yukun`，未合入 `main`；本批按 ADR 0006/0009 完成 Analysis 聚合的首个资源授权切片，
+  不修改前端，也不扩大为完整多租户生产声明。
+- 查询与策略顺序：job、image、box、run、artifact path 和 export query snapshot 均先在 SQL
+  `WHERE/JOIN` 中按已认证 `tenant_id` 查询；缺失与跨租户统一 `404 RESOURCE_NOT_FOUND`，只有同租户
+  可见资源再判断角色/owner并返回 403。tenant_admin 可管理本租户，analyst 可创建且只修改自己拥有的
+  analysis，peer analyst 可读不可改，viewer 只读；disabled/shared-key 固定 legacy tenant_admin 走同一
+  策略，不设置 auth-mode 绕过。
+- 同事务边界：box CAS、create-runs 最终写入和 review child 创建都在 mutation UoW 内重检；
+  create-runs 在 model discovery/health/bundle freeze 前预检，review 在 provider/文件工作前及最终写入时
+  双检，corrected-mask 在读上传流和写文件前检查。显式路由依赖复用 middleware principal，每个请求
+  仍只有一次 credential identity JOIN。
+- 关系完整性：迁移 `c9a4e7b2d6f1` 在任何 DDL 前拒绝 run-image job mismatch、query-image job
+  mismatch 与跨 job review parent；新增 image/job、run/job 唯一与复合外键，保留 run-image CASCADE、
+  parent/query-image SET NULL，并在 upgrade/downgrade 后执行 SQLite `foreign_key_check`。
+- 合同证据：覆盖跨租户/缺失 404、owner/admin 成功、peer/viewer 403、viewer 创建无数据库/上传流/文件
+  副作用、未授权 create-runs 不触发 gateway、corrected-mask 不读 stream、review 最终 UoW 失败不建
+  child，以及单 identity JOIN。三轮独立只读交叉审查均未发现 P1/P2/P3。
+- 本地证据：Ruff、严格 Mypy 115 个源文件、685 项 Pytest、OpenAPI、六页 Streamlit AppTest、
+  Alembic 全 upgrade/downgrade/upgrade、单 head 与 ORM metadata drift 全部通过；工作区未包含前端改动。
+- 保留边界：query actor 与 data-tool 深层 tenant scope、tenant/job-bound file-token v2、knowledge document
+  tenant ownership、quota/retention 和多副本架构仍未完成；现有 v1 下载 URL 仍是 bearer capability。
+  下一批进入 query actor 与双层查询隔离，完成前 principal 模式仍不得宣称公网多租户就绪。

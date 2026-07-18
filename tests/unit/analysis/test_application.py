@@ -17,6 +17,7 @@ from app.analysis.application import (
     AnalysisCreationService,
     AnalysisUpload,
 )
+from app.analysis.authorization import require_mutation as enforce_mutation
 from app.analysis.config import MorphometryConfig, PostprocessProfile, QualityGateConfig
 from app.analysis.instance_artifacts import decode_binary_mask
 from app.analysis.morphometry import MorphometryResult
@@ -46,16 +47,25 @@ from app.contracts.enums import (
     RoiMode,
     ScaleMode,
 )
-from app.contracts.identity import LEGACY_PRINCIPAL_ID, LEGACY_TENANT_ID, AuthMode
+from app.contracts.identity import (
+    LEGACY_PRINCIPAL_ID,
+    LEGACY_TENANT_ID,
+    AuthMode,
+    PrincipalContext,
+    PrincipalKind,
+    PrincipalRole,
+)
 from app.contracts.inference import SegmentationOutput, SegmentationRequest
 from app.contracts.models import ModelHealth, ModelMetadata
-from app.contracts.repositories import StoredImageAsset, UnitOfWork
+from app.contracts.repositories import AnalysisResourceScope, StoredImageAsset, UnitOfWork
 from app.core.config import Settings
 from app.core.errors import (
     ExecutionBuildMismatchError,
+    ForbiddenError,
     InputArtifactMismatchError,
     InvalidImageError,
     ModelNotReadyError,
+    ResourceNotFoundError,
 )
 from app.core.identity import legacy_principal_context
 from app.db.base import Base
@@ -73,6 +83,23 @@ ApplicationHarness = tuple[
     LocalFileStore,
     Callable[[], UnitOfWork],
 ]
+LEGACY_ADMIN = legacy_principal_context(AuthMode.DISABLED)
+
+
+def _principal(
+    role: PrincipalRole,
+    *,
+    tenant_hex: str = "0",
+    principal_hex: str = "1",
+) -> PrincipalContext:
+    return PrincipalContext(
+        tenant_id=f"tnt_{tenant_hex * 32}",
+        principal_id=f"prn_{principal_hex * 32}",
+        credential_id=f"crd_{principal_hex * 32}",
+        kind=PrincipalKind.USER,
+        role=role,
+        auth_mode=AuthMode.PRINCIPAL,
+    )
 
 
 class FakeGateway:
@@ -343,9 +370,7 @@ def application_harness(tmp_path: Path) -> Iterator[ApplicationHarness]:
                         sample_id="sample_1",
                         material_formula="TiO2",
                         scale_nm_per_pixel=1.0,
-                        analysis_roi=AnalysisROI(
-                            valid_rect=PixelRect(x1=0, y1=0, x2=64, y2=64)
-                        ),
+                        analysis_roi=AnalysisROI(valid_rect=PixelRect(x1=0, y1=0, x2=64, y2=64)),
                     ),
                 )
             ]
@@ -361,6 +386,7 @@ def application_harness(tmp_path: Path) -> Iterator[ApplicationHarness]:
                 status=ModelStatus.READY.value,
             )
         )
+
     def factory() -> UnitOfWork:
         return SqlAlchemyUnitOfWork(database.session_factory)
 
@@ -385,6 +411,7 @@ def test_create_and_execute_run_closes_the_analysis_loop(
             roi_mode=RoiMode.FULL_IMAGE,
             inference=InferenceOptions(min_area_px=8, exclude_border=True),
         ),
+        principal=LEGACY_ADMIN,
     )
     assert len(run_ids) == 1
 
@@ -398,9 +425,7 @@ def test_create_and_execute_run_closes_the_analysis_loop(
     assert completed.configuration.model_card_sha256 == "c" * 64
     assert completed.execution is not None
     assert completed.execution.actual_device == "not_applicable"
-    assert "runtime_execution_evidence_unavailable_legacy_adapter" in (
-        completed.execution.warnings
-    )
+    assert "runtime_execution_evidence_unavailable_legacy_adapter" in (completed.execution.warnings)
     assert [event.to_status for event in completed.status_history] == [
         JobStatus.QUEUED,
         JobStatus.PREPROCESSING,
@@ -500,6 +525,7 @@ def test_queued_run_executes_complete_bundle_after_config_and_card_sources_chang
             model_ids=["unet-general-balanced-v1"],
             roi_mode=RoiMode.FULL_IMAGE,
         ),
+        principal=LEGACY_ADMIN,
     )[0]
     with factory() as uow:
         queued = uow.repositories.runs.get(run_id)
@@ -531,15 +557,22 @@ def test_queued_run_executes_complete_bundle_after_config_and_card_sources_chang
     inference_review_id = service.create_review_run(
         run_id,
         ReviewRunRequest(threshold=0.61),
+        principal=LEGACY_ADMIN,
     )
     corrected_mask = BytesIO()
     Image.new("L", (64, 64), color=255).save(corrected_mask, format="PNG")
     corrected_mask.seek(0)
-    staged = service.stage_corrected_mask(run_id, corrected_mask, "corrected.png")
+    staged = service.stage_corrected_mask(
+        run_id,
+        corrected_mask,
+        "corrected.png",
+        principal=LEGACY_ADMIN,
+    )
     staged_path = file_store.resolve_file_token(staged.corrected_mask_token)
     corrected_review_id = service.create_review_run(
         run_id,
         ReviewRunRequest(corrected_mask_token=staged.corrected_mask_token),
+        principal=LEGACY_ADMIN,
     )
     assert not staged_path.exists()
     with pytest.raises(FileTokenError, match="available"):
@@ -599,6 +632,7 @@ def test_execution_uses_only_the_frozen_scientific_configuration(
             model_ids=["unet-general-balanced-v1"],
             roi_mode=RoiMode.FULL_IMAGE,
         ),
+        principal=LEGACY_ADMIN,
     )[0]
 
     # These are deliberately changed after the immutable run was created.
@@ -677,6 +711,7 @@ def test_schema_v3_build_mismatch_fails_before_adapter_load(
             model_ids=["unet-general-balanced-v1"],
             roi_mode=RoiMode.FULL_IMAGE,
         ),
+        principal=LEGACY_ADMIN,
     )[0]
     with database.session() as session:
         record = session.get(SegmentationRun, run_id)
@@ -695,9 +730,7 @@ def test_schema_v3_build_mismatch_fails_before_adapter_load(
     with pytest.raises(ExecutionBuildMismatchError) as captured:
         service.execute_run(run_id)
 
-    assert captured.value.details["mismatched_fields"] == [
-        "application_source_sha256"
-    ]
+    assert captured.value.details["mismatched_fields"] == ["application_source_sha256"]
     assert load_calls == []
     with database.session() as session:
         failed = session.get(SegmentationRun, run_id)
@@ -723,6 +756,7 @@ def test_changed_original_image_fails_before_gateway_call(
             model_ids=["unet-general-balanced-v1"],
             roi_mode=RoiMode.FULL_IMAGE,
         ),
+        principal=LEGACY_ADMIN,
     )[0]
     with factory() as uow:
         storage_path = uow.repositories.images.get_storage_path("img_1")
@@ -774,6 +808,7 @@ def test_complete_configuration_rejects_missing_provenance_field(
             model_ids=["unet-general-balanced-v1"],
             roi_mode=RoiMode.FULL_IMAGE,
         ),
+        principal=LEGACY_ADMIN,
     )[0]
     with factory() as uow:
         payload = uow.repositories.runs.get(run_id).configuration.model_dump(mode="python")
@@ -799,6 +834,7 @@ def test_schema_v1_run_uses_explicit_legacy_fallback_and_review_upgrades_snapsho
             model_ids=["unet-general-balanced-v1"],
             roi_mode=RoiMode.FULL_IMAGE,
         ),
+        principal=LEGACY_ADMIN,
     )[0]
     with database.session() as session:
         record = session.get(SegmentationRun, run_id)
@@ -831,16 +867,18 @@ def test_schema_v1_run_uses_explicit_legacy_fallback_and_review_upgrades_snapsho
     completed = service.execute_run(run_id)
 
     assert completed.configuration.provenance_status == "legacy_fallback"
-    assert completed.configuration.provenance_warnings == [
-        "legacy_run_configuration_incomplete"
-    ]
+    assert completed.configuration.provenance_warnings == ["legacy_run_configuration_incomplete"]
     assert completed.summary is not None
     assert completed.summary.mean_equivalent_diameter_nm is None
     assert completed.quality is not None
     assert "legacy_run_configuration_fallback" in completed.quality.reasons
     assert "legacy_physical_scale_not_frozen_pixel_metrics_only" in completed.quality.reasons
 
-    review_id = service.create_review_run(run_id, ReviewRunRequest(threshold=0.7))
+    review_id = service.create_review_run(
+        run_id,
+        ReviewRunRequest(threshold=0.7),
+        principal=LEGACY_ADMIN,
+    )
     with factory() as uow:
         review = uow.repositories.runs.get(review_id)
     assert review.configuration.schema_version == 2
@@ -969,6 +1007,7 @@ def test_create_runs_persists_two_by_three_cartesian_product_without_duplicate_d
             box_revisions={"img_1": 2, "img_2": 1},
             inference=requested_inference,
         ),
+        principal=LEGACY_ADMIN,
     )
 
     assert len(run_ids) == 6
@@ -1007,11 +1046,7 @@ def test_create_runs_persists_two_by_three_cartesian_product_without_duplicate_d
         )
         persisted_runs = [repositories.runs.get(run_id) for run_id in run_ids]
 
-    expected_pairs = [
-        (image_id, model_id)
-        for image_id in image_ids
-        for model_id in model_ids
-    ]
+    expected_pairs = [(image_id, model_id) for image_id in image_ids for model_id in model_ids]
     assert [(run.image_id, run.model_id) for run in persisted_runs] == expected_pairs
     expected_revisions = {"img_1": 2, "img_2": 1}
     for run in persisted_runs:
@@ -1054,6 +1089,7 @@ def test_border_exclusion_preserves_prefilter_quality_diagnostics(
             roi_mode=RoiMode.FULL_IMAGE,
             inference=InferenceOptions(min_area_px=8, exclude_border=True),
         ),
+        principal=LEGACY_ADMIN,
     )[0]
 
     completed = service.execute_run(run_id)
@@ -1090,6 +1126,7 @@ def test_execution_failure_is_isolated_and_persisted(
             model_ids=["unet-general-balanced-v1"],
             roi_mode=RoiMode.FULL_IMAGE,
         ),
+        principal=LEGACY_ADMIN,
     )[0]
     with pytest.raises(RuntimeError, match="fixture inference failed"):
         service.execute_run(run_id)
@@ -1253,6 +1290,7 @@ def test_review_creates_immutable_child_run(application_harness: ApplicationHarn
             model_ids=["unet-general-balanced-v1"],
             roi_mode=RoiMode.FULL_IMAGE,
         ),
+        principal=LEGACY_ADMIN,
     )[0]
     service.execute_run(parent_id)
     with database.session() as session:
@@ -1266,6 +1304,7 @@ def test_review_creates_immutable_child_run(application_harness: ApplicationHarn
     child_id = service.create_review_run(
         parent_id,
         ReviewRunRequest(threshold=0.8, min_area_px=12, watershed_enabled=True),
+        principal=LEGACY_ADMIN,
     )
 
     with database.session() as session:
@@ -1310,12 +1349,17 @@ def test_review_rejects_changed_model_provenance(
             model_ids=["unet-general-balanced-v1"],
             roi_mode=RoiMode.FULL_IMAGE,
         ),
+        principal=LEGACY_ADMIN,
     )[0]
     service.execute_run(parent_id)
     gateway.model = gateway.model.model_copy(update={"config_sha256": "d" * 64})
 
     with pytest.raises(ModelNotReadyError) as captured:
-        service.create_review_run(parent_id, ReviewRunRequest(threshold=0.8))
+        service.create_review_run(
+            parent_id,
+            ReviewRunRequest(threshold=0.8),
+            principal=LEGACY_ADMIN,
+        )
 
     assert captured.value.details["reason"] == "config_sha256_mismatch"
 
@@ -1337,6 +1381,7 @@ def test_corrected_mask_review_bypasses_model_and_preserves_hash(
             model_ids=["unet-general-balanced-v1"],
             roi_mode=RoiMode.FULL_IMAGE,
         ),
+        principal=LEGACY_ADMIN,
     )[0]
     service.execute_run(parent_id)
 
@@ -1352,6 +1397,7 @@ def test_corrected_mask_review_bypasses_model_and_preserves_hash(
     child_id = service.create_review_run(
         parent_id,
         ReviewRunRequest(corrected_mask_token=token, min_area_px=4),
+        principal=LEGACY_ADMIN,
     )
     completed = service.execute_run(child_id)
 
@@ -1383,6 +1429,7 @@ def test_corrected_mask_review_never_deletes_a_referenced_original(
             model_ids=["unet-general-balanced-v1"],
             roi_mode=RoiMode.FULL_IMAGE,
         ),
+        principal=LEGACY_ADMIN,
     )[0]
     service.execute_run(parent_id)
     with database.session() as session:
@@ -1396,6 +1443,7 @@ def test_corrected_mask_review_never_deletes_a_referenced_original(
     service.create_review_run(
         parent_id,
         ReviewRunRequest(corrected_mask_token=original_token, min_area_px=4),
+        principal=LEGACY_ADMIN,
     )
 
     assert original_path.read_bytes() == original_bytes
@@ -1436,3 +1484,167 @@ def test_corrected_mask_rejects_wrong_dimensions_before_pixel_decode(
         service._load_corrected_mask(token, expected_shape=(64, 64))
 
     assert exc_info.value.details["reason"] == "corrected_mask_shape_mismatch"
+
+
+def test_viewer_create_is_forbidden_before_stream_or_managed_file_side_effect(
+    application_harness: ApplicationHarness,
+) -> None:
+    _database, file_store, factory = application_harness
+    service = AnalysisCreationService(uow_factory=factory, file_store=file_store)
+
+    class UnreadableUpload(BytesIO):
+        read_calls = 0
+
+        def read(self, _size: int = -1) -> bytes:
+            self.read_calls += 1
+            raise AssertionError("forbidden create must not read the upload stream")
+
+    upload = UnreadableUpload()
+    before = set(file_store.paths.root.rglob("*"))
+    with pytest.raises(ForbiddenError):
+        service.create_analysis(
+            CreateAnalysisMetadata(
+                job_name="viewer must not create",
+                images=[ImageMetadataInput(filename="blocked.png", sample_id="blocked")],
+            ),
+            [AnalysisUpload(filename="blocked.png", stream=upload)],
+            principal=_principal(PrincipalRole.VIEWER, principal_hex="2"),
+        )
+
+    assert upload.read_calls == 0
+    assert set(file_store.paths.root.rglob("*")) == before
+
+
+@pytest.mark.parametrize(
+    ("principal", "expected_error"),
+    [
+        (_principal(PrincipalRole.ANALYST, principal_hex="2"), ForbiddenError),
+        (
+            _principal(PrincipalRole.ANALYST, tenant_hex="a", principal_hex="3"),
+            ResourceNotFoundError,
+        ),
+    ],
+)
+def test_create_runs_rejects_before_any_gateway_work(
+    application_harness: ApplicationHarness,
+    principal: PrincipalContext,
+    expected_error: type[Exception],
+) -> None:
+    _database, file_store, factory = application_harness
+
+    class UntouchedGateway:
+        list_calls = 0
+
+        def list_models(self, _only_ready: bool = False) -> list[ModelMetadata]:
+            self.list_calls += 1
+            raise AssertionError("authorization must precede model discovery")
+
+    gateway = UntouchedGateway()
+    service = AnalysisApplicationService(
+        uow_factory=factory,
+        file_store=file_store,
+        inference_gateway=gateway,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(expected_error):
+        service.create_runs(
+            "job_1",
+            CreateRunsRequest(
+                image_ids=["img_1"],
+                model_ids=["unet-general-balanced-v1"],
+                roi_mode=RoiMode.FULL_IMAGE,
+            ),
+            principal=principal,
+        )
+
+    assert gateway.list_calls == 0
+
+
+def test_corrected_mask_forbidden_before_upload_stream_read(
+    application_harness: ApplicationHarness,
+) -> None:
+    _database, file_store, factory = application_harness
+    service = AnalysisApplicationService(
+        uow_factory=factory,
+        file_store=file_store,
+        inference_gateway=FakeGateway(),
+    )
+    run_id = service.create_runs(
+        "job_1",
+        CreateRunsRequest(
+            image_ids=["img_1"],
+            model_ids=["unet-general-balanced-v1"],
+            roi_mode=RoiMode.FULL_IMAGE,
+        ),
+        principal=LEGACY_ADMIN,
+    )[0]
+
+    class UnreadableMask(BytesIO):
+        read_calls = 0
+
+        def read(self, _size: int = -1) -> bytes:
+            self.read_calls += 1
+            raise AssertionError("forbidden corrected mask must not be read")
+
+    stream = UnreadableMask()
+    before = set(file_store.paths.root.rglob("*"))
+    with pytest.raises(ForbiddenError):
+        service.stage_corrected_mask(
+            run_id,
+            stream,
+            "blocked.png",
+            principal=_principal(PrincipalRole.VIEWER, principal_hex="4"),
+        )
+
+    assert stream.read_calls == 0
+    assert set(file_store.paths.root.rglob("*")) == before
+
+
+def test_review_rechecks_mutation_in_final_child_creation_uow(
+    application_harness: ApplicationHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _database, file_store, factory = application_harness
+    service = AnalysisApplicationService(
+        uow_factory=factory,
+        file_store=file_store,
+        inference_gateway=FakeGateway(),
+    )
+    parent_id = service.create_runs(
+        "job_1",
+        CreateRunsRequest(
+            image_ids=["img_1"],
+            model_ids=["unet-general-balanced-v1"],
+            roi_mode=RoiMode.FULL_IMAGE,
+        ),
+        principal=LEGACY_ADMIN,
+    )[0]
+    service.execute_run(parent_id)
+    with factory() as uow:
+        before_ids = {run.run_id for run in uow.repositories.runs.list_by_job("job_1")}
+
+    checks = 0
+
+    def reject_final_check(
+        principal: PrincipalContext,
+        scope: AnalysisResourceScope,
+    ) -> None:
+        nonlocal checks
+        checks += 1
+        enforce_mutation(principal, scope)
+        if checks == 2:
+            raise ForbiddenError()
+
+    monkeypatch.setattr(analysis_application_module, "require_mutation", reject_final_check)
+
+    with pytest.raises(ForbiddenError):
+        service.create_review_run(
+            parent_id,
+            ReviewRunRequest(threshold=0.7),
+            principal=LEGACY_ADMIN,
+        )
+
+    assert checks == 2
+    with factory() as uow:
+        after_ids = {run.run_id for run in uow.repositories.runs.list_by_job("job_1")}
+    assert after_ids == before_ids

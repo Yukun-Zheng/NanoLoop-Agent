@@ -1,6 +1,6 @@
 """SQLAlchemy implementations of the service-facing repository protocols."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from typing import Any, Self, cast
 from uuid import uuid4
@@ -28,7 +28,7 @@ from app.contracts.enums import JobStatus, QualityStatus, RoiMode
 from app.contracts.execution import ExecutionRuntimeProvenance
 from app.contracts.identity import validate_principal_id, validate_tenant_id
 from app.contracts.queries import QueryAuditRecordDTO, UnifiedQueryRequest, UnifiedQueryResponse
-from app.contracts.repositories import StoredImageAsset
+from app.contracts.repositories import AnalysisResourceScope, StoredImageAsset
 from app.core.errors import BoxRevisionConflictError, InvalidBoxError, ResourceNotFoundError
 from app.core.state_machine import ensure_transition
 from app.db.models import (
@@ -58,6 +58,52 @@ def _job_dto(record: AnalysisJob) -> AnalysisJobDTO:
         updated_at=_utc(record.updated_at),
         error_code=record.error_code,
     )
+
+
+def _analysis_scope(record: AnalysisJob) -> AnalysisResourceScope:
+    return AnalysisResourceScope(
+        job=_job_dto(record),
+        tenant_id=record.tenant_id,
+        owner_principal_id=record.owner_principal_id,
+    )
+
+
+def _require_scoped_job(
+    session: Session,
+    job_id: str,
+    tenant_id: str,
+) -> AnalysisJob:
+    record = session.scalar(
+        select(AnalysisJob).where(
+            AnalysisJob.job_id == job_id,
+            AnalysisJob.tenant_id == validate_tenant_id(tenant_id),
+        )
+    )
+    if record is None:
+        raise ResourceNotFoundError(details={"resource": "job", "job_id": job_id})
+    return record
+
+
+def _require_scoped_image(
+    session: Session,
+    job_id: str,
+    image_id: str,
+    tenant_id: str,
+) -> ImageAsset:
+    record = session.scalar(
+        select(ImageAsset)
+        .join(AnalysisJob, AnalysisJob.job_id == ImageAsset.job_id)
+        .where(
+            ImageAsset.image_id == image_id,
+            ImageAsset.job_id == job_id,
+            AnalysisJob.tenant_id == validate_tenant_id(tenant_id),
+        )
+    )
+    if record is None:
+        raise ResourceNotFoundError(
+            details={"resource": "image", "job_id": job_id, "image_id": image_id}
+        )
+    return record
 
 
 def _image_dto(record: ImageAsset) -> ImageAssetDTO:
@@ -148,6 +194,8 @@ def _run_dto(record: SegmentationRun) -> SegmentationRunDTO:
 
 
 class SqlAlchemyJobRepository:
+    """Job persistence; HTTP callers use ``get_scope`` instead of unscoped reads."""
+
     def __init__(self, session: Session) -> None:
         self.session = session
 
@@ -176,10 +224,17 @@ class SqlAlchemyJobRepository:
         return _job_dto(record)
 
     def get(self, job_id: str) -> AnalysisJobDTO:
+        """Return an unscoped job for trusted internal workers only."""
+
         record = self.session.get(AnalysisJob, job_id)
         if record is None:
             raise ResourceNotFoundError(details={"resource": "job", "job_id": job_id})
         return _job_dto(record)
+
+    def get_scope(self, job_id: str, *, tenant_id: str) -> AnalysisResourceScope:
+        """Resolve one aggregate only when it belongs to the authenticated tenant."""
+
+        return _analysis_scope(_require_scoped_job(self.session, job_id, tenant_id))
 
     def update_status(
         self,
@@ -197,6 +252,8 @@ class SqlAlchemyJobRepository:
 
 
 class SqlAlchemyImageRepository:
+    """Image persistence with separate trusted-internal and tenant-scoped reads."""
+
     def __init__(self, session: Session) -> None:
         self.session = session
 
@@ -239,6 +296,8 @@ class SqlAlchemyImageRepository:
         return [_image_dto(record) for record in records]
 
     def get(self, image_id: str) -> ImageAssetDTO:
+        """Return an unscoped image for trusted internal workers only."""
+
         record = self.session.get(ImageAsset, image_id)
         if record is None:
             raise ResourceNotFoundError(details={"resource": "image", "image_id": image_id})
@@ -251,10 +310,61 @@ class SqlAlchemyImageRepository:
         return [_image_dto(record) for record in records]
 
     def get_storage_path(self, image_id: str) -> str:
+        """Return an unscoped storage key for trusted internal workers only."""
+
         record = self.session.get(ImageAsset, image_id)
         if record is None:
             raise ResourceNotFoundError(details={"resource": "image", "image_id": image_id})
         return record.storage_path
+
+    def get_scoped(
+        self,
+        job_id: str,
+        image_id: str,
+        *,
+        tenant_id: str,
+    ) -> ImageAssetDTO:
+        return _image_dto(_require_scoped_image(self.session, job_id, image_id, tenant_id))
+
+    def list_by_job_scoped(
+        self,
+        job_id: str,
+        *,
+        tenant_id: str,
+    ) -> list[ImageAssetDTO]:
+        _require_scoped_job(self.session, job_id, tenant_id)
+        records = self.session.scalars(
+            select(ImageAsset)
+            .join(AnalysisJob, AnalysisJob.job_id == ImageAsset.job_id)
+            .where(
+                ImageAsset.job_id == job_id,
+                AnalysisJob.tenant_id == validate_tenant_id(tenant_id),
+            )
+            .order_by(ImageAsset.created_at)
+        ).all()
+        return [_image_dto(record) for record in records]
+
+    def get_storage_path_scoped(
+        self,
+        job_id: str,
+        image_id: str,
+        *,
+        tenant_id: str,
+    ) -> str:
+        record = self.session.execute(
+            select(ImageAsset.storage_path)
+            .join(AnalysisJob, AnalysisJob.job_id == ImageAsset.job_id)
+            .where(
+                ImageAsset.image_id == image_id,
+                ImageAsset.job_id == job_id,
+                AnalysisJob.tenant_id == validate_tenant_id(tenant_id),
+            )
+        ).scalar_one_or_none()
+        if record is None:
+            raise ResourceNotFoundError(
+                details={"resource": "image", "job_id": job_id, "image_id": image_id}
+            )
+        return record
 
 
 def _intersects(a: ROIBox, b: dict[str, Any]) -> bool:
@@ -263,24 +373,41 @@ def _intersects(a: ROIBox, b: dict[str, Any]) -> bool:
 
 
 class SqlAlchemyBoxRepository:
+    """Box persistence with tenant-scoped HTTP entry points and internal primitives."""
+
     def __init__(self, session: Session, *, minimum_size_px: int = 32) -> None:
         self.session = session
         self.minimum_size_px = minimum_size_px
 
     def get_active(self, image_id: str) -> BoxSetDTO:
+        """Return unscoped boxes for trusted internal workers only."""
+
         image = self.session.get(ImageAsset, image_id)
         if image is None:
             raise ResourceNotFoundError(details={"resource": "image", "image_id": image_id})
+        return self._active_for_image(image)
+
+    def get_active_scoped(
+        self,
+        job_id: str,
+        image_id: str,
+        *,
+        tenant_id: str,
+    ) -> BoxSetDTO:
+        image = _require_scoped_image(self.session, job_id, image_id, tenant_id)
+        return self._active_for_image(image)
+
+    def _active_for_image(self, image: ImageAsset) -> BoxSetDTO:
         records = self.session.scalars(
             select(ROIBoxRecord)
             .where(
-                ROIBoxRecord.image_id == image_id,
+                ROIBoxRecord.image_id == image.image_id,
                 ROIBoxRecord.revision == image.box_revision,
             )
             .order_by(ROIBoxRecord.row_id)
         ).all()
         return BoxSetDTO(
-            image_id=image_id,
+            image_id=image.image_id,
             revision=image.box_revision,
             boxes=[
                 ROIBox(
@@ -297,12 +424,36 @@ class SqlAlchemyBoxRepository:
         )
 
     def list_by_job(self, job_id: str) -> list[BoxSetDTO]:
+        """Return unscoped revision history for trusted internal workers only."""
+
         revision_rows = self.session.scalars(
             select(ROIBoxRevisionRecord)
             .join(ImageAsset, ImageAsset.image_id == ROIBoxRevisionRecord.image_id)
             .where(ImageAsset.job_id == job_id)
             .order_by(ROIBoxRevisionRecord.image_id, ROIBoxRevisionRecord.revision)
         ).all()
+        return self._box_sets(revision_rows)
+
+    def list_by_job_scoped(
+        self,
+        job_id: str,
+        *,
+        tenant_id: str,
+    ) -> list[BoxSetDTO]:
+        _require_scoped_job(self.session, job_id, tenant_id)
+        revision_rows = self.session.scalars(
+            select(ROIBoxRevisionRecord)
+            .join(ImageAsset, ImageAsset.image_id == ROIBoxRevisionRecord.image_id)
+            .join(AnalysisJob, AnalysisJob.job_id == ImageAsset.job_id)
+            .where(
+                ImageAsset.job_id == job_id,
+                AnalysisJob.tenant_id == validate_tenant_id(tenant_id),
+            )
+            .order_by(ROIBoxRevisionRecord.image_id, ROIBoxRevisionRecord.revision)
+        ).all()
+        return self._box_sets(revision_rows)
+
+    def _box_sets(self, revision_rows: Sequence[ROIBoxRevisionRecord]) -> list[BoxSetDTO]:
         if not revision_rows:
             return []
         image_ids = {row.image_id for row in revision_rows}
@@ -339,9 +490,32 @@ class SqlAlchemyBoxRepository:
         expected_revision: int,
         boxes: list[ROIBox],
     ) -> BoxSetDTO:
+        """Replace unscoped boxes for trusted internal workers only."""
+
         image = self.session.get(ImageAsset, image_id)
         if image is None:
             raise ResourceNotFoundError(details={"resource": "image", "image_id": image_id})
+        return self._replace_image(image, expected_revision, boxes)
+
+    def replace_scoped(
+        self,
+        job_id: str,
+        image_id: str,
+        expected_revision: int,
+        boxes: list[ROIBox],
+        *,
+        tenant_id: str,
+    ) -> BoxSetDTO:
+        image = _require_scoped_image(self.session, job_id, image_id, tenant_id)
+        return self._replace_image(image, expected_revision, boxes)
+
+    def _replace_image(
+        self,
+        image: ImageAsset,
+        expected_revision: int,
+        boxes: list[ROIBox],
+    ) -> BoxSetDTO:
+        image_id = image.image_id
         if image.box_revision != expected_revision:
             raise BoxRevisionConflictError(
                 details={
@@ -434,6 +608,8 @@ class SqlAlchemyBoxRepository:
 
 
 class SqlAlchemyRunRepository:
+    """Run persistence; dispatcher/worker primitives remain deliberately unscoped."""
+
     def __init__(self, session: Session) -> None:
         self.session = session
 
@@ -482,6 +658,8 @@ class SqlAlchemyRunRepository:
         return [record.run_id for record in records]
 
     def get(self, run_id: str) -> SegmentationRunDTO:
+        """Return an unscoped run for trusted dispatcher/worker paths only."""
+
         record = self.session.scalar(
             select(SegmentationRun)
             .where(SegmentationRun.run_id == run_id)
@@ -494,7 +672,32 @@ class SqlAlchemyRunRepository:
             raise ResourceNotFoundError(details={"resource": "run", "run_id": run_id})
         return _run_dto(record)
 
+    def get_with_scope(
+        self,
+        run_id: str,
+        *,
+        tenant_id: str,
+    ) -> tuple[SegmentationRunDTO, AnalysisResourceScope]:
+        row = self.session.execute(
+            select(SegmentationRun, AnalysisJob)
+            .join(AnalysisJob, AnalysisJob.job_id == SegmentationRun.job_id)
+            .where(
+                SegmentationRun.run_id == run_id,
+                AnalysisJob.tenant_id == validate_tenant_id(tenant_id),
+            )
+            .options(
+                selectinload(SegmentationRun.summary),
+                selectinload(SegmentationRun.status_events),
+            )
+        ).one_or_none()
+        if row is None:
+            raise ResourceNotFoundError(details={"resource": "run", "run_id": run_id})
+        run, job = row
+        return _run_dto(run), _analysis_scope(job)
+
     def list_by_job(self, job_id: str) -> list[SegmentationRunDTO]:
+        """Return unscoped runs for trusted internal workers only."""
+
         records = self.session.scalars(
             select(SegmentationRun)
             .where(SegmentationRun.job_id == job_id)
@@ -506,11 +709,53 @@ class SqlAlchemyRunRepository:
         ).all()
         return [_run_dto(record) for record in records]
 
+    def list_by_job_scoped(
+        self,
+        job_id: str,
+        *,
+        tenant_id: str,
+    ) -> list[SegmentationRunDTO]:
+        _require_scoped_job(self.session, job_id, tenant_id)
+        records = self.session.scalars(
+            select(SegmentationRun)
+            .join(AnalysisJob, AnalysisJob.job_id == SegmentationRun.job_id)
+            .where(
+                SegmentationRun.job_id == job_id,
+                AnalysisJob.tenant_id == validate_tenant_id(tenant_id),
+            )
+            .options(
+                selectinload(SegmentationRun.summary),
+                selectinload(SegmentationRun.status_events),
+            )
+            .order_by(SegmentationRun.created_at)
+        ).all()
+        return [_run_dto(record) for record in records]
+
     def get_artifact_paths(self, run_id: str) -> dict[str, str | None]:
+        """Return unscoped artifact keys for trusted dispatcher/worker paths only."""
+
         record = self.session.get(SegmentationRun, run_id)
         if record is None:
             raise ResourceNotFoundError(details={"resource": "run", "run_id": run_id})
         return dict(record.paths_json)
+
+    def get_artifact_paths_scoped(
+        self,
+        run_id: str,
+        *,
+        tenant_id: str,
+    ) -> dict[str, str | None]:
+        paths = self.session.execute(
+            select(SegmentationRun.paths_json)
+            .join(AnalysisJob, AnalysisJob.job_id == SegmentationRun.job_id)
+            .where(
+                SegmentationRun.run_id == run_id,
+                AnalysisJob.tenant_id == validate_tenant_id(tenant_id),
+            )
+        ).scalar_one_or_none()
+        if paths is None:
+            raise ResourceNotFoundError(details={"resource": "run", "run_id": run_id})
+        return dict(paths)
 
     def claim_queued(self, run_id: str) -> bool:
         """Atomically claim a queued row for exactly one worker/process."""
@@ -628,15 +873,41 @@ class SqlAlchemyRunRepository:
 
 
 class SqlAlchemyQueryRepository:
+    """Query audit reads, including a tenant-scoped export snapshot boundary."""
+
     def __init__(self, session: Session) -> None:
         self.session = session
 
     def list_by_job(self, job_id: str) -> list[QueryAuditRecordDTO]:
+        """Return unscoped query audit rows for trusted internal workers only."""
+
         records = self.session.scalars(
             select(QueryLog)
             .where(QueryLog.job_id == job_id)
             .order_by(QueryLog.created_at, QueryLog.query_id)
         ).all()
+        return self._query_dtos(records)
+
+    def list_by_job_scoped(
+        self,
+        job_id: str,
+        *,
+        tenant_id: str,
+    ) -> list[QueryAuditRecordDTO]:
+        _require_scoped_job(self.session, job_id, tenant_id)
+        records = self.session.scalars(
+            select(QueryLog)
+            .join(AnalysisJob, AnalysisJob.job_id == QueryLog.job_id)
+            .where(
+                QueryLog.job_id == job_id,
+                AnalysisJob.tenant_id == validate_tenant_id(tenant_id),
+            )
+            .order_by(QueryLog.created_at, QueryLog.query_id)
+        ).all()
+        return self._query_dtos(records)
+
+    @staticmethod
+    def _query_dtos(records: Sequence[QueryLog]) -> list[QueryAuditRecordDTO]:
         results: list[QueryAuditRecordDTO] = []
         for record in records:
             request_payload = dict(record.request_json)

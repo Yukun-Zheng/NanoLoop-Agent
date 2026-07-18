@@ -26,6 +26,14 @@ class StoredImageAsset(ContractModel):
     storage_path: str
 
 
+class AnalysisResourceScope(ContractModel):
+    """Internal ownership envelope for one tenant-scoped analysis aggregate."""
+
+    job: AnalysisJobDTO
+    tenant_id: str
+    owner_principal_id: str
+
+
 class JobRepository(Protocol):
     def create(
         self,
@@ -36,6 +44,8 @@ class JobRepository(Protocol):
     ) -> AnalysisJobDTO: ...
 
     def get(self, job_id: str) -> AnalysisJobDTO: ...
+
+    def get_scope(self, job_id: str, *, tenant_id: str) -> AnalysisResourceScope: ...
 
     def update_status(
         self,
@@ -55,6 +65,29 @@ class ImageRepository(Protocol):
 
     def get_storage_path(self, image_id: str) -> str: ...
 
+    def get_scoped(
+        self,
+        job_id: str,
+        image_id: str,
+        *,
+        tenant_id: str,
+    ) -> ImageAssetDTO: ...
+
+    def list_by_job_scoped(
+        self,
+        job_id: str,
+        *,
+        tenant_id: str,
+    ) -> list[ImageAssetDTO]: ...
+
+    def get_storage_path_scoped(
+        self,
+        job_id: str,
+        image_id: str,
+        *,
+        tenant_id: str,
+    ) -> str: ...
+
 
 class BoxRepository(Protocol):
     def get_active(self, image_id: str) -> BoxSetDTO: ...
@@ -68,6 +101,31 @@ class BoxRepository(Protocol):
         boxes: list[ROIBox],
     ) -> BoxSetDTO: ...
 
+    def get_active_scoped(
+        self,
+        job_id: str,
+        image_id: str,
+        *,
+        tenant_id: str,
+    ) -> BoxSetDTO: ...
+
+    def list_by_job_scoped(
+        self,
+        job_id: str,
+        *,
+        tenant_id: str,
+    ) -> list[BoxSetDTO]: ...
+
+    def replace_scoped(
+        self,
+        job_id: str,
+        image_id: str,
+        expected_revision: int,
+        boxes: list[ROIBox],
+        *,
+        tenant_id: str,
+    ) -> BoxSetDTO: ...
+
 
 class RunRepository(Protocol):
     def create_many(self, runs: list[SegmentationRunDTO]) -> list[str]: ...
@@ -77,6 +135,27 @@ class RunRepository(Protocol):
     def list_by_job(self, job_id: str) -> list[SegmentationRunDTO]: ...
 
     def get_artifact_paths(self, run_id: str) -> dict[str, str | None]: ...
+
+    def get_with_scope(
+        self,
+        run_id: str,
+        *,
+        tenant_id: str,
+    ) -> tuple[SegmentationRunDTO, AnalysisResourceScope]: ...
+
+    def list_by_job_scoped(
+        self,
+        job_id: str,
+        *,
+        tenant_id: str,
+    ) -> list[SegmentationRunDTO]: ...
+
+    def get_artifact_paths_scoped(
+        self,
+        run_id: str,
+        *,
+        tenant_id: str,
+    ) -> dict[str, str | None]: ...
 
     def claim_queued(self, run_id: str) -> bool:
         """Atomically move one durable run from QUEUED to PREPROCESSING."""
@@ -106,6 +185,13 @@ class RunRepository(Protocol):
 
 class QueryRepository(Protocol):
     def list_by_job(self, job_id: str) -> list[QueryAuditRecordDTO]: ...
+
+    def list_by_job_scoped(
+        self,
+        job_id: str,
+        *,
+        tenant_id: str,
+    ) -> list[QueryAuditRecordDTO]: ...
 
 
 class RepositorySet(Protocol):

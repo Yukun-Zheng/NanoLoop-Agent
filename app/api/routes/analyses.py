@@ -10,6 +10,7 @@ from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
 
 from app.analysis.application import AnalysisCreationService, AnalysisUpload
+from app.analysis.authorization import require_read
 from app.api.deps import (
     get_analysis_creation_service,
     get_file_store,
@@ -82,25 +83,44 @@ def get_analysis(
     request: Request,
     repositories: Annotated[SqlAlchemyRepositorySet, Depends(get_repositories)],
     file_store: Annotated[LocalFileStore, Depends(get_file_store)],
+    principal: Annotated[PrincipalContext, Depends(require_api_key_contract)],
 ) -> ApiResponse[JobDetailDTO]:
-    job = repositories.jobs.get(job_id)
+    tenant_id = principal.tenant_id
+    if tenant_id is None:
+        raise ValueError("principal must carry a tenant ID")
+    scope = repositories.jobs.get_scope(job_id, tenant_id=tenant_id)
+    require_read(principal, scope)
+    job = scope.job
     images = [
         decorate_image_download(
             image,
-            storage_path=repositories.images.get_storage_path(image.image_id),
+            storage_path=repositories.images.get_storage_path_scoped(
+                job_id,
+                image.image_id,
+                tenant_id=tenant_id,
+            ),
             request=request,
             file_store=file_store,
         )
-        for image in repositories.images.list_by_job(job_id)
+        for image in repositories.images.list_by_job_scoped(
+            job_id,
+            tenant_id=tenant_id,
+        )
     ]
     runs = [
         decorate_run_downloads(
             run,
-            private_paths=repositories.runs.get_artifact_paths(run.run_id),
+            private_paths=repositories.runs.get_artifact_paths_scoped(
+                run.run_id,
+                tenant_id=tenant_id,
+            ),
             request=request,
             file_store=file_store,
         )
-        for run in repositories.runs.list_by_job(job_id)
+        for run in repositories.runs.list_by_job_scoped(
+            job_id,
+            tenant_id=tenant_id,
+        )
     ]
     failures = [
         RunFailureDTO(

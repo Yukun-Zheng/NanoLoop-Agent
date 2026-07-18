@@ -109,6 +109,14 @@ class ResourceNotFoundError(NanoLoopError):
     default_message = "找不到指定资源"
 
 
+class ForbiddenError(NanoLoopError):
+    """Raised only after a tenant-scoped lookup proves the resource is addressable."""
+
+    code = "FORBIDDEN"
+    status_code = 403
+    default_message = "当前身份无权执行此操作"
+
+
 class StorageError(NanoLoopError):
     code = "STORAGE_ERROR"
     status_code = 500

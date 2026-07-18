@@ -99,8 +99,10 @@ soffice --headless --convert-to pdf \
   行为，`principal` 必须使用稳定 pepper、严格 token、单次身份查询和 middleware 已验证的
   `PrincipalContext`，不得回退共享 Key 或在 dependency 重查数据库。认证/限流只精确豁免根级 `/health`
   和 OpenAPI/文档路径。合法 CORS 预检由更外层 `CORSMiddleware` 直接响应；普通 `OPTIONS` 仍须经过认证
-  与限流。认证应在请求体解析前完成；错误响应与日志不得暴露 header、token、digest 或 body。当前
-  principal 上下文不等于资源 owner、角色授权、租户隔离或 quota，新增业务授权前不得如此描述。
+  与限流。认证应在请求体解析前完成；错误响应与日志不得暴露 header、token、digest 或 body。
+  Analysis 聚合的 HTTP 路径必须先用 tenant-scoped repository 查询，再执行角色/owner 策略；跨租户
+  与缺失统一 404，同租户权限不足为 403，mutation 必须在写入 UoW 内重检。该局部能力不等于 query、
+  file、knowledge 已完成租户隔离，也不等于 quota 或公网多租户就绪。
 - disabled/shared-key 继续使用 service/authenticated/anonymous 三个固定桶。principal 使用两阶段
   严格有界 LRU：认证前只按规范化的直接 `scope.client` peer 分桶，认证成功后直接复用 middleware 已验证
   `PrincipalContext.principal_id` 分桶，禁止第二次身份查询。应用和捆绑的 Uvicorn 启动命令都不得信任或
