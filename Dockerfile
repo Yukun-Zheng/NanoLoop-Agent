@@ -82,9 +82,10 @@ COPY --chown=nanoloop:nanoloop alembic.ini ./alembic.ini
 COPY --chown=nanoloop:nanoloop app/db/migrations ./app/db/migrations
 COPY --chown=nanoloop:nanoloop model_artifacts ./model_artifacts
 COPY --chown=nanoloop:nanoloop LICENSES.md ./LICENSES.md
+COPY --chown=nanoloop:nanoloop scripts/backup_restore.py ./scripts/backup_restore.py
 COPY --chown=nanoloop:nanoloop scripts/docker-entrypoint.sh /usr/local/bin/nanoloop-entrypoint
 
-RUN chmod 0555 /usr/local/bin/nanoloop-entrypoint \
+RUN chmod 0555 /usr/local/bin/nanoloop-entrypoint /app/scripts/backup_restore.py \
     && chown -R nanoloop:nanoloop /app/model_artifacts /app/knowledge_base
 
 USER nanoloop:nanoloop
