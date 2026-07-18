@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
+DEFAULT_API_BASE_URL = "http://127.0.0.1:8000"
 TERMINAL_RUN_STATUSES = frozenset({"COMPLETED", "COMPLETED_WITH_WARNINGS", "FAILED"})
 EXPORTABLE_RUN_STATUSES = frozenset({"COMPLETED", "COMPLETED_WITH_WARNINGS"})
 RUNNING_RUN_STATUSES = frozenset(
@@ -60,7 +61,7 @@ def default_state() -> dict[str, Any]:
     """Return fresh session defaults; mutable values are never shared."""
 
     return {
-        "api_base_url": os.getenv("NANOLOOP_API_BASE_URL", "http://127.0.0.1:8000"),
+        "api_base_url": os.getenv("NANOLOOP_API_BASE_URL", DEFAULT_API_BASE_URL),
         "api_timeout_seconds": 30.0,
         "health": None,
         "health_checked_at": None,

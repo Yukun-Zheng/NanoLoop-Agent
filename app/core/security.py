@@ -5,7 +5,11 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Sequence
+from hashlib import sha256
+from secrets import compare_digest
 from urllib.parse import urlsplit
+
+from pydantic import SecretStr
 
 from app.core.config import Settings
 
@@ -14,6 +18,30 @@ _LOCAL_FRONTEND_ORIGINS = (
     "http://127.0.0.1:8501",
     "http://localhost:8501",
 )
+
+
+class ApiKeyVerifier:
+    """Compare one unambiguous API-key header without retaining the raw secret."""
+
+    __slots__ = ("_expected_digest",)
+
+    def __init__(self, secret: SecretStr | str | None) -> None:
+        value: str | None = (
+            secret.get_secret_value() if isinstance(secret, SecretStr) else secret
+        )
+        self._expected_digest = sha256(value.encode("utf-8")).digest() if value else None
+
+    @property
+    def enabled(self) -> bool:
+        return self._expected_digest is not None
+
+    def matches(self, values: Sequence[str]) -> bool:
+        """Return true only for one header whose digest matches the configured secret."""
+
+        if self._expected_digest is None or len(values) != 1:
+            return False
+        candidate_digest = sha256(values[0].encode("utf-8")).digest()
+        return compare_digest(candidate_digest, self._expected_digest)
 
 
 def trusted_request_id(value: str | None) -> str | None:

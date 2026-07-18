@@ -11,6 +11,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+import scripts.smoke_test as smoke_test_module
 from frontend.api_client import NanoLoopApiClient
 from scripts.smoke_test import (
     SmokeFixture,
@@ -619,3 +620,67 @@ def test_repository_example_is_valid_but_requires_real_referenced_files() -> Non
     assert not fixture.images[0].path.exists()
     with pytest.raises(ValueError, match="does not reference a file"):
         load_fixture(example, require_files=True)
+
+
+@pytest.mark.parametrize(
+    ("environment_api_key", "cli_api_key", "expected_api_key"),
+    [
+        ("environment-secret", None, "environment-secret"),
+        ("environment-secret", "argument-secret", "argument-secret"),
+    ],
+)
+def test_smoke_cli_passes_environment_or_explicit_api_key_to_client(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    environment_api_key: str,
+    cli_api_key: str | None,
+    expected_api_key: str,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, base_url: str, *, api_key: str | None = None) -> None:
+            captured["base_url"] = base_url
+            captured["api_key"] = api_key
+
+        def __enter__(self) -> FakeClient:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            del args
+
+    class FakeRunner:
+        def __init__(
+            self,
+            client: object,
+            fixture: object,
+            *,
+            poll_timeout: float,
+            poll_interval: float,
+        ) -> None:
+            captured["client"] = client
+            captured["fixture"] = fixture
+            captured["poll_timeout"] = poll_timeout
+            captured["poll_interval"] = poll_interval
+
+        def run(self, *, allow_degraded: bool = False) -> None:
+            captured["allow_degraded"] = allow_degraded
+
+    monkeypatch.setenv("NANOLOOP_API_KEY", environment_api_key)
+    monkeypatch.setattr(smoke_test_module, "NanoLoopApiClient", FakeClient)
+    monkeypatch.setattr(smoke_test_module, "SmokeRunner", FakeRunner)
+    monkeypatch.setattr(smoke_test_module, "load_fixture", lambda *args, **kwargs: object())
+    arguments = [
+        "--base-url",
+        "http://backend.test",
+        "--fixture",
+        str(tmp_path / "fixture.json"),
+    ]
+    if cli_api_key is not None:
+        arguments.extend(["--api-key", cli_api_key])
+
+    result = smoke_test_module.main(arguments)
+
+    assert result == 0
+    assert captured["base_url"] == "http://backend.test"
+    assert captured["api_key"] == expected_api_key

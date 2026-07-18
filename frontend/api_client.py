@@ -88,6 +88,7 @@ class NanoLoopApiClient:
         self,
         base_url: str,
         *,
+        api_key: str | None = None,
         api_prefix: str = "/api/v1",
         timeout: float | httpx.Timeout | None = None,
         upload_timeout: float | httpx.Timeout | None = None,
@@ -108,6 +109,7 @@ class NanoLoopApiClient:
         self._base_url = base_url.rstrip("/")
         self._api_prefix = normalized_prefix
         self._origin = _origin(parsed)
+        self._api_key = _normalize_api_key(api_key)
         self._timeout = timeout or httpx.Timeout(30.0, connect=5.0, pool=5.0)
         self._upload_timeout = upload_timeout or httpx.Timeout(
             120.0,
@@ -410,8 +412,16 @@ class NanoLoopApiClient:
             "Accept": "application/json",
             "User-Agent": "NanoLoop-Frontend/0.1",
             "X-Request-ID": request_id,
-            **dict(headers or {}),
         }
+        request_headers.update(
+            {
+                name: value
+                for name, value in (headers or {}).items()
+                if name.casefold() != "x-api-key"
+            }
+        )
+        if self._api_key is not None:
+            request_headers["X-API-Key"] = self._api_key
         try:
             return self._client.request(
                 method,
@@ -513,6 +523,16 @@ class NanoLoopApiClient:
         if not _REQUEST_ID_PATTERN.fullmatch(request_id):
             raise ValueError("request_id_factory returned an invalid correlation ID")
         return request_id
+
+
+def _normalize_api_key(value: str | None) -> str | None:
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str):
+        raise TypeError("api_key must be a string or None")
+    if value != value.strip() or any(not 0x21 <= ord(character) <= 0x7E for character in value):
+        raise ValueError("api_key must contain only visible ASCII characters without whitespace")
+    return value
 
 
 def _validate_uploads(parts: Sequence[UploadPart]) -> None:

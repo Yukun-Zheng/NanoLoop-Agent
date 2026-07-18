@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 from collections.abc import Callable, Iterator
+from types import SimpleNamespace
+from typing import Any
 
 import httpx
 import pytest
 
+import frontend.app as frontend_app
 from frontend.api_client import (
     ApiClientError,
     ApiResult,
@@ -145,6 +149,205 @@ def test_list_models_omits_every_unset_optional_filter(
 
     assert requests[0].url.path == "/api/v1/models"
     assert list(requests[0].url.params.multi_items()) == []
+
+
+def test_api_key_is_sent_for_json_multipart_and_artifact_downloads() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.startswith("/api/v1/files/"):
+            return httpx.Response(
+                200,
+                headers={"X-Request-ID": request.headers["x-request-id"]},
+                content=b"artifact",
+            )
+        return _success_response(request)
+
+    http_client = httpx.Client(transport=httpx.MockTransport(handler))
+    api_key = "client-test-key_123"
+    client = NanoLoopApiClient(
+        "http://backend.test",
+        api_key=api_key,
+        client=http_client,
+        request_id_factory=lambda: "web_authenticated",
+    )
+    try:
+        client.recommend_models({"image_id": "img_1"})
+        client.create_analysis(
+            [UploadPart("image.tif", b"image-bytes", "image/tiff")],
+            {"job_name": "authenticated upload"},
+        )
+        client.download_artifact("/api/v1/files/signed.token")
+        client._send(
+            "GET",
+            "http://backend.test/api/v1/health",
+            request_id="web_internal_header",
+            headers={"x-api-key": "must-not-win"},
+            timeout=1.0,
+        )
+    finally:
+        http_client.close()
+
+    assert [request.headers["x-api-key"] for request in requests] == [api_key] * 4
+    assert "multipart/form-data" in requests[1].headers["content-type"]
+    assert requests[2].headers["accept"] == "application/octet-stream"
+
+
+@pytest.mark.parametrize("api_key", [None, ""])
+def test_absent_api_key_does_not_add_authentication_header(api_key: str | None) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return _success_response(request)
+
+    http_client = httpx.Client(transport=httpx.MockTransport(handler))
+    client = NanoLoopApiClient("http://backend.test", api_key=api_key, client=http_client)
+    try:
+        client.health()
+    finally:
+        http_client.close()
+
+    assert "x-api-key" not in requests[0].headers
+
+
+def test_api_key_never_appears_in_client_or_validation_error_text() -> None:
+    api_key = "repr-secret-key"
+    client = NanoLoopApiClient("http://backend.test", api_key=api_key)
+    try:
+        assert api_key not in str(client)
+        assert api_key not in repr(client)
+    finally:
+        client.close()
+
+    invalid_key = "invalid-secret\nvalue"
+    with pytest.raises(ValueError) as exc_info:
+        NanoLoopApiClient("http://backend.test", api_key=invalid_key)
+    assert invalid_key not in str(exc_info.value)
+
+
+def test_api_key_never_appears_in_transport_error_text_or_repr() -> None:
+    api_key = "transport-secret-key"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("offline", request=request)
+
+    http_client = httpx.Client(transport=httpx.MockTransport(handler))
+    client = NanoLoopApiClient(
+        "http://backend.test",
+        api_key=api_key,
+        client=http_client,
+        request_id_factory=lambda: "web_secret_transport",
+    )
+    try:
+        with pytest.raises(ApiClientError) as exc_info:
+            client.health()
+    finally:
+        http_client.close()
+
+    assert api_key not in str(exc_info.value)
+    assert api_key not in repr(exc_info.value)
+
+
+def test_streamlit_client_cache_uses_only_api_key_fingerprint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeClient:
+        def __init__(
+            self,
+            base_url: str,
+            *,
+            api_key: str | None = None,
+            timeout: float,
+            upload_timeout: float,
+        ) -> None:
+            self.base_url = base_url
+            self.api_key = api_key
+            self.timeout = timeout
+            self.upload_timeout = upload_timeout
+            self.closed = False
+            created.append(self)
+
+        def close(self) -> None:
+            self.closed = True
+
+    created: list[FakeClient] = []
+
+    monkeypatch.setattr(
+        frontend_app.importlib,
+        "import_module",
+        lambda _: SimpleNamespace(NanoLoopApiClient=FakeClient),
+    )
+    first_api_key = "first-cache-secret"
+    monkeypatch.setenv("NANOLOOP_API_KEY", first_api_key)
+    monkeypatch.setenv("NANOLOOP_API_BASE_URL", "http://backend.test")
+    state: dict[str, Any] = {
+        "api_base_url": "http://backend.test",
+        "api_timeout_seconds": 17.0,
+    }
+
+    first = frontend_app._get_client(object(), state)
+    cached = frontend_app._get_client(object(), state)
+
+    assert first is cached
+    assert len(created) == 1
+    assert created[0].api_key == first_api_key
+    fingerprint = hashlib.sha256(first_api_key.encode()).hexdigest()
+    assert state["_api_client_key"] == ("http://backend.test", 17.0, fingerprint)
+    assert first_api_key not in repr(state["_api_client_key"])
+
+    second_api_key = "rotated-cache-secret"
+    monkeypatch.setenv("NANOLOOP_API_KEY", second_api_key)
+    second = frontend_app._get_client(object(), state)
+
+    assert second is not first
+    assert created[0].closed
+    assert created[1].api_key == second_api_key
+    assert state["_api_client_key"][2] == hashlib.sha256(second_api_key.encode()).hexdigest()
+    assert second_api_key not in repr(state["_api_client_key"])
+
+
+def test_streamlit_never_sends_process_api_key_to_session_controlled_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created: list[object] = []
+
+    class FakeClient:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            created.append(self)
+
+    class FakeStreamlit:
+        def __init__(self) -> None:
+            self.messages: list[str] = []
+
+        def error(self, message: str) -> None:
+            self.messages.append(message)
+
+        def caption(self, message: str) -> None:
+            self.messages.append(message)
+
+    secret = "process-only-shared-secret"
+    monkeypatch.setenv("NANOLOOP_API_KEY", secret)
+    monkeypatch.setenv("NANOLOOP_API_BASE_URL", "https://trusted.example/backend")
+    monkeypatch.setattr(
+        frontend_app.importlib,
+        "import_module",
+        lambda _: SimpleNamespace(NanoLoopApiClient=FakeClient),
+    )
+    streamlit = FakeStreamlit()
+    state: dict[str, Any] = {
+        "api_base_url": "https://attacker.example/collect",
+        "api_timeout_seconds": 17.0,
+    }
+
+    client = frontend_app._get_client(streamlit, state)
+
+    assert client is None
+    assert created == []
+    assert state["_api_client"] is None
+    assert state["_api_client_key"] is None
+    assert secret not in " ".join(streamlit.messages)
 
 
 def test_all_multipart_methods_use_exact_field_names_and_upload_timeout() -> None:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import re
 import time
-from collections.abc import Awaitable, Callable, MutableMapping
+from collections.abc import Awaitable, Callable, Mapping, MutableMapping, Sequence
 from typing import Any
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -17,7 +17,8 @@ from starlette.responses import JSONResponse
 
 from app.api.responses import error_response
 from app.core.logging import bind_log_context, log_context, reset_log_context
-from app.core.security import normalize_http_origin, trusted_request_id
+from app.core.rate_limit import RateLimitBucket, TokenBucketLimiter
+from app.core.security import ApiKeyVerifier, normalize_http_origin, trusted_request_id
 
 logger = logging.getLogger(__name__)
 _FILE_TOKEN_SEGMENT = re.compile(r"(?<=/files/)[^/]+")
@@ -28,6 +29,117 @@ Send = Callable[[Message], Awaitable[None]]
 
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _TRUSTED_FETCH_SITES = frozenset({"same-origin", "same-site", "none"})
+
+
+class ApiKeyAuthMiddleware:
+    """Authenticate protected HTTP routes before request bodies are parsed."""
+
+    def __init__(
+        self,
+        app: Callable[..., Awaitable[None]],
+        *,
+        verifier: ApiKeyVerifier,
+        public_paths: Sequence[str],
+    ) -> None:
+        self.app = app
+        self.verifier = verifier
+        self.public_paths = frozenset(public_paths)
+
+    async def __call__(self, scope: Message, receive: Receive, send: Send) -> None:
+        if (
+            scope.get("type") != "http"
+            or not self.verifier.enabled
+            or scope.get("path") in self.public_paths
+        ):
+            await self.app(scope, receive, send)
+            return
+
+        values = Headers(scope=scope).getlist("x-api-key")
+        if self.verifier.matches(values):
+            scope.setdefault("state", {})["api_key_authenticated"] = True
+            await self.app(scope, receive, send)
+            return
+
+        logger.warning(
+            "api_key_authentication_failed",
+            extra={"event": "authentication_failed", "status_code": 401},
+        )
+        await _send_security_rejection(
+            scope,
+            send,
+            status_code=401,
+            code="AUTHENTICATION_REQUIRED",
+            message="需要有效的 API Key",
+            headers={"WWW-Authenticate": 'ApiKey realm="nanoloop"'},
+        )
+
+
+class InMemoryRateLimitMiddleware:
+    """Apply one bounded token bucket per fixed authentication class."""
+
+    def __init__(
+        self,
+        app: Callable[..., Awaitable[None]],
+        *,
+        verifier: ApiKeyVerifier,
+        limiter: TokenBucketLimiter,
+        public_paths: Sequence[str],
+    ) -> None:
+        self.app = app
+        self.verifier = verifier
+        self.limiter = limiter
+        self.public_paths = frozenset(public_paths)
+
+    async def __call__(self, scope: Message, receive: Receive, send: Send) -> None:
+        if (
+            scope.get("type") != "http"
+            or scope.get("path") in self.public_paths
+        ):
+            await self.app(scope, receive, send)
+            return
+
+        values = Headers(scope=scope).getlist("x-api-key")
+        bucket: RateLimitBucket
+        if not self.verifier.enabled:
+            bucket = "service"
+        elif self.verifier.matches(values):
+            bucket = "authenticated"
+        else:
+            bucket = "anonymous"
+        decision = self.limiter.consume(bucket)
+        rate_headers = {
+            "X-RateLimit-Limit": str(decision.limit),
+            "X-RateLimit-Remaining": str(decision.remaining),
+        }
+        if not decision.allowed:
+            retry_after = str(decision.retry_after_seconds)
+            logger.warning(
+                "api_rate_limit_exceeded",
+                extra={"event": "rate_limit_exceeded", "status_code": 429},
+            )
+            await _send_security_rejection(
+                scope,
+                send,
+                status_code=429,
+                code="RATE_LIMITED",
+                message="请求过于频繁，请稍后重试",
+                details={
+                    "limit": decision.limit,
+                    "window_seconds": self.limiter.window_seconds,
+                },
+                retryable=True,
+                headers={**rate_headers, "Retry-After": retry_after},
+            )
+            return
+
+        async def send_with_rate_limit(message: Message) -> None:
+            if message.get("type") == "http.response.start":
+                response_headers = MutableHeaders(scope=message)
+                for name, value in rate_headers.items():
+                    response_headers[name] = value
+            await send(message)
+
+        await self.app(scope, receive, send_with_rate_limit)
 
 
 class _RequestBodyTooLarge(Exception):
@@ -149,13 +261,27 @@ async def _send_security_rejection(
     status_code: int,
     code: str,
     message: str,
+    details: dict[str, object] | None = None,
+    retryable: bool = False,
+    headers: Mapping[str, str] | None = None,
 ) -> None:
     request = Request(scope)
-    payload = error_response(code=code, message=message, request=request)
+    payload = error_response(
+        code=code,
+        message=message,
+        details=details,
+        retryable=retryable,
+        request=request,
+    )
+    response_headers = {
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+        **dict(headers or {}),
+    }
     response = JSONResponse(
         status_code=status_code,
         content=payload.model_dump(mode="json"),
-        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+        headers=response_headers,
     )
     await response(scope, receive=lambda: _empty_request(), send=send)
 

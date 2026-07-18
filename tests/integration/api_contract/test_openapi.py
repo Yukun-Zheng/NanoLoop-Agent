@@ -37,6 +37,13 @@ def test_openapi_contains_the_frozen_v1_surface(api_harness: ApiHarness) -> None
     assert expected_operations == observed
     assert "/health" not in schema["paths"]
 
+    scheme = schema["components"]["securitySchemes"]["ApiKeyAuth"]
+    assert scheme["type"] == "apiKey"
+    assert scheme["in"] == "header"
+    assert scheme["name"] == "X-API-Key"
+    for path, method in expected_operations:
+        assert schema["paths"][path][method]["security"] == [{"ApiKeyAuth": []}]
+
 
 def test_checked_in_openapi_matches_the_application(api_harness: ApiHarness) -> None:
     live = api_harness.client.get("/openapi.json").json()
@@ -48,7 +55,7 @@ def test_checked_in_openapi_matches_the_application(api_harness: ApiHarness) -> 
 def test_declared_errors_reference_the_shared_envelope(api_harness: ApiHarness) -> None:
     schema = api_harness.client.get("/openapi.json").json()
     operation = schema["paths"]["/api/v1/analyses/{job_id}/runs"]["post"]
-    for status_code in ("404", "409", "422", "500", "501", "503"):
+    for status_code in ("401", "403", "404", "409", "422", "429", "500", "501", "503"):
         response = operation["responses"][status_code]
         media_schema = response["content"]["application/json"]["schema"]
         assert "ApiResponse" in media_schema["$ref"]

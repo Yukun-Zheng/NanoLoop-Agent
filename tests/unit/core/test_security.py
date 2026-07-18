@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import SecretStr
 
 from app.core.config import Settings
-from app.core.security import cors_origins, normalize_http_origin, trusted_hosts
+from app.core.security import ApiKeyVerifier, cors_origins, normalize_http_origin, trusted_hosts
 
 
 def test_local_security_defaults_are_narrow() -> None:
@@ -44,3 +45,43 @@ def test_non_origin_values_are_rejected(value: str) -> None:
 def test_empty_trusted_host_configuration_fails_closed() -> None:
     with pytest.raises(ValueError, match="TRUSTED_HOSTS"):
         trusted_hosts(Settings(trusted_hosts=" , "))
+
+
+def test_api_key_verifier_is_explicitly_disabled_without_a_secret() -> None:
+    verifier = ApiKeyVerifier(None)
+
+    assert verifier.enabled is False
+    assert verifier.matches([]) is False
+    assert verifier.matches(["unused"]) is False
+
+
+def test_api_key_verifier_accepts_one_exact_value() -> None:
+    secret = "valid_api_key_0123456789_ABCDEFG"
+    verifier = ApiKeyVerifier(SecretStr(secret))
+
+    assert verifier.enabled is True
+    assert verifier.matches([secret]) is True
+    assert verifier.matches([]) is False
+    assert verifier.matches(["wrong_api_key_0123456789_ABCDEFG"]) is False
+    assert verifier.matches([secret, secret]) is False
+    assert secret not in repr(verifier)
+
+
+def test_api_key_verifier_hashes_both_values_before_comparison(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[tuple[bytes, bytes]] = []
+
+    def record_comparison(candidate: bytes, expected: bytes) -> bool:
+        observed.append((candidate, expected))
+        return candidate == expected
+
+    monkeypatch.setattr("app.core.security.compare_digest", record_comparison)
+    secret = "valid_api_key_0123456789_ABCDEFG"
+    verifier = ApiKeyVerifier(secret)
+
+    assert verifier.matches([secret]) is True
+    assert len(observed) == 1
+    assert len(observed[0][0]) == 32
+    assert len(observed[0][1]) == 32
+    assert secret.encode() not in observed[0]

@@ -5,9 +5,25 @@
 当前正式支持的拓扑是单台主机上的一个 API 容器、一个 Streamlit 容器、SQLite WAL 和本地命名卷。API 容器固定单 Uvicorn worker，内部分析线程数由 `ANALYSIS_WORKER_COUNT` 控制。不要用增加 Uvicorn worker 的方式提高模型并发。
 
 默认端口只发布到 `127.0.0.1`。API 依据 `TRUSTED_HOSTS` 拒绝异常 Host，并依据
-`CORS_ALLOW_ORIGINS`/同站 fetch metadata 保护浏览器写请求；这些防护不提供用户身份。
-`NANOLOOP_BIND_HOST=0.0.0.0` 只应在前方已有 TLS、身份认证、速率限制和请求体配额的受信任反向
-代理时使用。应用当前没有账号、租户或权限模型，不应裸露到公网。
+`CORS_ALLOW_ORIGINS`/同站 fetch metadata 保护浏览器写请求。可选
+`NANOLOOP_API_KEY` 为所有版本化 API 和签名文件下载增加共享 `X-API-Key` 门禁；
+`API_RATE_LIMIT_REQUESTS`/`API_RATE_LIMIT_WINDOW_SECONDS` 提供单进程固定三桶限流。根级
+`/health` 和文档路径保留精确豁免，`/api/v1/health` 会验证 Key。
+
+生成服务 Key：
+
+```bash
+python -c 'import secrets; print(secrets.token_urlsafe(32))'
+```
+
+把结果同时提供给 API 和 Streamlit 容器；Compose 已从同一 `NANOLOOP_API_KEY` 变量传递。
+Key 存在时，Streamlit 会禁用会话内的后端地址编辑，并在构造客户端前再次要求规范化地址与
+`NANOLOOP_API_BASE_URL` 完全一致；不匹配时拒绝创建客户端，不能静默把 Key 发往其他 origin/path。
+环境变量可被宿主管理员或 `docker inspect` 看到，长期部署应迁移到 secret file/
+Docker secret 与可轮换多 Key 方案。
+
+`NANOLOOP_BIND_HOST=0.0.0.0` 只应在前方已有 TLS、用户认证/授权、独立边缘限流和请求体配额
+的受信任反向代理时使用。共享 Key 不提供账号、角色、租户或调用者归属，应用仍不应裸露到公网。
 
 ## 持久数据
 
@@ -27,6 +43,8 @@ API 以 UID/GID `10001:10001` 运行。Compose 新建的命名卷会从镜像中
 
 ## 容量与上传
 
+- Compose 默认将 `API_RATE_LIMIT_REQUESTS=120`、`API_RATE_LIMIT_WINDOW_SECONDS=60`；合法 Key、匿名/错误 Key 与未启用认证的服务请求分别使用固定桶，进程重启会清空计数。
+- Compose 的 API Host allowlist 包含内部服务名 `api`；删除该项会使 Streamlit 到 API 的请求被 Host guard 拒绝。
 - `MAX_UPLOAD_MB` 是每个文件的流式保存上限，默认 200 MB。
 - `MAX_REQUEST_MB` 是整个 HTTP 请求在 multipart 解析前的上限，默认 512 MB，且不得小于单文件上限。
 - API 的 `TMPDIR=/app/data/tmp`，避免 Starlette 在 64 MB `/tmp` tmpfs 中展开大 multipart。
@@ -52,6 +70,11 @@ docker compose config --quiet
 ```
 
 容器入口会执行 `alembic upgrade head`，失败时不会启动 API。回滚应用镜像前必须确认旧版本理解当前数据库 schema；不可直接回滚数据库文件。迁移脚本在 CI 中执行 upgrade → downgrade → upgrade 和 ORM 漂移检查。
+
+`main` 基线的 [GitHub Actions run 29625213698](https://github.com/Yukun-Zheng/NanoLoop-Agent/actions/runs/29625213698)
+已全绿，并真实构建、启动和健康检查 API 与 frontend 两个容器。本机此前拉取 Docker Hub 基础镜像
+超时，所以没有等价的本机构建成功证据；CI 成功证明仓库容器链路可运行，但不替代目标主机的卷权限、
+备份恢复、外部资产、容量和长期运行验收。每个待发布提交仍须通过自己的 CI，不能沿用历史 run 结论。
 
 ## 外部资产
 
