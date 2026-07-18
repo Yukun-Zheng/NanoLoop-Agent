@@ -27,7 +27,13 @@ class StoredImageAsset(ContractModel):
 
 
 class JobRepository(Protocol):
-    def create(self, job: AnalysisJobDTO) -> AnalysisJobDTO: ...
+    def create(
+        self,
+        job: AnalysisJobDTO,
+        *,
+        tenant_id: str,
+        owner_principal_id: str,
+    ) -> AnalysisJobDTO: ...
 
     def get(self, job_id: str) -> AnalysisJobDTO: ...
 

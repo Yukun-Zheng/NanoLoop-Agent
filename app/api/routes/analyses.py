@@ -10,7 +10,12 @@ from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
 
 from app.analysis.application import AnalysisCreationService, AnalysisUpload
-from app.api.deps import get_analysis_creation_service, get_file_store, get_repositories
+from app.api.deps import (
+    get_analysis_creation_service,
+    get_file_store,
+    get_repositories,
+    require_api_key_contract,
+)
 from app.api.downloads import decorate_image_download, decorate_run_downloads
 from app.api.responses import success_response
 from app.api.routing import COMMON_ERROR_RESPONSES, BoundedMultipartRoute
@@ -20,6 +25,7 @@ from app.contracts.analyses import (
     RunFailureDTO,
 )
 from app.contracts.common import ApiResponse
+from app.contracts.identity import PrincipalContext
 from app.core.errors import InvalidImageError
 from app.db.repositories import SqlAlchemyRepositorySet
 from app.storage import LocalFileStore
@@ -43,6 +49,7 @@ async def create_analysis(
     files: Annotated[list[UploadFile], File(min_length=1, max_length=20)],
     metadata_json: Annotated[str, Form(min_length=2)],
     service: Annotated[AnalysisCreationService, Depends(get_analysis_creation_service)],
+    principal: Annotated[PrincipalContext, Depends(require_api_key_contract)],
 ) -> ApiResponse[JobDetailDTO]:
     try:
         metadata = CreateAnalysisMetadata.model_validate_json(metadata_json)
@@ -53,7 +60,12 @@ async def create_analysis(
         if not upload.filename:
             raise InvalidImageError(details={"reason": "missing_upload_filename"})
         uploads.append(AnalysisUpload(filename=upload.filename, stream=upload.file))
-    detail = await run_in_threadpool(service.create_analysis, metadata, uploads)
+    detail = await run_in_threadpool(
+        service.create_analysis,
+        metadata,
+        uploads,
+        principal=principal,
+    )
     return success_response(
         detail,
         request=request,

@@ -94,3 +94,34 @@
   或宣称多租户生产就绪。
 - 发布状态：本批尚待提交并推送；推送后必须以 `yukun` CI 复验，失败则继续在本分支修正，不合并
   `main`。下一批优先实现有界二阶段限流与资源 tenant/owner 迁移，继续不修改前端。
+
+## 2026-07-18 15:28 +08:00 — Principal 身份批次云端验收
+
+- 分支与提交：`yukun@32dbdebfc8864f6f88a1de472d2a5f3e6623f06e`，已推送，未合入 `main`。
+- 云端证据：GitHub Actions run `29635681593` 全绿；Python 3.11、Python 3.12、Ruff/严格
+  Mypy/OpenAPI/Alembic 门禁与 CPU 双容器 smoke 全部通过。
+- 结论：principal credential authentication 的代码、迁移、运维 CLI 与容器装配已通过当前仓库门禁；
+  该结论不扩大上一条记录的权限边界，资源级 authorization、tenant isolation 和 principal quota
+  仍按未完成处理。
+- 后续批次：并行推进有界二阶段限流与 `AnalysisJob` tenant/owner schema 先行迁移；先建立可验证事实，
+  再逐端点启用授权，不修改前端，也不把 `yukun` 合入 `main`。
+
+## 2026-07-18 16:22 +08:00 — AnalysisJob 租户与所有者事实层
+
+- 分支：`yukun`，未合入 `main`；本条所在提交只建立资源归属事实与显式创建链路，不提前宣称
+  多租户授权已经完成。
+- 数据模型：`analysis_jobs` 新增非空 `tenant_id`、`owner_principal_id`，所有者与租户通过复合外键
+  绑定；新增按租户/创建时间及租户/所有者/创建时间查询的索引。仓储和应用服务不提供隐式默认值，
+  创建分析必须显式传入已认证的 `PrincipalContext`；disabled/shared-key 模式也显式使用固定 legacy
+  主体，principal 模式持久化真实主体。
+- 迁移安全：升级在任何 DDL 前验证 legacy tenant/principal 的归属、kind 和 role，再回填并收紧约束；
+  SQLite 完成后执行全库 `foreign_key_check`。检测到任何非 legacy ownership 时，降级会在删除字段或
+  约束前失败，避免静默抹去归属信息。
+- 合同证据：principal HTTP 创建合同验证数据库中的真实 tenant/owner，并确认认证 identity JOIN 仍只
+  执行一次；另覆盖原始 SQL 漏字段、错误租户、外键/删除限制、固定 revision、单 Alembic head 及
+  disposable `create_all()` sentinel。
+- 本地证据：三批在途后端改动合并状态下，Ruff、严格 Mypy 114 个源文件、645 项 Pytest、OpenAPI、
+  六页 Streamlit AppTest、Alembic upgrade/downgrade/upgrade 与 ORM 漂移检查全部通过。
+- 保留边界：现有读取、修改、运行、查询、导出与文件端点尚未按 tenant/role/owner 执行资源级策略；
+  下一阶段必须实现跨租户 404、同租户权限不足 403 与仓储查询隔离。继续不修改前端，也不把本分支
+  合入 `main`。

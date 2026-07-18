@@ -46,6 +46,7 @@ from app.contracts.enums import (
     RoiMode,
     ScaleMode,
 )
+from app.contracts.identity import LEGACY_PRINCIPAL_ID, LEGACY_TENANT_ID, AuthMode
 from app.contracts.inference import SegmentationOutput, SegmentationRequest
 from app.contracts.models import ModelHealth, ModelMetadata
 from app.contracts.repositories import StoredImageAsset, UnitOfWork
@@ -56,6 +57,7 @@ from app.core.errors import (
     InvalidImageError,
     ModelNotReadyError,
 )
+from app.core.identity import legacy_principal_context
 from app.db.base import Base
 from app.db.models import ImageAsset as ImageAssetRecord
 from app.db.models import ModelRegistryRecord, SegmentationRun
@@ -322,7 +324,9 @@ def application_harness(tmp_path: Path) -> Iterator[ApplicationHarness]:
                 status=JobStatus.READY_FOR_CONFIGURATION,
                 created_at=now,
                 updated_at=now,
-            )
+            ),
+            tenant_id=LEGACY_TENANT_ID,
+            owner_principal_id=LEGACY_PRINCIPAL_ID,
         )
         repositories.images.add_many(
             [
@@ -1119,6 +1123,7 @@ def test_create_analysis_validates_and_persists_upload(
             ],
         ),
         [AnalysisUpload(filename="fresh.png", stream=content)],
+        principal=legacy_principal_context(AuthMode.DISABLED),
     )
 
     assert detail.job.status == JobStatus.READY_FOR_CONFIGURATION
@@ -1151,6 +1156,7 @@ def test_create_analysis_rejects_metadata_upload_mismatch(
         service.create_analysis(
             metadata,
             [AnalysisUpload(filename="actual.png", stream=BytesIO(b"not-read"))],
+            principal=legacy_principal_context(AuthMode.DISABLED),
         )
 
     assert captured.value.details["missing_uploads"] == ["declared.png"]
@@ -1180,6 +1186,7 @@ def test_create_analysis_failure_removes_only_unreferenced_uploads(
                 AnalysisUpload(filename="first.png", stream=BytesIO(payload)),
                 AnalysisUpload(filename="second.png", stream=BytesIO(payload)),
             ],
+            principal=legacy_principal_context(AuthMode.DISABLED),
         )
 
     failed_jobs = set(file_store.paths.root.glob("job_*")) - existing_jobs
@@ -1212,6 +1219,7 @@ def test_create_analysis_late_failure_retains_database_referenced_original(
                 images=[ImageMetadataInput(filename="retained.png", sample_id="sample_1")],
             ),
             [AnalysisUpload(filename="retained.png", stream=image_bytes)],
+            principal=legacy_principal_context(AuthMode.DISABLED),
         )
 
     with database.session() as session:

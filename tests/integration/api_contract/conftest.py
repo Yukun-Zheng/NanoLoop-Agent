@@ -28,6 +28,7 @@ from app.contracts.enums import (
     QualityTier,
     RoiMode,
 )
+from app.contracts.identity import LEGACY_PRINCIPAL_ID, LEGACY_TENANT_ID
 from app.contracts.inference import SegmentationOutput, SegmentationRequest
 from app.contracts.models import (
     ModelCandidate,
@@ -205,7 +206,9 @@ def _seed_persisted_read_models(database: Database) -> None:
                 status=JobStatus.READY_FOR_CONFIGURATION,
                 created_at=now,
                 updated_at=now,
-            )
+            ),
+            tenant_id=LEGACY_TENANT_ID,
+            owner_principal_id=LEGACY_PRINCIPAL_ID,
         )
         repositories.images.add_many(
             [

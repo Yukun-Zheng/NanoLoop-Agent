@@ -50,6 +50,7 @@ from app.contracts.execution import (
     ExecutionRuntimeProvenance,
     scientific_build_mismatches,
 )
+from app.contracts.identity import PrincipalContext
 from app.contracts.inference import SegmentationOutput, SegmentationRequest
 from app.contracts.models import ModelBundleReference, ModelHealth, ModelMetadata
 from app.contracts.repositories import StoredImageAsset, UnitOfWork
@@ -160,9 +161,17 @@ class AnalysisCreationService:
         self,
         metadata: CreateAnalysisMetadata,
         uploads: list[AnalysisUpload],
+        *,
+        principal: PrincipalContext,
     ) -> JobDetailDTO:
         if not isinstance(metadata, CreateAnalysisMetadata):
             raise TypeError("metadata must be CreateAnalysisMetadata")
+        if not isinstance(principal, PrincipalContext):
+            raise TypeError("principal must be PrincipalContext")
+        tenant_id = principal.tenant_id
+        owner_principal_id = principal.principal_id
+        if tenant_id is None or owner_principal_id is None:
+            raise ValueError("principal must carry tenant and principal IDs")
         filenames = [upload.filename for upload in uploads]
         if len(filenames) != len(set(filenames)):
             raise InvalidImageError(details={"reason": "duplicate_upload_filename"})
@@ -187,7 +196,9 @@ class AnalysisCreationService:
                     config={"schema_version": "1.0"},
                     created_at=now,
                     updated_at=now,
-                )
+                ),
+                tenant_id=tenant_id,
+                owner_principal_id=owner_principal_id,
             )
             uow.commit()
         self._update_job(job_id, JobStatus.VALIDATING)

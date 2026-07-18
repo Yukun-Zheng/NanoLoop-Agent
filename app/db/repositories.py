@@ -26,6 +26,7 @@ from app.contracts.analyses import (
 )
 from app.contracts.enums import JobStatus, QualityStatus, RoiMode
 from app.contracts.execution import ExecutionRuntimeProvenance
+from app.contracts.identity import validate_principal_id, validate_tenant_id
 from app.contracts.queries import QueryAuditRecordDTO, UnifiedQueryRequest, UnifiedQueryResponse
 from app.contracts.repositories import StoredImageAsset
 from app.core.errors import BoxRevisionConflictError, InvalidBoxError, ResourceNotFoundError
@@ -150,9 +151,19 @@ class SqlAlchemyJobRepository:
     def __init__(self, session: Session) -> None:
         self.session = session
 
-    def create(self, job: AnalysisJobDTO) -> AnalysisJobDTO:
+    def create(
+        self,
+        job: AnalysisJobDTO,
+        *,
+        tenant_id: str,
+        owner_principal_id: str,
+    ) -> AnalysisJobDTO:
+        validated_tenant_id = validate_tenant_id(tenant_id)
+        validated_owner_principal_id = validate_principal_id(owner_principal_id)
         record = AnalysisJob(
             job_id=job.job_id,
+            tenant_id=validated_tenant_id,
+            owner_principal_id=validated_owner_principal_id,
             name=job.name,
             status=job.status.value,
             config_json=job.config,

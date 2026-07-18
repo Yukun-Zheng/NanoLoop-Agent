@@ -17,6 +17,7 @@ from app.contracts.enums import (
     QualityTier,
     RoiMode,
 )
+from app.contracts.identity import LEGACY_PRINCIPAL_ID, LEGACY_TENANT_ID
 from app.core.config import Settings
 from app.db.base import Base
 from app.db.models import (
@@ -456,12 +457,16 @@ def _seed_experiment(database: Database) -> None:
             [
                 AnalysisJob(
                     job_id="job_1",
+                    tenant_id=LEGACY_TENANT_ID,
+                    owner_principal_id=LEGACY_PRINCIPAL_ID,
                     name="data tools fixture",
                     status=JobStatus.COMPLETED_WITH_WARNINGS.value,
                     config_json={},
                 ),
                 AnalysisJob(
                     job_id="job_2",
+                    tenant_id=LEGACY_TENANT_ID,
+                    owner_principal_id=LEGACY_PRINCIPAL_ID,
                     name="foreign fixture",
                     status=JobStatus.COMPLETED.value,
                     config_json={},

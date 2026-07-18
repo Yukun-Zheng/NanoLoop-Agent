@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from app.agent.application import QueryApplicationService
 from app.contracts.enums import JobStatus, QueryType
+from app.contracts.identity import LEGACY_PRINCIPAL_ID, LEGACY_TENANT_ID
 from app.contracts.queries import (
     Citation,
     MaterialContext,
@@ -64,6 +65,8 @@ def _service(
         session.add(
             AnalysisJob(
                 job_id="job_1",
+                tenant_id=LEGACY_TENANT_ID,
+                owner_principal_id=LEGACY_PRINCIPAL_ID,
                 name="query fixture",
                 status=JobStatus.READY_FOR_CONFIGURATION.value,
                 config_json={},

@@ -11,6 +11,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     LargeBinary,
@@ -28,6 +29,7 @@ from app.contracts.enums import (
     ModelStatus,
     QualityStatus,
 )
+from app.contracts.identity import LEGACY_PRINCIPAL_ID, LEGACY_TENANT_ID
 from app.db.base import Base
 
 JsonObject = dict[str, Any]
@@ -45,8 +47,32 @@ class TimestampMixin:
 
 class AnalysisJob(TimestampMixin, Base):
     __tablename__ = "analysis_jobs"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["owner_principal_id", "tenant_id"],
+            ["principals.principal_id", "principals.tenant_id"],
+            name="fk_analysis_jobs_owner_principal_tenant",
+            ondelete="RESTRICT",
+        ),
+        Index("ix_analysis_jobs_tenant_created", "tenant_id", "created_at"),
+        Index(
+            "ix_analysis_jobs_tenant_owner_created",
+            "tenant_id",
+            "owner_principal_id",
+            "created_at",
+        ),
+    )
 
     job_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("tenants.tenant_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    owner_principal_id: Mapped[str] = mapped_column(
+        String(36),
+        nullable=False,
+    )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     status: Mapped[str] = mapped_column(String(40), default=JobStatus.CREATED.value, nullable=False)
     config_json: Mapped[JsonObject] = mapped_column(JSON, default=dict, nullable=False)
@@ -421,6 +447,11 @@ class Principal(TimestampMixin, Base):
         CheckConstraint("enabled IN (0, 1)", name="enabled_boolean"),
         CheckConstraint("version >= 1", name="version_positive"),
         UniqueConstraint("tenant_id", "handle", name="uq_principals_tenant_handle"),
+        UniqueConstraint(
+            "principal_id",
+            "tenant_id",
+            name="uq_principals_principal_tenant",
+        ),
         Index("ix_principals_tenant_enabled", "tenant_id", "enabled"),
     )
 
@@ -537,6 +568,40 @@ event.listen(
         BEGIN
             SELECT RAISE(ABORT, 'identity audit events are append-only');
         END
+        """
+    ).execute_if(dialect="sqlite"),
+)
+
+# Production and demo databases must use Alembic, whose identity migration creates these rows and
+# records the matching audit facts. Isolated tests still build disposable SQLite schemas with
+# ``Base.metadata.create_all()``; seed only the fixed compatibility records there so callers can
+# explicitly create jobs for disabled/shared-key compatibility identities. Deliberately do not
+# synthesize audit events in test-only schemas because no migration occurred.
+event.listen(
+    Base.metadata,
+    "after_create",
+    DDL(  # type: ignore[no-untyped-call]
+        f"""
+        INSERT OR IGNORE INTO tenants
+            (tenant_id, slug, display_name, enabled, version, created_at, updated_at)
+        VALUES
+            ('{LEGACY_TENANT_ID}', 'legacy-local', 'Legacy local tenant', 1, 1,
+             CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        """
+    ).execute_if(dialect="sqlite"),
+)
+event.listen(
+    Base.metadata,
+    "after_create",
+    DDL(  # type: ignore[no-untyped-call]
+        f"""
+        INSERT OR IGNORE INTO principals
+            (principal_id, tenant_id, handle, display_name, kind, role, enabled, version,
+             created_at, updated_at)
+        VALUES
+            ('{LEGACY_PRINCIPAL_ID}', '{LEGACY_TENANT_ID}', 'legacy-local',
+             'Legacy local service', 'service', 'tenant_admin', 1, 1,
+             CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         """
     ).execute_if(dialect="sqlite"),
 )
