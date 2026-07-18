@@ -2,7 +2,7 @@
 
 ## 接手前必读
 
-先阅读 [v3 交接 DOCX](NanoLoop_Agent_协同开发规格与接口总文档_v3.0.docx)；检索代码路径、评审或修改内容时使用 [Markdown 源文件](NanoLoop_Agent_协同开发规格与接口总文档_v3.0.md)。该文档依据当前代码、迁移、路由和测试生成，A～F 分工分别对应模型推理、科学分析、平台后端、RAG/Agent、前端和 QA/交付。若 v2 计划与当前实现冲突，以代码、测试和 v3 的现状说明为准。
+先阅读 [v3 交接 DOCX](NanoLoop_Agent_协同开发规格与接口总文档_v3.0.docx)；检索代码路径、评审或修改内容时使用 [Markdown 源文件](NanoLoop_Agent_协同开发规格与接口总文档_v3.0.md)。该文档依据当前代码、迁移、路由和测试生成，A～F 分工分别对应模型推理、科学分析、平台后端、RAG/Agent、前端和 QA/交付。D、F 及语料协作者还应阅读 [RAG 与检索功能开发指南](RAG_RETRIEVAL_DEVELOPMENT_GUIDE.md)，其中给出当前代码事实、资产门槛、首周顺序和个人任务卡。若 v2 计划与当前实现冲突，以代码、测试和 v3 的现状说明为准。
 
 ## 冻结模块边界
 
@@ -28,6 +28,12 @@ make handoff-doc
 ```
 
 该命令从 `docs/NanoLoop_Agent_协同开发规格与接口总文档_v3.0.md` 重建同目录的 `.docx`。两者应在同一个提交中保持同步。
+
+RAG 指南同样以 Markdown 为编辑源、DOCX 为分发物，可单独重建：
+
+```bash
+make rag-guide-doc
+```
 
 在 macOS 上用 headless LibreOffice 转 PDF 做中文排版检查时，应显式使用 Homebrew 的 Fontconfig；否则进程可能找不到苹方等系统中文字体：
 

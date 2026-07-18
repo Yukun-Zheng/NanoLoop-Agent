@@ -2,7 +2,7 @@
 
 NanoLoop Agent 是一套面向 SEM 纳米颗粒图像的可追溯分析工作台。它把原图与实验元数据、人工 ROI、可插拔分割模型、确定性形貌统计、质量门控、材料知识检索和可复现导出串成一个闭环；数值结论只来自分析代码，材料知识结论必须带可核验引用。
 
-> 新开发者请先阅读 [v3 交接 DOCX](docs/NanoLoop_Agent_协同开发规格与接口总文档_v3.0.docx)；需要检索、评审或修改文档时使用其 [Markdown 源文件](docs/NanoLoop_Agent_协同开发规格与接口总文档_v3.0.md)。v3 以当前仓库代码为事实基线，按开发者 A～F 分别覆盖模型推理、科学分析、平台后端、RAG/Agent、前端和 QA/交付。
+> 新开发者请先阅读 [v3 交接 DOCX](docs/NanoLoop_Agent_协同开发规格与接口总文档_v3.0.docx)；需要检索、评审或修改文档时使用其 [Markdown 源文件](docs/NanoLoop_Agent_协同开发规格与接口总文档_v3.0.md)。v3 以当前仓库代码为事实基线，按开发者 A～F 分别覆盖模型推理、科学分析、平台后端、RAG/Agent、前端和 QA/交付。今晚及首周的 RAG 资产、检索与验收工作以 [RAG 与检索功能开发指南](docs/RAG_RETRIEVAL_DEVELOPMENT_GUIDE.md) 为准。
 
 项目产品目标源于 `NanoLoop_Agent_协同开发规格与接口总文档_v2.0.docx`，当前开发与接手以 v3 为准。代码已经包含 FastAPI 后端、SQLite/Alembic、文件制品存储、后台运行调度、U-Net/YOLO-Seg/SAM2 适配器、FTS5 检索降级路径、统一查询服务、Streamlit 中文工作台、OpenAPI 快照、容器部署定义和自动化测试。
 
@@ -26,7 +26,7 @@ NanoLoop Agent 是一套面向 SEM 纳米颗粒图像的可追溯分析工作台
 - 启动恢复对普通陈旧运行复制其不可变科学输入；若人工修正掩膜运行在崩溃后缺少原始外部制品，则父运行明确失败并要求人工处理，不会用 JSON 配置伪造一个不可复现子运行。
 - 真正的模型权重、生产知识语料、向量索引和本地大模型均为外部资产，目前仓库不会假装它们存在。没有权重时模型健康状态会诚实显示为 `unavailable`。
 
-详细覆盖情况见 [需求追踪表](docs/requirements-traceability.md)，外部模型与 RAG 接手方式见 [模型与 RAG 交接](docs/model-rag-handoff.md)，单机/公网/多实例的发布边界见 [生产就绪说明](docs/PRODUCTION_READINESS.md)。
+详细覆盖情况见 [需求追踪表](docs/requirements-traceability.md)，RAG 的近期实施与人员任务见 [RAG 与检索功能开发指南](docs/RAG_RETRIEVAL_DEVELOPMENT_GUIDE.md)，外部模型与长期接手方式见 [模型与 RAG 交接](docs/model-rag-handoff.md)，单机/公网/多实例的发布边界见 [生产就绪说明](docs/PRODUCTION_READINESS.md)。
 
 ## 本地启动
 
@@ -64,11 +64,11 @@ docker compose up --build -d
 docker compose logs -f api frontend
 ```
 
-默认只绑定 `127.0.0.1`。API 会拒绝不受信任/歧义的 Host，并对浏览器写请求校验 Origin 与 `Sec-Fetch-Site`；这些网络边界控制本身不构成身份认证。应用已经支持由运维 CLI 预置的 tenant/principal 可撤销凭据，并对 Analysis 聚合执行 tenant/role/owner 授权，但仍不提供交互式用户登录，query、file download 与 knowledge 也尚未完成同等级租户隔离。若要开放到其他机器，仍必须先在受信任反向代理上增加 TLS、所需的用户认证与授权、边缘限速和访问日志，再显式设置 `NANOLOOP_BIND_HOST`。
+默认只绑定 `127.0.0.1`。API 会拒绝不受信任/歧义的 Host，并对浏览器写请求校验 Origin 与 `Sec-Fetch-Site`；这些网络边界控制本身不构成身份认证。应用已经支持由运维 CLI 预置的 tenant/principal 可撤销凭据，并对 Analysis 聚合、Query 和 v2 文件能力执行相应的租户、主体、角色或用途约束，但仍不提供交互式用户登录，knowledge 尚未完成同等级租户隔离。若要开放到其他机器，仍必须先在受信任反向代理上增加 TLS、所需的用户认证与授权、边缘限速和访问日志，再显式设置 `NANOLOOP_BIND_HOST`。
 
 API 使用单个 Uvicorn worker、SQLite WAL 和进程内有界 worker pool。数据库中的 `QUEUED` 记录是持久事实来源，队列溢出会由调度器继续领取。当前支持单 API 容器；多副本部署需要把数据库、导出锁和调度所有权迁移到共享基础设施。
 
-认证由 `AUTH_MODE=auto|disabled|shared_key|principal` 选择。默认 `auto` 完全兼容旧部署：存在 `NANOLOOP_API_KEY` 时使用共享门禁，否则关闭认证；`principal` 模式要求稳定的 32 字节以上 `CREDENTIAL_PEPPER`，并通过 `scripts/manage_identity.py` 预置 tenant、principal 和只显示一次的凭据。principal 凭据以摘要入库，可过期、禁用或撤销，请求会得到 tenant/principal/credential 上下文。Analysis job/image/box/run/export 先按 tenant 查询，再按 tenant_admin、owner analyst、peer analyst 与 viewer 执行读写策略；disabled/shared-key 的固定 legacy admin 也走同一策略。但 query actor/数据工具深层 scope、tenant/job-bound file-token v2、knowledge tenant 和用户 quota 尚未完成，因此仍不是完整多租户隔离。Streamlit 与 smoke 客户端继续通过 `X-API-Key` 发送 shared key 或 principal token，并将目标锁定到规范化后的 `NANOLOOP_API_BASE_URL`。凭据只应在 TLS 后使用。principal 限流分两阶段：认证前按直接 socket peer 使用严格有界 LRU 桶，认证成功后复用同一次查询得到的 `principal_id` 使用主体桶；捆绑的 Uvicorn 启动命令禁用 proxy-header 改写。两阶段都只在当前进程生效，不是分布式限流或 quota。
+认证由 `AUTH_MODE=auto|disabled|shared_key|principal` 选择。默认 `auto` 完全兼容旧部署：存在 `NANOLOOP_API_KEY` 时使用共享门禁，否则关闭认证；`principal` 模式要求稳定的 32 字节以上 `CREDENTIAL_PEPPER`，并通过 `scripts/manage_identity.py` 预置 tenant、principal 和只显示一次的凭据。principal 凭据以摘要入库，可过期、禁用或撤销，请求会得到 tenant/principal/credential 上下文。Analysis job/image/box/run/export 先按 tenant 查询，再按 tenant_admin、owner analyst、peer analyst 与 viewer 执行读写策略；disabled/shared-key 的固定 legacy admin 也走同一策略。Query actor 与数值工具已经在路由和底层 SQL 双重隔离；文件下载 v2 token 已绑定 tenant、principal、job、artifact、purpose/audience、内容哈希和时限，并以固定文件描述符流出。knowledge tenant ownership 和用户 quota 尚未完成，因此仍不是完整多租户隔离。Streamlit 与 smoke 客户端继续通过 `X-API-Key` 发送 shared key 或 principal token，并将目标锁定到规范化后的 `NANOLOOP_API_BASE_URL`。凭据只应在 TLS 后使用。principal 限流分两阶段：认证前按直接 socket peer 使用严格有界 LRU 桶，认证成功后复用同一次查询得到的 `principal_id` 使用主体桶；捆绑的 Uvicorn 启动命令禁用 proxy-header 改写。两阶段都只在当前进程生效，不是分布式限流或 quota。
 
 SQLite 同时是 tenant/principal/凭据元数据、任务、运行、查询和 ROI revision 的事实源；原始 principal token 与 pepper 不入库。`query_history.jsonl`、`rag_citations.json` 与 `boxes_revision_*.json` 是可由数据库重建的审计投影；投影写失败会留下结构化降级日志，但不会把已经提交的业务事务伪装成失败。ROI revision ledger 会保留空 revision。
 

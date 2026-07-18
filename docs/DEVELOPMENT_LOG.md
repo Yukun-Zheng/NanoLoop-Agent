@@ -277,3 +277,20 @@
 - 保留边界：正式支持仍是单 API 进程；同 inode 原地修改依赖所有 writer 保持 atomic replace。keyring
   不热加载、不支持并发 rotate，当前也无旧 key retire/prune；单运维者须停机轮换并重启，8-key 上限前
   需要后续受审计退休流程。知识文档租户化、quota/retention、分布式限流和多副本协调仍未完成。
+
+## 2026-07-18 20:20 +08:00 — 文件能力云端验收与 RAG 协作收束
+
+- 分支与提交：文件能力批次 `yukun@e93d44ffb559d1723a7b250e4abdba6d2ceb5ca2` 已推送，未合入
+  `main`；GitHub Actions run `29643170150` 的 Python 3.11、Python 3.12、Ruff/严格 Mypy、
+  OpenAPI/Alembic 及 CPU 容器/备份恢复 smoke 全绿。
+- 分支收束：已删除本地和远端 `agent/offline-backup-restore`；该分支对应 PR #2 已 squash 合入
+  `main` 且树一致。当前仓库只保留 `main` 与 `yukun`，后续开发继续从 `yukun` 协作，不在本批合并
+  `main`。
+- RAG 事实：现有代码已包含有界摄取/切块、SQLite FTS5、可选本地 SentenceTransformers、不可变
+  FAISS generation、RRF、严格材料过滤、摘录/OpenAI-compatible provider 和引用校验；当前缺口是
+  固定真实 embedding、许可语料、真实向量重启/失配验收和可选本地生成模型，而不是从零重写 RAG。
+- 首周方案：先完成 5～10 份合法语料、固定 embedding、现有 FTS5/FAISS 与摘录回答的真实评测，
+  再决定中文 tokenizer/reranker，最后才评估本地 LLM 与受控爬取。新增可重建的 RAG 指南 Markdown、
+  DOCX 及任务入口，明确黄睿健负责 F/真实资产验收，姚承志以 D/F 学员身份负责受审语料和问题集。
+- 保留边界：本批只收束文档和协作接口，不修改前端源码，不触碰工作区中由其他来源改动的 v3
+  DOCX/Markdown；知识 tenant ownership、quota/retention、分布式限流和多副本协调仍未完成。

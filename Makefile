@@ -11,7 +11,7 @@ IDENTITY_ARGS ?=
 
 .PHONY: help install lint typecheck test frontend-check openapi migration-check check serve frontend db-upgrade \
 	handoff-doc backup-create backup-verify backup-restore backup-drill docker-build compose-config compose-up \
-	compose-down compose-logs identity-manage
+	compose-down compose-logs identity-manage rag-guide-doc
 
 help:
 	@echo "NanoLoop Agent development commands"
@@ -21,6 +21,7 @@ help:
 	@echo "  make frontend         Run the Streamlit workbench"
 	@echo "  make db-upgrade       Upgrade the configured database to Alembic head"
 	@echo "  make handoff-doc      Regenerate the v3 developer handoff DOCX"
+	@echo "  make rag-guide-doc    Regenerate the RAG development guide DOCX"
 	@echo "  make backup-create    Create BACKUP_ARCHIVE (offline writers only)"
 	@echo "  make backup-verify    Verify BACKUP_ARCHIVE and optional BACKUP_CHECKSUM"
 	@echo "  make backup-restore   Restore BACKUP_ARCHIVE into fresh RESTORE_ROOT"
@@ -69,6 +70,9 @@ db-upgrade:
 
 handoff-doc:
 	$(PYTHON_BIN) scripts/build_v3_handoff_doc.py
+
+rag-guide-doc:
+	$(PYTHON_BIN) scripts/build_rag_guide_doc.py
 
 backup-create:
 	@test -n "$(BACKUP_ARCHIVE)" || { echo "BACKUP_ARCHIVE is required" >&2; exit 2; }
