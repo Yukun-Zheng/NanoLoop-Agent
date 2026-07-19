@@ -294,3 +294,31 @@
   DOCX 及任务入口，明确黄睿健负责 F/真实资产验收，姚承志以 D/F 学员身份负责受审语料和问题集。
 - 保留边界：本批只收束文档和协作接口，不修改前端源码，不触碰工作区中由其他来源改动的 v3
   DOCX/Markdown；知识 tenant ownership、quota/retention、分布式限流和多副本协调仍未完成。
+
+## 2026-07-20 02:21 +08:00 — RAG 合入修复、ASR POC 归档与 A+B 交接
+
+- 分支事实：[PR #3](https://github.com/Yukun-Zheng/NanoLoop-Agent/pull/3)
+  `fix(rag): 保证抽取式回答的每个事实句都带引用标记` 实际以 `yukun` 为 base，
+  并未合入 `main`。`yukun` 完整包含 `main` 且只向前领先，因此保持 `main` 不动；后续功能分支从
+  最新全绿 `yukun` 建立并仍向 `yukun` 提交 PR。
+- RAG 修复：PR #3 合入提交在 `ExtractiveAnswerProvider` 新循环处引入额外缩进，导致
+  [GitHub Actions run 29696797035](https://github.com/Yukun-Zheng/NanoLoop-Agent/actions/runs/29696797035)
+  的 Ruff、Python 3.11 和 Python 3.12 测试在收集阶段失败。已只修复该语法问题，并新增直接回归，
+  证明多句证据的每一个事实行都带本次上下文的 `[C#]` 引用。
+- 已知 P2：当前句子切分与引用校验都把英文句点视为事实边界，会把小数、DOI、`Fig. 2` 或英文缩写
+  拆开。本批不单改 splitter 以免与 validator 语义分叉；后续应在同一 PR 同步修改两者并补英文科学
+  文本回归。
+- 测试边界：将新增的 in-memory keyword 测试改为诚实命名和说明；它覆盖离线摘录回答回归，但不能
+  替代真实 SQLite FTS5、FAISS/embedding、进程重启、连续中文检索、授权或许可语料验收。本地
+  `tests/unit/rag` 共 66 项通过；完整 `make check` 的 Ruff、严格 Mypy 121 个源文件、959 项 Pytest、
+  OpenAPI、六页 Streamlit AppTest、Alembic 往返与 ORM drift 全绿，`docker compose config --quiet`
+  和 `git diff --check` 通过。云端证据以本批推送后的 GitHub Actions 为准。
+- 语音探索：根据姚承志提供的 Gradio/终端/聊天截图建立 FunASR Nano POC 记录。现有证据支持“本地
+  推理路线可行”，不支持“完全离线或生产可用”；原始 `Fun-ASR.zip`、FFmpeg 包与模型目录尚未进入
+  工作区，故源码、哈希、revision、许可证、CER/WER、性能和冷启动均未验收。该功能保持冻结，不接
+  当前前端或主后端流程。
+- A+B 交接：新增郭境濠专用指南，明确从 `yukun` 建分支、先冻结 U-Net、再做独立科学评测、随后
+  YOLO-Seg、SAM2 条件式推进；同时给出模型身份证、TorchScript 导出、外部资产、指标、真实冒烟、
+  PR 清单和可直接交给编程 AI 的分轮提示词。
+- 保留边界：本批不修改前端，不接收模型权重/训练数据，不启用尚无证据的 ready 状态，也不纳入工作区
+  中由其他来源改动的 v3/RAG DOCX 与 v3 Markdown。

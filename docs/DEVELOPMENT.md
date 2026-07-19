@@ -2,7 +2,20 @@
 
 ## 接手前必读
 
-先阅读 [v3 交接 DOCX](NanoLoop_Agent_协同开发规格与接口总文档_v3.0.docx)；检索代码路径、评审或修改内容时使用 [Markdown 源文件](NanoLoop_Agent_协同开发规格与接口总文档_v3.0.md)。该文档依据当前代码、迁移、路由和测试生成，A～F 分工分别对应模型推理、科学分析、平台后端、RAG/Agent、前端和 QA/交付。D、F 及语料协作者还应阅读 [RAG 与检索功能开发指南](RAG_RETRIEVAL_DEVELOPMENT_GUIDE.md)，其中给出当前代码事实、资产门槛、首周顺序和个人任务卡。若 v2 计划与当前实现冲突，以代码、测试和 v3 的现状说明为准。
+先阅读 [v3 交接 DOCX](NanoLoop_Agent_协同开发规格与接口总文档_v3.0.docx)；检索代码路径、评审或修改内容时使用 [Markdown 源文件](NanoLoop_Agent_协同开发规格与接口总文档_v3.0.md)。该文档依据当前代码、迁移、路由和测试生成，A～F 分工分别对应模型推理、科学分析、平台后端、RAG/Agent、前端和 QA/交付。D、F 及语料协作者还应阅读 [RAG 与检索功能开发指南](RAG_RETRIEVAL_DEVELOPMENT_GUIDE.md)，其中给出当前代码事实、资产门槛、首周顺序和个人任务卡。A+B 开发者使用 [模型冻结、接入与 AI 协作指南](developer_handoffs/guo-jinghao-ab-model-integration-guide.md)；后续语音输入探索见 [FunASR Nano POC 记录](experiments/funasr-nano-poc.md)。若 v2 计划与当前实现冲突，以代码、测试和 v3 的现状说明为准。
+
+## 分支与合并基线
+
+- `main` 是阶段性稳定分支，平时不直接开发；只有负责人确认里程碑完整门禁全绿后，才从
+  `yukun` 向 `main` 发合并请求。
+- `yukun` 是当前集成分支。开发者先从最新全绿 `origin/yukun` 新建自己的 `feat/*` 或 `fix/*`
+  分支，再向 `yukun` 发 Pull Request；不得把本地训练目录直接复制覆盖仓库。
+- 每个 PR 只解决一个可独立验收的主题。模型权重、训练/测试数据、生产语料、向量索引、运行输出、
+  虚拟环境和密钥均作为外部资产管理，不进入 Git。
+- 合入前先跑模块窄测试，再跑 `make check`、`docker compose config --quiet` 和
+  `git diff --check`；以该提交自己的 GitHub Actions 为最终工程门禁，不沿用历史成功记录。
+- 分支声称的状态必须与证据一致：缺 checkpoint、依赖、许可、真实 fixture 或冷启动证据时，模型继续
+  `unavailable`；仅截图或 fake 测试不构成可交付验收。
 
 ## 冻结模块边界
 
