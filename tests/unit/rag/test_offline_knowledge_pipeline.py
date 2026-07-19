@@ -1,11 +1,14 @@
-"""Offline keyword-only knowledge pipeline acceptance (no external assets).
+"""Offline extractive knowledge pipeline regression tests (no external assets).
 
 These tests cover developer D's retrieval + extractive-answer path without any
 embedding weights, licensed corpus, or API key, so they run in plain CI. They
-mirror the D-P0 "restart acceptance" goal for the keyword/hybrid retrieval path:
-as long as a document has been chunked, the offline store must retrieve the
-relevant evidence and the extractive provider must answer only from citations,
-with honest limitations and an explicit insufficient-evidence outcome otherwise.
+use a deliberately small in-memory keyword seam: as long as a document has been
+chunked, it must retrieve relevant evidence and the extractive provider must
+answer only from citations, with honest limitations and an explicit
+insufficient-evidence outcome otherwise.
+
+They do not replace production SQLite FTS5, FAISS/embedding, persistence/restart,
+Chinese retrieval, authorization, or licensed-corpus acceptance tests.
 """
 
 from __future__ import annotations

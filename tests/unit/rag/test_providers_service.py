@@ -56,6 +56,26 @@ def test_extractive_provider_returns_only_supplied_evidence() -> None:
     assert answer.confidence == "medium"
 
 
+def test_extractive_provider_marks_every_evidence_sentence() -> None:
+    base = _context()
+    context = CitationContext(
+        citation_id=base.citation_id,
+        chunk=base.chunk.model_copy(
+            update={"text": "该材料具有催化应用。第二项实验观察支持这一结论！"}
+        ),
+    )
+
+    answer = ExtractiveAnswerProvider().generate(
+        question="有什么用途？",
+        contexts=[context],
+        material_context=None,
+    )
+
+    evidence_lines = [line for line in answer.answer.splitlines() if line.startswith("- ")]
+    assert len(evidence_lines) == 2
+    assert all(line.startswith("- [C1] ") for line in evidence_lines)
+
+
 @pytest.mark.parametrize(
     "answer",
     [

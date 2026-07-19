@@ -107,7 +107,7 @@ class ExtractiveAnswerProvider:
         lines = ["知识库检索到以下相关证据摘录："]
         for context in selected:
             excerpt = _compact_excerpt(context.chunk.text, limit=160)
-                        for sentence in _split_sentences(excerpt):
+            for sentence in _split_sentences(excerpt):
                 lines.append(f"- [{context.citation_id}] {sentence}")
 
         answer = ProviderAnswer(
