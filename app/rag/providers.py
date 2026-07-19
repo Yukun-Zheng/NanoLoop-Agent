@@ -107,7 +107,9 @@ class ExtractiveAnswerProvider:
         lines = ["知识库检索到以下相关证据摘录："]
         for context in selected:
             excerpt = _compact_excerpt(context.chunk.text, limit=160)
-            lines.append(f"- [{context.citation_id}] {excerpt}")
+                        for sentence in _split_sentences(excerpt):
+                lines.append(f"- [{context.citation_id}] {sentence}")
+
         answer = ProviderAnswer(
             answer="\n".join(lines),
             used_citation_ids=tuple(context.citation_id for context in selected),
@@ -261,6 +263,19 @@ def validate_provider_answer(answer: ProviderAnswer, valid_citation_ids: set[str
 def _compact_excerpt(text: str, *, limit: int) -> str:
     compact = " ".join(text.split())
     return compact if len(compact) <= limit else compact[: limit - 1].rstrip() + "…"
+
+_SENTENCE_SPLIT = re.compile(r"[^。！？.!?]*[。！？.!?]|[^。！？.!?]+")
+
+
+def _split_sentences(text: str) -> list[str]:
+    """Split an excerpt into sentences so each can carry its own citation marker.
+
+    The strict citation validator requires every factual sentence to hold a
+    ``[C#]`` marker. Retrieved knowledge excerpts are often multi-sentence, so we
+    ground each sentence individually instead of only the first one.
+    """
+
+    return [piece.strip() for piece in _SENTENCE_SPLIT.findall(text) if piece.strip()]
 
 
 def _strip_json_fence(value: Any) -> str:
