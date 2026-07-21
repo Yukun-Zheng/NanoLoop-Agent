@@ -8,6 +8,21 @@
 >
 > 本指南可以直接发给本人，也可以整段交给编程 AI 作为项目上下文。
 
+## 0. 2026-07-21 接收状态
+
+郭境濠提交的 `NanoLoop-Agent.zip` 已按干净 `yukun` 基线完成选择性整合，接收审计见
+[A+B 本地交付审计与后续资产清单](guo-jinghao-ab-delivery-audit-2026-07-21.md)。仓库已经接收
+Large/Agglomerated 的工程合同、配置、模型卡、校准/评估工具和测试；ZIP 中的虚拟环境、嵌套 Git、
+缓存、绝对路径交接稿、权重和数据没有进入仓库。
+
+下一次不要再发送完整仓库 ZIP。只需按审计清单补交完整私有模型 bundle、资产/许可台账、按源图或
+样品切分的 manifest、机器可读校准/独立测试证据以及一次真实 Gateway → Analysis smoke 记录。在这些
+资产通过复核前，公开模型保持 `unavailable`，开发者报告指标不等于仓库已经独立复现。
+
+本次数据中若存在“文件名是 `.tif`、内容实际是 JPEG”的仪器导出，先按审计清单运行
+`scripts/models/canonicalize_sem_tiff_inputs.py`，保留原始文件并生成真正 TIFF 与哈希清单；后续所有
+校准、smoke 和测试统一使用规范化目录。不要为了兼容错误扩展名而放宽正式上传校验。
+
 ## 1. 你现在真正要完成什么
 
 你已经把模型训练推进到“能看见不错结果”的阶段。下一步不是继续无限调参，也不是把整个训练目录
@@ -119,7 +134,8 @@ mean / std：
 - `app/inference/adapters/sam2.py`：SAM2 接缝；checkpoint 与运行时仍是外部资产。
 - `app/inference/gateway.py`、`app/inference/registry.py`：业务只能从这里调用模型；这里还负责就绪状态、
   哈希、不可变快照、设备、随机种子和并发租约。
-- `model_artifacts/registry.yaml`：当前三个条目都诚实标记为 `unavailable`。
+- `model_artifacts/registry.yaml`：当前五个占位条目都诚实标记为 `unavailable`，其中包括 Small、
+  Large 和 Agglomerated 三个 U-Net 合同以及 YOLO-Seg、SAM2 接缝。
 - `model_artifacts/configs/`：模型预处理/运行时配置。
 - `model_artifacts/model_cards/`：模型用途、数据、指标、限制和许可证。
 - `app/analysis/postprocessing.py` 及 `app/analysis/`：统一实例后处理和统计。

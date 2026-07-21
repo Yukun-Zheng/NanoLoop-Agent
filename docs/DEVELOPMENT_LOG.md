@@ -322,3 +322,35 @@
   PR 清单和可直接交给编程 AI 的分轮提示词。
 - 保留边界：本批不修改前端，不接收模型权重/训练数据，不启用尚无证据的 ready 状态，也不纳入工作区
   中由其他来源改动的 v3/RAG DOCX 与 v3 Markdown。
+
+## 2026-07-22 00:03 +08:00 — 郭境濠 A+B 交付整合与阶段一工程 MVP 收束
+
+- 分支与来源：本批仅面向 `yukun`，不合入 `main`、不修改前端。接收的 `NanoLoop-Agent.zip`
+  SHA-256 为 `f445079109a71e26cfa3c6c93a9375c1aa2588baa10a7efd9e780c6cd9efb3f0`，ZIP 内
+  `feat/ab-unet-v1@b65042cd8b51af1f5c74a8e6169274c1bc78906f` 与接收时 `origin/yukun`
+  基线一致，开发改动尚未提交。整合时只重建明确的 A+B 源码、配置、卡片、脚本和测试；排除 `.venv`、
+  嵌套 `.git`、缓存、输出、权重、数据及含本机绝对路径的临时交接文档。
+- U-Net 接缝：统一 Adapter 已具备确定性灰度/百分位预处理、reflect padding、滑窗融合、阈值比较和
+  BOX union；模型专属默认阈值/最小面积进入冻结运行配置。Large 与 Agglomerated 冻结
+  `2048 × 1536` 输入和底部无效区，尺寸、config/metadata/卡片校准参数漂移均失败关闭；Small 因缺少
+  输入尺寸证据继续不可用。建 run 前会验证 BOX 与图像及模型完整有效 ROI 的交集，不创建注定空 ROI
+  的运行。
+- 输入与统计边界：上传继续严格要求扩展名、MIME 和真实内容一致，不接受 JPEG 字节伪装成 TIFF。
+  新增仓库外、无覆盖的 SEM TIFF 标准化工具，同一份源字节用于解码、源 SHA/大小取证，输出真实
+  无损 TIFF 并复核 decoded-pixel SHA。密度、粒径、周长密度等仍由统一 Analysis/B 后处理基于
+  canonical instances 计算，不复制到模型 Adapter。
+- 验收工具：纳入 Large/Agglomerated 的 TorchScript 导出、阈值/最小面积校准、Gateway→Analysis
+  smoke 与独立测试工具；冻结输入/GT/概率缓存、checkpoint/export、config/card/Adapter、执行环境和
+  上游证据哈希，输出 no-overwrite、schema-v3、canonical artifact 与终态校验均失败关闭。Small smoke
+  明确降级为 `engineering_diagnostic_only`，不得用于 ready 晋级。
+- 状态诚实性：公开 registry 现有五个占位模型均保持 `unavailable`。开发者报告的 Dice/IoU 和形貌误差
+  没有被改写成独立复现结果；因本次没有权重、授权/许可台账、源图/样品级固定 split、机器可读校准与
+  真实 smoke 证据，未执行真实 checkpoint/TorchScript 推理，也没有生成私有 ready bundle。
+- 审查与门禁：两轮独立只读复审均无 P0/P1；额外消除源文件并发变化导致标准化 manifest 漂移及
+  image-level invalid ROI 延迟失败两个 P2。最终 `make check` 全绿：Ruff、严格 Mypy 121 个源文件、
+  1098 项 Pytest、OpenAPI、六页 Streamlit AppTest、Alembic upgrade/downgrade/upgrade 与 ORM drift
+  均通过；`docker compose config --quiet` 和 `git diff --check` 通过。
+- MVP 结论：仓库达到“阶段一工程 MVP / 内部 alpha 候选”的协作基线；在至少一个外部私有模型完成
+  资产授权、固定独立集及真实 `upload -> Gateway -> Analysis -> report/export` 闭环前，不宣称为可演示
+  的纳米颗粒分析 MVP 或科学测量 MVP。后续补交格式与验收步骤见
+  `docs/developer_handoffs/guo-jinghao-ab-delivery-audit-2026-07-21.md`。
