@@ -2,7 +2,7 @@
 
 ## 接手前必读
 
-先阅读 [v3 交接 DOCX](NanoLoop_Agent_协同开发规格与接口总文档_v3.0.docx)；检索代码路径、评审或修改内容时使用 [Markdown 源文件](NanoLoop_Agent_协同开发规格与接口总文档_v3.0.md)。该文档依据当前代码、迁移、路由和测试生成，A～F 分工分别对应模型推理、科学分析、平台后端、RAG/Agent、前端和 QA/交付。D、F 及语料协作者还应阅读 [RAG 与检索功能开发指南](RAG_RETRIEVAL_DEVELOPMENT_GUIDE.md)，其中给出当前代码事实、资产门槛、首周顺序和个人任务卡。A+B 开发者使用 [模型冻结、接入与 AI 协作指南](developer_handoffs/guo-jinghao-ab-model-integration-guide.md)；后续语音输入探索见 [FunASR Nano POC 记录](experiments/funasr-nano-poc.md)。若 v2 计划与当前实现冲突，以代码、测试和 v3 的现状说明为准。
+先阅读 [v4.0 交接 DOCX](NanoLoop_Agent_协同开发规格与接口总文档_v4.0.docx)；检索代码路径、评审或修改内容时使用 [Markdown 源文件](NanoLoop_Agent_协同开发规格与接口总文档_v4.0.md)。v4.0 依据 `yukun@16456a3` 的代码、迁移、路由和测试生成，并给出当前实名分工、优先级、依赖和统一验收。RAG 开发者同时阅读 [RAG 与检索功能开发指南](RAG_RETRIEVAL_DEVELOPMENT_GUIDE.md)，但其中旧时间表与旧人员分工由 v4.0 取代；A+B 开发者使用 [模型冻结、接入与 AI 协作指南](developer_handoffs/guo-jinghao-ab-model-integration-guide.md)；后续语音输入探索见 [FunASR Nano POC 记录](experiments/funasr-nano-poc.md)。v3/v2 保留为历史资料；若旧计划与当前实现冲突，以代码、测试和 v4.0 为准。
 
 ## 分支与合并基线
 
@@ -28,19 +28,21 @@
 | E | 前端 | `frontend` | 只依赖 `/api/v1` |
 | F | QA / 交付 | CI、`scripts`、集成测试、`demo_data`、`docs`、Docker 文件 | 黑盒 API、OpenAPI 与发布门禁 |
 
+当前实名分工与 P0/P1 优先级以 [v4.0 第 0.3 节](NanoLoop_Agent_协同开发规格与接口总文档_v4.0.md#03-全员速览) 为准，避免在多个文件重复维护人员安排。
+
 `app/contracts` 是共享事实源。若修改其中字段，必须同步更新持久化所需的 Alembic 迁移、
 生成的 `docs/api/openapi-v1.json`、相关 `tests/fixtures/api`，以及 v2.0 规格未覆盖行为所需的
 ADR。不得只改某一层后让其他层猜测新合同。
 
-## 重建 v3 交接文档
+## 重建 v4.0 交接文档
 
-v3 Markdown 是编辑源，DOCX 是随仓库提交的生成物。安装 `docs` 依赖和 Pandoc 后，在仓库根目录运行：
+v4.0 Markdown 是编辑源，DOCX 是随仓库提交的生成物。安装 `docs` 依赖和 Pandoc 后，在仓库根目录运行：
 
 ```bash
 make handoff-doc
 ```
 
-该命令从 `docs/NanoLoop_Agent_协同开发规格与接口总文档_v3.0.md` 重建同目录的 `.docx`。两者应在同一个提交中保持同步。
+该命令从 `docs/NanoLoop_Agent_协同开发规格与接口总文档_v4.0.md` 重建同目录的 `.docx`。两者应在同一个提交中保持同步。历史 v3 如确需重建，使用 `make handoff-doc-v3`。
 
 RAG 指南同样以 Markdown 为编辑源、DOCX 为分发物，可单独重建：
 
@@ -54,10 +56,10 @@ make rag-guide-doc
 fontconfig_root="$(brew --prefix)"
 export FONTCONFIG_FILE="$fontconfig_root/etc/fonts/fonts.conf"
 export FONTCONFIG_PATH="$fontconfig_root/etc/fonts"
-mkdir -p /tmp/nanoloop-v3-render
+mkdir -p /tmp/nanoloop-v4-render
 soffice --headless --convert-to pdf \
-  --outdir /tmp/nanoloop-v3-render \
-  docs/NanoLoop_Agent_协同开发规格与接口总文档_v3.0.docx
+  --outdir /tmp/nanoloop-v4-render \
+  docs/NanoLoop_Agent_协同开发规格与接口总文档_v4.0.docx
 ```
 
 `brew --prefix` 同时适配 Apple Silicon 和 Intel Homebrew；渲染后应人工检查中文字体、表格换页、目录和页眉页脚。
@@ -68,7 +70,7 @@ soffice --headless --convert-to pdf \
 2. 推理注册表/Adapter、检索服务和纯分析服务；
 3. 路由到应用服务的集成与后台执行；
 4. API 集成测试、smoke、Docker 冷启动、许可证和固定演示数据；
-5. 前端按冻结 OpenAPI 实现，再运行 Streamlit AppTest；有浏览器执行器时补 browser E2E。
+5. 在冻结 OpenAPI 和真实资产状态后，对现有六页 Streamlit 做真实联调、错误状态和固定浏览器演示路径验收。
 
 先运行改动模块的窄测试，再运行完整门禁。重型模型和语料测试使用 `slow` marker；普通测试
 不得依赖私有权重、外网、API Key 或生产语料。
@@ -190,9 +192,9 @@ soffice --headless --convert-to pdf \
   `nanoloop-outputs`，不要把后两者放入只读模型目录。
 
 `docker compose config --quiet` 可用于静态配置检查。本机 Docker image build 曾因 Docker Hub
-基础镜像拉取超时而未完成；与此同时，`main` 基线的
-[GitHub Actions run 29625213698](https://github.com/Yukun-Zheng/NanoLoop-Agent/actions/runs/29625213698)
-已全绿，并真实构建、启动和健康检查 API 与 frontend 两个容器。后续分支仍须以自己的 CI 结果为准，
+基础镜像拉取超时而未完成；与此同时，v4.0 代码基线 `yukun@16456a3` 的
+[GitHub Actions run 29848825904](https://github.com/Yukun-Zheng/NanoLoop-Agent/actions/runs/29848825904)
+已全绿，并真实构建、启动、健康检查 API/frontend 双容器并完成备份恢复。后续分支仍须以自己的 CI 结果为准，
 不能把历史成功运行或 CI 定义存在当成当前提交已通过，也不能用容器启动替代真实科学资产验收。
 
 ## 延后接入接缝

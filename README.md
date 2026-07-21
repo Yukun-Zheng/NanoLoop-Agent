@@ -1,10 +1,16 @@
 # NanoLoop Agent
 
+[![CI](https://github.com/Yukun-Zheng/NanoLoop-Agent/actions/workflows/ci.yml/badge.svg?branch=yukun)](https://github.com/Yukun-Zheng/NanoLoop-Agent/actions/workflows/ci.yml?query=branch%3Ayukun)
+
 NanoLoop Agent 是一套面向 SEM 纳米颗粒图像的可追溯分析工作台。它把原图与实验元数据、人工 ROI、可插拔分割模型、确定性形貌统计、质量门控、材料知识检索和可复现导出串成一个闭环；数值结论只来自分析代码，材料知识结论必须带可核验引用。
 
-> 新开发者请先阅读 [v3 交接 DOCX](docs/NanoLoop_Agent_协同开发规格与接口总文档_v3.0.docx)；需要检索、评审或修改文档时使用其 [Markdown 源文件](docs/NanoLoop_Agent_协同开发规格与接口总文档_v3.0.md)。v3 以当前仓库代码为事实基线，按开发者 A～F 分别覆盖模型推理、科学分析、平台后端、RAG/Agent、前端和 QA/交付。今晚及首周的 RAG 资产、检索与验收工作以 [RAG 与检索功能开发指南](docs/RAG_RETRIEVAL_DEVELOPMENT_GUIDE.md) 为准。
+> 当前协作与开发入口是 [v4.0 交接 DOCX](docs/NanoLoop_Agent_协同开发规格与接口总文档_v4.0.docx)；检索、评审或修改内容时使用其 [Markdown 源文件](docs/NanoLoop_Agent_协同开发规格与接口总文档_v4.0.md)。v4.0 基于 `yukun@16456a3`，包含最新需求矩阵、MVP 分级、实名任务包、真实资产接入顺序和可直接交给编程 AI 的提示词。v3/v2 仅保留为历史参考。
 
-项目产品目标源于 `NanoLoop_Agent_协同开发规格与接口总文档_v2.0.docx`，当前开发与接手以 v3 为准。代码已经包含 FastAPI 后端、SQLite/Alembic、文件制品存储、后台运行调度、U-Net/YOLO-Seg/SAM2 适配器、FTS5 检索降级路径、统一查询服务、Streamlit 中文工作台、OpenAPI 快照、容器部署定义和自动化测试。
+项目产品目标源于 v2.0，v3.0 记录工程框架形成过程，当前开发与接手以 v4.0 为准。仓库当前达到 **工程 MVP / 内部 Alpha（M1）**：FastAPI 后端、SQLite/Alembic、文件制品存储、后台运行调度、U-Net/YOLO-Seg/SAM2 适配器、分析与报告、FTS5/向量检索接缝、统一查询服务、六页 Streamlit 工作台、OpenAPI、容器和自动化测试均已成形；但尚不是经过真实模型、真实数据和真实语料验收的科学产品 MVP。
+
+| 当前阶段 | 已有工程基线 | M2 真实可演示 MVP 的主要阻塞 |
+| --- | --- | --- |
+| M1 工程 MVP / 内部 Alpha | 需求矩阵为 `implemented 10 / partial 3 / external-blocked 1`；`yukun@16456a3` 的完整 CI 全绿 | 五个登记模型均为 `unavailable`；缺正式 checkpoint、固定 SEM/GT、资产/许可台账、正式语料、固定 embedding、真实 FAISS 重启与无降级 E2E |
 
 ## 当前能力边界
 
@@ -26,7 +32,7 @@ NanoLoop Agent 是一套面向 SEM 纳米颗粒图像的可追溯分析工作台
 - 启动恢复对普通陈旧运行复制其不可变科学输入；若人工修正掩膜运行在崩溃后缺少原始外部制品，则父运行明确失败并要求人工处理，不会用 JSON 配置伪造一个不可复现子运行。
 - 真正的模型权重、生产知识语料、向量索引和本地大模型均为外部资产，目前仓库不会假装它们存在。没有权重时模型健康状态会诚实显示为 `unavailable`。
 
-详细覆盖情况见 [需求追踪表](docs/requirements-traceability.md)，RAG 的近期实施与人员任务见 [RAG 与检索功能开发指南](docs/RAG_RETRIEVAL_DEVELOPMENT_GUIDE.md)，外部模型与长期接手方式见 [模型与 RAG 交接](docs/model-rag-handoff.md)，单机/公网/多实例的发布边界见 [生产就绪说明](docs/PRODUCTION_READINESS.md)。
+详细覆盖情况见 [需求追踪表](docs/requirements-traceability.md)，RAG 技术合同见 [RAG 与检索功能开发指南](docs/RAG_RETRIEVAL_DEVELOPMENT_GUIDE.md)，外部模型与长期接手方式见 [模型与 RAG 交接](docs/model-rag-handoff.md)，单机/公网/多实例的发布边界见 [生产就绪说明](docs/PRODUCTION_READINESS.md)，全部入口见 [文档索引](docs/README.md)。RAG 指南中的旧时间表或旧人员分工由 v4.0 取代。
 
 ## 本地启动
 
@@ -36,7 +42,7 @@ NanoLoop Agent 是一套面向 SEM 纳米颗粒图像的可追溯分析工作台
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -U pip
-python -m pip install -e '.[dev,analysis,frontend]'
+python -m pip install -e '.[dev,analysis,frontend,docs]'
 cp .env.example .env
 alembic upgrade head
 ```
@@ -92,7 +98,7 @@ python scripts/smoke_test.py \
 示例 fixture 中的图像和知识文件路径需要替换为团队合法持有的真实文件。仅验证无外部资产时的诚实降级可追加 `--allow-degraded`。
 共享 Key 或 principal token 应优先通过 `NANOLOOP_API_KEY` 环境变量传给 smoke；`--api-key` 只适合受控临时环境，因为命令行参数可能进入 shell history 或进程列表。
 
-本地 ROI browser smoke 已使用 headless Chrome 完成真实拖拽 → CAS 保存 → 页面重载 → REST 数据核对。本机的镜像构建曾在拉取 Docker Hub 基础镜像时超时，因此没有本机构建成功证据；但 `main` 基线的 [GitHub Actions run 29625213698](https://github.com/Yukun-Zheng/NanoLoop-Agent/actions/runs/29625213698) 已全绿，并真实构建、启动和健康检查 API 与 frontend 两个容器。该 CI 证据证明仓库容器链路可运行，不替代目标部署环境验收或真实模型/语料闭环。
+本地 ROI browser smoke 已使用 headless Chrome 完成真实拖拽 → CAS 保存 → 页面重载 → REST 数据核对。v4.0 代码基线 `yukun@16456a3` 的 [GitHub Actions run 29848825904](https://github.com/Yukun-Zheng/NanoLoop-Agent/actions/runs/29848825904) 已全绿，覆盖 Ruff、严格 Mypy、OpenAPI/Alembic、Python 3.11/3.12 的 1098 项 Pytest、六页 Streamlit，以及 API/frontend 双容器构建、非 root 启动和备份恢复。该证据证明工程基线可运行，不替代目标环境、真实模型或真实 RAG 资产验收；后续提交仍须通过自己的 CI。
 
 ## 核心工程契约
 
@@ -104,7 +110,7 @@ python scripts/smoke_test.py \
 
 模块边界、提交门禁和接手规则见 [开发与交接指南](docs/DEVELOPMENT.md)，行为决策见 [ADR](docs/adr)。
 
-修改 v3 Markdown 后，运行以下命令重建并提交同名 DOCX：
+修改 v4.0 Markdown 后，运行以下命令重建并提交同名 DOCX：
 
 ```bash
 make handoff-doc

@@ -354,3 +354,22 @@
   资产授权、固定独立集及真实 `upload -> Gateway -> Analysis -> report/export` 闭环前，不宣称为可演示
   的纳米颗粒分析 MVP 或科学测量 MVP。后续补交格式与验收步骤见
   `docs/developer_handoffs/guo-jinghao-ab-delivery-audit-2026-07-21.md`。
+
+## 2026-07-22 01:46 +08:00 — v4.0 协作交接与 GitHub 文档入口更新
+
+- 事实基线：v4.0 冻结在 `yukun@16456a30d63e42eda0e1d4b09ac0e7c223b3fd82`；
+  [GitHub Actions run 29848825904](https://github.com/Yukun-Zheng/NanoLoop-Agent/actions/runs/29848825904)
+  全绿，覆盖 Ruff、严格 Mypy、OpenAPI/Alembic、Python 3.11/3.12 的 1098 项 Pytest、六页
+  Streamlit、API/frontend 双容器构建与非 root 启动，以及备份恢复链路。
+- 文档发布：新增 v4.0 Markdown、DOCX、可重复构建脚本和文档索引；README、开发指南、需求追踪、
+  模型/RAG 交接、部署与生产就绪说明统一指向 v4.0。`make handoff-doc` 改为生成当前 v4.0，
+  `make handoff-doc-v3` 仅用于历史文档。
+- 阶段结论：当前仍为 M1 工程 MVP / 内部 Alpha。FR 汇总保持 `implemented 10 / partial 3 /
+  external-blocked 1`；五个登记模型均为 `unavailable`，正式 RAG 语料、固定 embedding、真实向量
+  重启验收和无降级 E2E 尚未完成。
+- 当前分工：郭境濠 A+B；黄睿健 C；徐皓彬 D；杨雨宁 E；姚承志 F-学习岗；郑煜坤负责契约、
+  集成、科学签字与发布。新增 PR 模板，要求交付者记录基线、单一行为切片、合同影响、外部资产、
+  实际测试、未验证项、风险、回滚和下一责任人。
+- v4.0 主线：先完成至少一个真实模型、固定独立 SEM/GT、合法语料、固定 embedding、真实引用和
+  无降级闭环；ASR、SAM2 深化、本地生成式 LLM、爬虫和前端重写暂缓。v3.0、RAG v1.0 中的旧
+  时间表和旧人员分工仅保留为历史记录。
