@@ -45,7 +45,11 @@ class YOLOSegAdapter(BaseSegmentationAdapter):
         height, width = image.shape[:2]
         threshold = request.threshold
         if threshold is None:
-            threshold = self.metadata.default_threshold or 0.25
+            threshold = (
+                self.metadata.default_threshold
+                if self.metadata.default_threshold is not None
+                else 0.25
+            )
         kwargs: dict[str, Any] = {
             "conf": threshold,
             "seed": request.seed,

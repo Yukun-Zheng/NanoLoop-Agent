@@ -1,0 +1,29 @@
+schema_version: "1"
+loader: torchscript
+input_channels: 1
+input_size: [512, 512]
+expected_image_size: [1536, 2048]
+patch_size: [512, 512]
+stride: [256, 256]
+tiling_padding: reflect
+overlap_fusion: uniform
+bottom_crop_px: 180
+pixel_scale: 255.0
+mean: [0.0]
+std: [1.0]
+output_activation: logits
+threshold_comparison: gt
+default_threshold: 0.50
+calibrated_analysis:
+  threshold: 0.50
+  threshold_comparison: gt
+  min_area_px: 512
+  min_area_nm2: 151.22873345935727
+  min_area_equivalent_diameter_nm: 13.87625323135418
+  watershed_enabled: false
+  fill_holes: true
+  exclude_border: true
+  connectivity: 2
+  perimeter_neighborhood: 8
+  bottom_crop_px: 180
+  scale_nm_per_pixel: 0.5434782608695652

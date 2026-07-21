@@ -1,12 +1,15 @@
 schema_version: "1"
 loader: torchscript
-input_channels: 3
-input_size: [1024, 1024]
-patch_size: [1024, 1024]
-stride: [768, 768]
+input_channels: 1
+input_size: [256, 256]
+patch_size: [256, 256]
+stride: [128, 128]
+tiling_padding: reflect
+overlap_fusion: uniform
+bottom_crop_px: 130
 pixel_scale: 255.0
-mean: [0.0, 0.0, 0.0]
-std: [1.0, 1.0, 1.0]
+mean: [0.0]
+std: [1.0]
 output_activation: logits
-foreground_class_index: 1
-default_threshold: 0.5
+threshold_comparison: gt
+default_threshold: 0.30

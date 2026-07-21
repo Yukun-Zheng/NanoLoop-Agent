@@ -24,6 +24,7 @@ from app.analysis.instance_artifacts import decode_binary_mask
 from app.analysis.morphometry import MorphometryResult
 from app.analysis.morphometry import measure as measure_particles
 from app.analysis.postprocessing import NormalizedInstance
+from app.analysis.preprocessing import build_analysis_roi
 from app.contracts.analyses import (
     AnalysisJobDTO,
     AnalysisROI,
@@ -44,6 +45,7 @@ from app.contracts.enums import (
     ModelFamily,
     ModelStatus,
     ModelVariant,
+    QualityStatus,
     QualityTier,
     RoiMode,
     ScaleMode,
@@ -62,6 +64,7 @@ from app.contracts.models import ModelBundleReference, ModelHealth, ModelMetadat
 from app.contracts.repositories import AnalysisResourceScope, StoredImageAsset, UnitOfWork
 from app.core.config import Settings
 from app.core.errors import (
+    BoxRevisionConflictError,
     ExecutionBuildMismatchError,
     ForbiddenError,
     InputArtifactMismatchError,
@@ -119,6 +122,94 @@ def _file_artifact_access_service(
         file_store=file_store,
         keyring=_FILE_TOKEN_V2_TEST_KEYRING,
     )
+
+
+def test_model_bottom_information_bar_is_frozen_outside_scientific_roi() -> None:
+    image = ImageAssetDTO(
+        image_id="img_bottom_bar",
+        job_id="job_1",
+        filename="sample.png",
+        sha256="a" * 64,
+        width=20,
+        height=200,
+        bit_depth=8,
+        sample_id="sample_1",
+        analysis_roi=AnalysisROI(valid_rect=PixelRect(x1=0, y1=0, x2=20, y2=200)),
+    )
+    model = FakeGateway().model.model_copy(
+        update={
+            "inference_invalid_bottom_px": 130,
+            "expected_input_width": 20,
+            "expected_input_height": 200,
+        }
+    )
+
+    analysis_roi = AnalysisApplicationService._apply_model_invalid_bottom(image, model)
+    roi_mask = build_analysis_roi(
+        width=image.width,
+        height=image.height,
+        analysis_roi=analysis_roi,
+        roi_mode=RoiMode.FULL_IMAGE,
+        boxes=[],
+    )
+
+    assert analysis_roi.invalid_rects[-1].model_dump() == {
+        "x1": 0,
+        "y1": 70,
+        "x2": 20,
+        "y2": 200,
+        "reason": "model_bottom_information_bar",
+    }
+    assert int(roi_mask.sum()) == 20 * 70
+    assert not roi_mask[70:].any()
+
+
+def test_model_bottom_crop_rejects_image_outside_frozen_size_contract() -> None:
+    image = ImageAssetDTO(
+        image_id="img_wrong_size",
+        job_id="job_1",
+        filename="sample.png",
+        sha256="a" * 64,
+        width=20,
+        height=201,
+        bit_depth=8,
+        sample_id="sample_1",
+        analysis_roi=AnalysisROI(valid_rect=PixelRect(x1=0, y1=0, x2=20, y2=201)),
+    )
+    model = FakeGateway().model.model_copy(
+        update={
+            "inference_invalid_bottom_px": 130,
+            "expected_input_width": 20,
+            "expected_input_height": 200,
+        }
+    )
+
+    with pytest.raises(InvalidImageError) as exc_info:
+        AnalysisApplicationService._apply_model_invalid_bottom(image, model)
+
+    assert exc_info.value.details["reason"] == "model_input_dimensions_mismatch"
+    assert exc_info.value.details["expected"] == [20, 200]
+    assert exc_info.value.details["observed"] == [20, 201]
+
+
+def test_model_bottom_crop_requires_frozen_size_contract() -> None:
+    image = ImageAssetDTO(
+        image_id="img_missing_contract",
+        job_id="job_1",
+        filename="sample.png",
+        sha256="a" * 64,
+        width=20,
+        height=200,
+        bit_depth=8,
+        sample_id="sample_1",
+        analysis_roi=AnalysisROI(valid_rect=PixelRect(x1=0, y1=0, x2=20, y2=200)),
+    )
+    model = FakeGateway().model.model_copy(update={"inference_invalid_bottom_px": 130})
+
+    with pytest.raises(InvalidImageError) as exc_info:
+        AnalysisApplicationService._apply_model_invalid_bottom(image, model)
+
+    assert exc_info.value.details["reason"] == "model_input_contract_missing"
 
 
 class FakeGateway:
@@ -507,6 +598,211 @@ def test_create_and_execute_run_closes_the_analysis_loop(
         height=64,
     )
     assert np.array_equal(decoded_instance, normalized_pixels > 0)
+
+
+def test_create_runs_rejects_ready_unet_without_frozen_default_threshold(
+    application_harness: ApplicationHarness,
+) -> None:
+    _database, file_store, factory = application_harness
+    gateway = FakeGateway()
+    gateway.model = gateway.model.model_copy(update={"default_threshold": None})
+    service = AnalysisApplicationService(
+        uow_factory=factory,
+        file_store=file_store,
+        inference_gateway=gateway,
+    )
+
+    with pytest.raises(ModelNotReadyError) as exc_info:
+        service.create_runs(
+            "job_1",
+            CreateRunsRequest(
+                image_ids=["img_1"],
+                model_ids=[gateway.model.model_id],
+                roi_mode=RoiMode.FULL_IMAGE,
+            ),
+            principal=LEGACY_ADMIN,
+        )
+
+    assert exc_info.value.details["reason"] == "default_threshold_missing"
+    with factory() as uow:
+        assert uow.repositories.runs.list_by_job("job_1") == []
+
+
+def test_frozen_bottom_crop_does_not_downgrade_quality_to_warning(
+    application_harness: ApplicationHarness,
+) -> None:
+    _database, file_store, factory = application_harness
+    gateway = FakeGateway()
+    gateway.model = gateway.model.model_copy(
+        update={
+            "inference_invalid_bottom_px": 1,
+            "expected_input_width": 64,
+            "expected_input_height": 64,
+        }
+    )
+    service = AnalysisApplicationService(
+        uow_factory=factory,
+        file_store=file_store,
+        inference_gateway=gateway,
+    )
+    run_id = service.create_runs(
+        "job_1",
+        CreateRunsRequest(
+            image_ids=["img_1"],
+            model_ids=[gateway.model.model_id],
+            roi_mode=RoiMode.FULL_IMAGE,
+        ),
+        principal=LEGACY_ADMIN,
+    )[0]
+
+    completed = service.execute_run(run_id)
+
+    assert completed.status == JobStatus.COMPLETED
+    assert completed.quality is not None
+    assert completed.quality.status == QualityStatus.PASS
+    assert completed.configuration.analysis_roi.invalid_rects[-1].reason == (
+        "model_bottom_information_bar"
+    )
+
+
+def test_create_runs_rejects_boxes_entirely_inside_model_bottom_region(
+    application_harness: ApplicationHarness,
+) -> None:
+    _database, file_store, factory = application_harness
+    gateway = FakeGateway()
+    gateway.model = gateway.model.model_copy(
+        update={
+            "inference_invalid_bottom_px": 32,
+            "expected_input_width": 64,
+            "expected_input_height": 64,
+        }
+    )
+    with factory() as uow:
+        box_set = uow.repositories.boxes.replace(
+            "img_1",
+            0,
+            [ROIBox(box_id="bottom-only", x1=0, y1=32, x2=32, y2=64)],
+        )
+        uow.commit()
+    service = AnalysisApplicationService(
+        uow_factory=factory,
+        file_store=file_store,
+        inference_gateway=gateway,
+    )
+
+    with pytest.raises(BoxRevisionConflictError) as exc_info:
+        service.create_runs(
+            "job_1",
+            CreateRunsRequest(
+                image_ids=["img_1"],
+                model_ids=[gateway.model.model_id],
+                roi_mode=RoiMode.BOXES,
+                box_revisions={"img_1": box_set.revision},
+            ),
+            principal=LEGACY_ADMIN,
+        )
+
+    assert exc_info.value.details["reason"] == "empty_effective_model_roi"
+    with factory() as uow:
+        assert uow.repositories.runs.list_by_job("job_1") == []
+
+
+def test_create_runs_rejects_boxes_entirely_inside_image_invalid_region(
+    application_harness: ApplicationHarness,
+) -> None:
+    database, file_store, factory = application_harness
+    invalid_roi = AnalysisROI(
+        valid_rect=PixelRect(x1=0, y1=0, x2=64, y2=64),
+        invalid_rects=[
+            {
+                "x1": 0,
+                "y1": 0,
+                "x2": 32,
+                "y2": 32,
+                "reason": "detected_instrument_overlay",
+            }
+        ],
+    )
+    with factory() as uow:
+        box_set = uow.repositories.boxes.replace(
+            "img_1",
+            0,
+            [ROIBox(box_id="invalid-only", x1=0, y1=0, x2=32, y2=32)],
+        )
+        uow.commit()
+    # Simulate an image-level invalid region being detected after the saved box revision.
+    with database.session() as session:
+        session.execute(
+            update(ImageAssetRecord)
+            .where(ImageAssetRecord.image_id == "img_1")
+            .values(analysis_roi_json=invalid_roi.model_dump(mode="json"))
+        )
+        session.commit()
+    service = AnalysisApplicationService(
+        uow_factory=factory,
+        file_store=file_store,
+        inference_gateway=FakeGateway(),
+    )
+
+    with pytest.raises(BoxRevisionConflictError) as exc_info:
+        service.create_runs(
+            "job_1",
+            CreateRunsRequest(
+                image_ids=["img_1"],
+                model_ids=["unet-general-balanced-v1"],
+                roi_mode=RoiMode.BOXES,
+                box_revisions={"img_1": box_set.revision},
+            ),
+            principal=LEGACY_ADMIN,
+        )
+
+    assert exc_info.value.details["reason"] == "empty_effective_model_roi"
+    with factory() as uow:
+        assert uow.repositories.runs.list_by_job("job_1") == []
+
+
+@pytest.mark.parametrize(
+    ("inference", "expected_min_area_px"),
+    [
+        (InferenceOptions(), 512),
+        (InferenceOptions(min_area_px=8), 8),
+        (InferenceOptions(min_area_px=0), 0),
+    ],
+)
+def test_create_runs_applies_model_min_area_only_when_request_omits_it(
+    application_harness: ApplicationHarness,
+    inference: InferenceOptions,
+    expected_min_area_px: int,
+) -> None:
+    _database, file_store, factory = application_harness
+    gateway = FakeGateway()
+    gateway.model = gateway.model.model_copy(update={"default_min_area_px": 512})
+    service = AnalysisApplicationService(
+        uow_factory=factory,
+        file_store=file_store,
+        inference_gateway=gateway,
+    )
+
+    run_id = service.create_runs(
+        "job_1",
+        CreateRunsRequest(
+            image_ids=["img_1"],
+            model_ids=[gateway.model.model_id],
+            roi_mode=RoiMode.FULL_IMAGE,
+            inference=inference,
+        ),
+        principal=LEGACY_ADMIN,
+    )[0]
+
+    with factory() as uow:
+        run = uow.repositories.runs.get(run_id)
+    assert run.inference.min_area_px == expected_min_area_px
+    assert run.configuration.inference.min_area_px == expected_min_area_px
+    assert run.configuration.resolved_postprocess is not None
+    assert (
+        run.configuration.resolved_postprocess.min_area_px
+        == expected_min_area_px
+    )
 
 
 def test_queued_run_executes_complete_bundle_after_config_and_card_sources_change(

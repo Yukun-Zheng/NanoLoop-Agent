@@ -35,18 +35,20 @@ from app.analysis.validation import infer_analysis_roi, validate_image
 from app.analysis.visualization import write_review_visualizations
 from app.contracts.analyses import (
     AnalysisJobDTO,
+    AnalysisROI,
     CorrectedMaskUploadData,
     CreateAnalysisMetadata,
     CreateRunsRequest,
     ImageAssetDTO,
     InferenceOptions,
+    InvalidPixelRegion,
     JobDetailDTO,
     ReviewRunRequest,
     RunConfiguration,
     SegmentationRunDTO,
 )
 from app.contracts.common import utc_now
-from app.contracts.enums import JobStatus, ModelStatus, QualityStatus, RoiMode
+from app.contracts.enums import JobStatus, ModelFamily, ModelStatus, QualityStatus, RoiMode
 from app.contracts.execution import (
     ExecutionRuntimeProvenance,
     scientific_build_mismatches,
@@ -60,6 +62,7 @@ from app.core.errors import (
     ExecutionBuildMismatchError,
     InferenceExecutionError,
     InputArtifactMismatchError,
+    InvalidBoxError,
     InvalidImageError,
     JobStateConflictError,
     ModelNotFoundError,
@@ -514,14 +517,40 @@ class AnalysisApplicationService:
             for image in selected_images:
                 box_set = boxes_by_image[image.image_id]
                 for model in selected_models:
+                    model_analysis_roi = self._apply_model_invalid_bottom(image, model)
+                    if request.roi_mode == RoiMode.BOXES:
+                        try:
+                            build_analysis_roi(
+                                width=image.width,
+                                height=image.height,
+                                analysis_roi=model_analysis_roi,
+                                roi_mode=RoiMode.BOXES,
+                                boxes=box_set.boxes,
+                            )
+                        except InvalidBoxError as error:
+                            raise BoxRevisionConflictError(
+                                "选框与所选模型的有效分析区域没有交集，不能创建运行",
+                                details={
+                                    "image_id": image.image_id,
+                                    "model_id": model.model_id,
+                                    "revision": box_set.revision,
+                                    "reason": "empty_effective_model_roi",
+                                },
+                            ) from error
                     effective_threshold = (
                         request.inference.threshold
                         if request.inference.threshold is not None
                         else model.default_threshold
                     )
-                    inference = request.inference.model_copy(
-                        update={"threshold": effective_threshold}
-                    )
+                    inference_updates: dict[str, object] = {
+                        "threshold": effective_threshold
+                    }
+                    if (
+                        "min_area_px" not in request.inference.model_fields_set
+                        and model.default_min_area_px is not None
+                    ):
+                        inference_updates["min_area_px"] = model.default_min_area_px
+                    inference = request.inference.model_copy(update=inference_updates)
                     box_revision = box_set.revision if request.roi_mode == RoiMode.BOXES else None
                     model_health = health.get(model.model_id)
                     resolved_weight_sha256 = model.weight_sha256 or (
@@ -561,7 +590,7 @@ class AnalysisApplicationService:
                         roi_mode=request.roi_mode,
                         box_revision=box_revision,
                         boxes=box_set.boxes if request.roi_mode == RoiMode.BOXES else [],
-                        analysis_roi=image.analysis_roi,
+                        analysis_roi=model_analysis_roi,
                         inference=inference,
                         preprocess_profile=model.preprocess_profile,
                         postprocess_profile=model.postprocess_profile,
@@ -1327,7 +1356,75 @@ class AnalysisApplicationService:
                     "reason": model.health_error,
                 }
             )
+        if model.family == ModelFamily.UNET and model.default_threshold is None:
+            raise ModelNotReadyError(
+                "U-Net 模型缺少冻结的默认阈值，不能创建运行",
+                details={
+                    "model_id": model_id,
+                    "reason": "default_threshold_missing",
+                },
+            )
         return model
+
+    @staticmethod
+    def _apply_model_invalid_bottom(image: ImageAssetDTO, model: ModelMetadata) -> AnalysisROI:
+        """Freeze a model-declared bottom information bar outside the scientific ROI."""
+
+        bottom_px = model.inference_invalid_bottom_px
+        expected_size_declared = (
+            model.expected_input_width is not None
+            or model.expected_input_height is not None
+        )
+        if model.family == ModelFamily.UNET and (bottom_px or expected_size_declared):
+            if (
+                model.expected_input_width is None
+                or model.expected_input_height is None
+            ):
+                raise InvalidImageError(
+                    details={
+                        "image_id": image.image_id,
+                        "model_id": model.model_id,
+                        "reason": "model_input_contract_missing",
+                    }
+                )
+            if (image.width, image.height) != (
+                model.expected_input_width,
+                model.expected_input_height,
+            ):
+                raise InvalidImageError(
+                    details={
+                        "image_id": image.image_id,
+                        "model_id": model.model_id,
+                        "reason": "model_input_dimensions_mismatch",
+                        "expected": [
+                            model.expected_input_width,
+                            model.expected_input_height,
+                        ],
+                        "observed": [image.width, image.height],
+                    }
+                )
+        if bottom_px == 0:
+            return image.analysis_roi.model_copy(deep=True)
+        if bottom_px >= image.height:
+            raise InvalidImageError(
+                details={
+                    "image_id": image.image_id,
+                    "reason": "model_invalid_bottom_exhausts_image",
+                    "height": image.height,
+                    "inference_invalid_bottom_px": bottom_px,
+                }
+            )
+        invalid_bottom = InvalidPixelRegion(
+            x1=0,
+            y1=image.height - bottom_px,
+            x2=image.width,
+            y2=image.height,
+            reason="model_bottom_information_bar",
+        )
+        return image.analysis_roi.model_copy(
+            update={"invalid_rects": [*image.analysis_roi.invalid_rects, invalid_bottom]},
+            deep=True,
+        )
 
     def _normalize_output(
         self,
