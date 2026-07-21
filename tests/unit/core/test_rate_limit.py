@@ -6,7 +6,7 @@ from typing import Any, cast
 
 import pytest
 
-from app.core.rate_limit import TokenBucketLimiter
+from app.core.rate_limit import BoundedKeyedTokenBucketLimiter, TokenBucketLimiter
 
 
 class FakeClock:
@@ -102,3 +102,85 @@ def test_clock_must_remain_finite() -> None:
     with pytest.raises(ValueError, match="clock"):
         limiter.consume("service")
     assert limiter.bucket_count == 0
+
+
+def test_keyed_limiter_rejects_invalid_configuration_and_keys() -> None:
+    with pytest.raises(ValueError, match="capacity"):
+        BoundedKeyedTokenBucketLimiter(0, 60, max_buckets=1)
+    with pytest.raises(ValueError, match="window_seconds"):
+        BoundedKeyedTokenBucketLimiter(1, float("inf"), max_buckets=1)
+    with pytest.raises(ValueError, match="max_buckets"):
+        BoundedKeyedTokenBucketLimiter(1, 60, max_buckets=0)
+
+    limiter = BoundedKeyedTokenBucketLimiter(1, 60, max_buckets=1)
+    with pytest.raises(ValueError, match="key"):
+        limiter.consume("")
+    with pytest.raises(ValueError, match="key"):
+        limiter.consume("x" * 257)
+    assert limiter.bucket_count == 0
+
+
+def test_keyed_limiter_isolated_buckets_refill_independently() -> None:
+    clock = FakeClock()
+    limiter = BoundedKeyedTokenBucketLimiter(1, 10, max_buckets=4, clock=clock)
+
+    assert limiter.consume("peer:192.0.2.1").allowed is True
+    assert limiter.consume("peer:192.0.2.1").allowed is False
+    assert limiter.consume("peer:192.0.2.2").allowed is True
+
+    clock.advance(10)
+    assert limiter.consume("peer:192.0.2.1").allowed is True
+    assert limiter.consume("peer:192.0.2.2").allowed is True
+    assert limiter.bucket_count == 2
+
+
+def test_keyed_limiter_evicts_the_least_recently_used_bucket() -> None:
+    limiter = BoundedKeyedTokenBucketLimiter(
+        1,
+        60,
+        max_buckets=2,
+        clock=lambda: 0.0,
+    )
+
+    assert limiter.consume("peer:a").allowed is True
+    assert limiter.consume("peer:b").allowed is True
+    assert limiter.consume("peer:a").allowed is False  # refresh a; b is now LRU
+    assert limiter.consume("peer:c").allowed is True
+
+    assert limiter.bucket_count == 2
+    assert limiter.consume("peer:a").allowed is False
+    assert limiter.consume("peer:b").allowed is True  # b was evicted and starts fresh
+    assert limiter.bucket_count == 2
+
+
+def test_keyed_limiter_remains_strictly_bounded_under_key_churn() -> None:
+    limiter = BoundedKeyedTokenBucketLimiter(
+        1,
+        60,
+        max_buckets=32,
+        clock=lambda: 0.0,
+    )
+
+    for index in range(10_000):
+        assert limiter.consume(f"peer:{index}").allowed is True
+        assert limiter.bucket_count <= limiter.max_buckets
+
+    assert limiter.bucket_count == 32
+
+
+def test_keyed_limiter_is_thread_safe_for_same_and_distinct_keys() -> None:
+    limiter = BoundedKeyedTokenBucketLimiter(
+        40,
+        60,
+        max_buckets=16,
+        clock=lambda: 0.0,
+    )
+    with ThreadPoolExecutor(max_workers=16) as executor:
+        same_key = list(
+            executor.map(lambda _: limiter.consume("principal:one"), range(200))
+        )
+    assert sum(decision.allowed for decision in same_key) == 40
+
+    with ThreadPoolExecutor(max_workers=16) as executor:
+        list(executor.map(lambda index: limiter.consume(f"peer:{index}"), range(1_000)))
+    assert limiter.bucket_count == 16

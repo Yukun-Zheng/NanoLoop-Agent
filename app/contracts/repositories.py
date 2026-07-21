@@ -1,6 +1,7 @@
 """Persistence protocols used by services to avoid ORM coupling."""
 
 from contextlib import AbstractContextManager
+from datetime import datetime
 from typing import Protocol, Self
 
 from app.contracts.analyses import (
@@ -16,7 +17,13 @@ from app.contracts.analyses import (
 from app.contracts.common import ContractModel
 from app.contracts.enums import JobStatus
 from app.contracts.execution import ExecutionRuntimeProvenance
-from app.contracts.queries import QueryAuditRecordDTO
+from app.contracts.file_artifacts import FileArtifactDTO, FileArtifactRegistration
+from app.contracts.queries import (
+    QueryActorDTO,
+    QueryAuditRecordDTO,
+    UnifiedQueryRequest,
+    UnifiedQueryResponse,
+)
 
 
 class StoredImageAsset(ContractModel):
@@ -26,10 +33,26 @@ class StoredImageAsset(ContractModel):
     storage_path: str
 
 
+class AnalysisResourceScope(ContractModel):
+    """Internal ownership envelope for one tenant-scoped analysis aggregate."""
+
+    job: AnalysisJobDTO
+    tenant_id: str
+    owner_principal_id: str
+
+
 class JobRepository(Protocol):
-    def create(self, job: AnalysisJobDTO) -> AnalysisJobDTO: ...
+    def create(
+        self,
+        job: AnalysisJobDTO,
+        *,
+        tenant_id: str,
+        owner_principal_id: str,
+    ) -> AnalysisJobDTO: ...
 
     def get(self, job_id: str) -> AnalysisJobDTO: ...
+
+    def get_scope(self, job_id: str, *, tenant_id: str) -> AnalysisResourceScope: ...
 
     def update_status(
         self,
@@ -49,6 +72,29 @@ class ImageRepository(Protocol):
 
     def get_storage_path(self, image_id: str) -> str: ...
 
+    def get_scoped(
+        self,
+        job_id: str,
+        image_id: str,
+        *,
+        tenant_id: str,
+    ) -> ImageAssetDTO: ...
+
+    def list_by_job_scoped(
+        self,
+        job_id: str,
+        *,
+        tenant_id: str,
+    ) -> list[ImageAssetDTO]: ...
+
+    def get_storage_path_scoped(
+        self,
+        job_id: str,
+        image_id: str,
+        *,
+        tenant_id: str,
+    ) -> str: ...
+
 
 class BoxRepository(Protocol):
     def get_active(self, image_id: str) -> BoxSetDTO: ...
@@ -62,6 +108,31 @@ class BoxRepository(Protocol):
         boxes: list[ROIBox],
     ) -> BoxSetDTO: ...
 
+    def get_active_scoped(
+        self,
+        job_id: str,
+        image_id: str,
+        *,
+        tenant_id: str,
+    ) -> BoxSetDTO: ...
+
+    def list_by_job_scoped(
+        self,
+        job_id: str,
+        *,
+        tenant_id: str,
+    ) -> list[BoxSetDTO]: ...
+
+    def replace_scoped(
+        self,
+        job_id: str,
+        image_id: str,
+        expected_revision: int,
+        boxes: list[ROIBox],
+        *,
+        tenant_id: str,
+    ) -> BoxSetDTO: ...
+
 
 class RunRepository(Protocol):
     def create_many(self, runs: list[SegmentationRunDTO]) -> list[str]: ...
@@ -71,6 +142,27 @@ class RunRepository(Protocol):
     def list_by_job(self, job_id: str) -> list[SegmentationRunDTO]: ...
 
     def get_artifact_paths(self, run_id: str) -> dict[str, str | None]: ...
+
+    def get_with_scope(
+        self,
+        run_id: str,
+        *,
+        tenant_id: str,
+    ) -> tuple[SegmentationRunDTO, AnalysisResourceScope]: ...
+
+    def list_by_job_scoped(
+        self,
+        job_id: str,
+        *,
+        tenant_id: str,
+    ) -> list[SegmentationRunDTO]: ...
+
+    def get_artifact_paths_scoped(
+        self,
+        run_id: str,
+        *,
+        tenant_id: str,
+    ) -> dict[str, str | None]: ...
 
     def claim_queued(self, run_id: str) -> bool:
         """Atomically move one durable run from QUEUED to PREPROCESSING."""
@@ -99,7 +191,66 @@ class RunRepository(Protocol):
 
 
 class QueryRepository(Protocol):
+    def create_scoped(
+        self,
+        *,
+        query_id: str,
+        job_id: str,
+        image_id: str | None,
+        actor: QueryActorDTO,
+        request: UnifiedQueryRequest,
+        response: UnifiedQueryResponse,
+        created_at: datetime,
+        tenant_id: str,
+    ) -> None: ...
+
     def list_by_job(self, job_id: str) -> list[QueryAuditRecordDTO]: ...
+
+    def list_by_job_scoped(
+        self,
+        job_id: str,
+        *,
+        tenant_id: str,
+    ) -> list[QueryAuditRecordDTO]: ...
+
+
+class FileArtifactRepository(Protocol):
+    def register(
+        self,
+        registration: FileArtifactRegistration,
+        *,
+        tenant_id: str,
+    ) -> FileArtifactDTO: ...
+
+    def get_active(
+        self,
+        artifact_id: str,
+        *,
+        tenant_id: str,
+    ) -> FileArtifactDTO: ...
+
+    def get_active_by_storage_path(
+        self,
+        storage_path: str,
+        *,
+        tenant_id: str,
+    ) -> FileArtifactDTO: ...
+
+    def consume_corrected_mask(
+        self,
+        artifact_id: str,
+        *,
+        tenant_id: str,
+        consumed_at: datetime | None = None,
+    ) -> bool: ...
+
+    def revoke(
+        self,
+        artifact_id: str,
+        *,
+        tenant_id: str,
+        revoked_at: datetime | None = None,
+    ) -> bool: ...
 
 
 class RepositorySet(Protocol):
@@ -117,6 +268,9 @@ class RepositorySet(Protocol):
 
     @property
     def queries(self) -> QueryRepository: ...
+
+    @property
+    def file_artifacts(self) -> FileArtifactRepository: ...
 
 
 class UnitOfWork(AbstractContextManager["UnitOfWork"], Protocol):

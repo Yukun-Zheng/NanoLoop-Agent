@@ -56,6 +56,110 @@ def test_valid_artifacts_become_ready_and_adapter_resolution_is_lazy(tmp_path: P
     assert calls == [entry["adapter_path"]]
 
 
+def _calibrated_unet_entry(tmp_path: Path) -> dict[str, object]:
+    entry = model_entry(
+        tmp_path,
+        "calibrated-unet",
+        config={
+            "bottom_crop_px": 130,
+            "expected_image_size": [1536, 2048],
+            "default_threshold": 0.25,
+            "threshold_comparison": "gte",
+            "calibrated_analysis": {
+                "threshold": 0.25,
+                "min_area_px": 1024,
+                "bottom_crop_px": 130,
+                "threshold_comparison": "gte",
+            },
+        },
+    )
+    entry["adapter_path"] = "app.inference.adapters.unet:UNetAdapter"
+    metadata = entry["metadata"]
+    assert isinstance(metadata, dict)
+    metadata.update(
+        {
+            "default_threshold": 0.25,
+            "default_min_area_px": 1024,
+            "inference_invalid_bottom_px": 130,
+            "expected_input_width": 2048,
+            "expected_input_height": 1536,
+        }
+    )
+    return entry
+
+
+def test_calibrated_unet_registry_contract_can_become_ready(tmp_path: Path) -> None:
+    entry = _calibrated_unet_entry(tmp_path)
+
+    model = build_registry(tmp_path, [entry]).get_metadata("calibrated-unet")
+
+    assert model.status == ModelStatus.READY
+    assert model.default_threshold == pytest.approx(0.25)
+    assert model.default_min_area_px == 1024
+    assert model.inference_invalid_bottom_px == 130
+    assert model.expected_input_width == 2048
+    assert model.expected_input_height == 1536
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("default_threshold", 0.30, "config default_threshold differs"),
+        ("calibrated_min_area_px", 512, "calibrated min_area_px differs"),
+        ("bottom_crop_px", 129, "bottom_crop_px differs"),
+        ("expected_image_height", 1024, "expected_image_size height differs"),
+    ],
+)
+def test_calibrated_unet_registry_contract_drift_fails_closed(
+    tmp_path: Path,
+    field: str,
+    value: float | int,
+    message: str,
+) -> None:
+    entry = _calibrated_unet_entry(tmp_path)
+    config_path = tmp_path / str(entry["config_path"])
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    if field == "calibrated_min_area_px":
+        config["calibrated_analysis"]["min_area_px"] = value
+    elif field == "expected_image_height":
+        config["expected_image_size"][0] = value
+    else:
+        config[field] = value
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+
+    model = build_registry(tmp_path, [entry]).get_metadata("calibrated-unet")
+
+    assert model.status == ModelStatus.UNAVAILABLE
+    assert message in (model.health_error or "")
+
+
+def test_unet_without_frozen_default_threshold_fails_closed(tmp_path: Path) -> None:
+    entry = _calibrated_unet_entry(tmp_path)
+    metadata = entry["metadata"]
+    assert isinstance(metadata, dict)
+    metadata["default_threshold"] = None
+
+    model = build_registry(tmp_path, [entry]).get_metadata("calibrated-unet")
+
+    assert model.status == ModelStatus.UNAVAILABLE
+    assert "metadata.default_threshold is required" in (model.health_error or "")
+
+
+def test_unet_bottom_crop_without_frozen_expected_image_size_fails_closed(
+    tmp_path: Path,
+) -> None:
+    entry = _calibrated_unet_entry(tmp_path)
+    config_path = tmp_path / str(entry["config_path"])
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config.pop("expected_image_size")
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+
+    model = build_registry(tmp_path, [entry]).get_metadata("calibrated-unet")
+
+    assert model.status == ModelStatus.UNAVAILABLE
+    assert "expected_image_size is required" in (model.health_error or "")
+
+
 def test_non_ascii_model_version_has_stable_artifact_cache_key(tmp_path: Path) -> None:
     entry = model_entry(tmp_path, "unicode-version")
     entry["metadata"]["version"] = "版本-β"

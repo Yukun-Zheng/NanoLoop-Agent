@@ -7,6 +7,7 @@ import hashlib
 import importlib
 import importlib.util
 import json
+import math
 import re
 import sys
 import types
@@ -763,6 +764,8 @@ class ModelRegistryService:
                 config_bytes = config_path.read_bytes()
                 config = self._parse_config_bytes(config_bytes)
                 config_sha256 = hashlib.sha256(config_bytes).hexdigest()
+                if adapter_path == "app.inference.adapters.unet:UNetAdapter":
+                    errors.extend(self._unet_contract_errors(metadata, config))
             except (OSError, UnicodeError, ValueError, yaml.YAMLError) as exc:
                 errors.append(f"invalid config: {type(exc).__name__}: {exc}")
 
@@ -827,6 +830,7 @@ class ModelRegistryService:
                 "config_sha256": config_sha256,
                 "model_card_sha256": model_card_sha256,
                 "adapter_sha256": adapter_sha256,
+                **self._unet_expected_metadata(adapter_path, config),
             },
             deep=True,
         )
@@ -887,6 +891,156 @@ class ModelRegistryService:
         if not isinstance(config_raw, dict):
             raise ValueError("config root must be a mapping")
         return cast(dict[str, Any], config_raw)
+
+    @staticmethod
+    def _unet_contract_errors(
+        metadata: ModelMetadata,
+        config: Mapping[str, Any],
+    ) -> list[str]:
+        """Keep Analysis defaults and Adapter preprocessing on one scientific contract."""
+
+        errors: list[str] = []
+        bottom_crop = config.get("bottom_crop_px", 0)
+        if (
+            isinstance(bottom_crop, bool)
+            or not isinstance(bottom_crop, int)
+            or bottom_crop < 0
+        ):
+            errors.append("U-Net bottom_crop_px must be a non-negative integer")
+        elif bottom_crop != metadata.inference_invalid_bottom_px:
+            errors.append(
+                "U-Net bottom_crop_px differs from metadata.inference_invalid_bottom_px"
+            )
+
+        expected_size = ModelRegistryService._unet_expected_image_size(config)
+        if expected_size is None:
+            if "expected_image_size" in config:
+                errors.append(
+                    "U-Net expected_image_size must be [height, width] positive integers"
+                )
+            if bottom_crop:
+                errors.append(
+                    "U-Net expected_image_size is required when bottom_crop_px is non-zero"
+                )
+            if (
+                metadata.expected_input_height is not None
+                or metadata.expected_input_width is not None
+            ):
+                errors.append(
+                    "U-Net metadata expected input dimensions require config expected_image_size"
+                )
+        else:
+            expected_height, expected_width = expected_size
+            if (
+                metadata.expected_input_height is not None
+                and metadata.expected_input_height != expected_height
+            ):
+                errors.append(
+                    "U-Net expected_image_size height differs from metadata expected input height"
+                )
+            if (
+                metadata.expected_input_width is not None
+                and metadata.expected_input_width != expected_width
+            ):
+                errors.append(
+                    "U-Net expected_image_size width differs from metadata expected input width"
+                )
+
+        if metadata.default_threshold is None:
+            errors.append("U-Net metadata.default_threshold is required")
+
+        config_threshold = config.get("default_threshold")
+        if config_threshold is None:
+            errors.append("U-Net config default_threshold is required")
+        else:
+            if (
+                isinstance(config_threshold, bool)
+                or not isinstance(config_threshold, int | float)
+                or not 0 <= float(config_threshold) <= 1
+            ):
+                errors.append("U-Net default_threshold must be numeric in [0, 1]")
+            elif metadata.default_threshold is None or not math.isclose(
+                float(config_threshold), metadata.default_threshold, rel_tol=0.0, abs_tol=1e-12
+            ):
+                errors.append(
+                    "U-Net config default_threshold differs from metadata.default_threshold"
+                )
+
+        calibrated = config.get("calibrated_analysis")
+        if not isinstance(calibrated, Mapping):
+            return errors
+        calibrated_threshold = calibrated.get("threshold")
+        if (
+            isinstance(calibrated_threshold, bool)
+            or not isinstance(calibrated_threshold, int | float)
+            or metadata.default_threshold is None
+            or not math.isclose(
+                float(calibrated_threshold),
+                metadata.default_threshold,
+                rel_tol=0.0,
+                abs_tol=1e-12,
+            )
+        ):
+            errors.append(
+                "U-Net calibrated threshold differs from metadata.default_threshold"
+            )
+        calibrated_min_area = calibrated.get("min_area_px")
+        if (
+            isinstance(calibrated_min_area, bool)
+            or not isinstance(calibrated_min_area, int)
+            or calibrated_min_area < 0
+            or calibrated_min_area != metadata.default_min_area_px
+        ):
+            errors.append(
+                "U-Net calibrated min_area_px differs from metadata.default_min_area_px"
+            )
+        calibrated_bottom = calibrated.get("bottom_crop_px")
+        if (
+            isinstance(calibrated_bottom, bool)
+            or not isinstance(calibrated_bottom, int)
+            or calibrated_bottom != metadata.inference_invalid_bottom_px
+        ):
+            errors.append(
+                "U-Net calibrated bottom_crop_px differs from "
+                "metadata.inference_invalid_bottom_px"
+            )
+        if calibrated.get("threshold_comparison") != config.get(
+            "threshold_comparison"
+        ):
+            errors.append(
+                "U-Net calibrated threshold_comparison differs from inference config"
+            )
+        return errors
+
+    @staticmethod
+    def _unet_expected_image_size(
+        config: Mapping[str, Any],
+    ) -> tuple[int, int] | None:
+        value = config.get("expected_image_size")
+        if (
+            not isinstance(value, list | tuple)
+            or len(value) != 2
+            or any(isinstance(item, bool) or not isinstance(item, int) for item in value)
+            or any(item <= 0 for item in value)
+        ):
+            return None
+        return value[0], value[1]
+
+    @staticmethod
+    def _unet_expected_metadata(
+        adapter_path: str,
+        config: Mapping[str, Any],
+    ) -> dict[str, int]:
+        if adapter_path != "app.inference.adapters.unet:UNetAdapter":
+            return {}
+        expected_size = ModelRegistryService._unet_expected_image_size(config)
+        if expected_size is None:
+            return {}
+        expected_height, expected_width = expected_size
+        return {
+            "expected_input_height": expected_height,
+            "expected_input_width": expected_width,
+        }
 
     @staticmethod
     def _sha256(path: Path) -> str:

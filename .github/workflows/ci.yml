@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - yukun
   pull_request:
   workflow_dispatch:
 
@@ -94,7 +95,7 @@ jobs:
     needs:
       - quality
       - tests
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -186,13 +187,336 @@ jobs:
           docker logs nanoloop-frontend-ci
           exit 1
 
+      - name: Seed persistent state for disaster recovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker exec -i nanoloop-api-ci python - <<'PY'
+          import hashlib
+          import io
+          import json
+          import os
+          from pathlib import Path
+
+          import httpx
+          from PIL import Image
+
+          api_key = "ci_api_key_0123456789abcdef123456"
+          image_buffer = io.BytesIO()
+          Image.new("L", (24, 20), color=73).save(image_buffer, format="PNG")
+          image_bytes = image_buffer.getvalue()
+          image_sha256 = hashlib.sha256(image_bytes).hexdigest()
+          metadata = {
+              "job_name": "CI disaster recovery",
+              "images": [
+                  {
+                      "filename": "ci-disaster.png",
+                      "sample_id": "ci-disaster-sample",
+                      "material_formula": "SiO2",
+                      "scale": {"mode": "pixel_only"},
+                  }
+              ],
+          }
+          with httpx.Client(
+              base_url="http://127.0.0.1:8000",
+              headers={"X-API-Key": api_key},
+              timeout=10,
+          ) as client:
+              response = client.post(
+                  "/api/v1/analyses",
+                  files={"files": ("ci-disaster.png", image_bytes, "image/png")},
+                  data={"metadata_json": json.dumps(metadata)},
+              )
+              if response.status_code != 201:
+                  raise RuntimeError(f"analysis creation failed with {response.status_code}")
+              payload = response.json()["data"]
+              image = payload["images"][0]
+              if image["sha256"] != image_sha256:
+                  raise RuntimeError("created image digest does not match the upload")
+              download = client.get(image["original_download_url"])
+              if download.status_code != 200:
+                  raise RuntimeError(f"initial download failed with {download.status_code}")
+              if hashlib.sha256(download.content).hexdigest() != image_sha256:
+                  raise RuntimeError("initial download digest does not match the upload")
+
+          state_path = Path("/app/data/ci-disaster-state.json")
+          state_path.write_text(
+              json.dumps(
+                  {
+                      "image_id": image["image_id"],
+                      "job_id": payload["job"]["job_id"],
+                      "original_download_url": image["original_download_url"],
+                      "sha256": image_sha256,
+                  },
+                  sort_keys=True,
+              ),
+              encoding="utf-8",
+          )
+          os.chmod(state_path, 0o600)
+
+          sentinels = {
+              Path("/app/data/model-snapshots/ci-model-snapshot.txt"):
+                  "nanoloop-ci-model-snapshot-v1\n",
+              Path("/app/outputs/ci-output.txt"): "nanoloop-ci-output-v1\n",
+              Path("/app/knowledge_base/sources/ci-source.txt"):
+                  "nanoloop-ci-knowledge-source-v1\n",
+              Path("/app/knowledge_base/index/ci-index.txt"):
+                  "nanoloop-ci-knowledge-index-v1\n",
+          }
+          for path, content in sentinels.items():
+              path.parent.mkdir(parents=True, exist_ok=True)
+              path.write_text(content, encoding="utf-8")
+          PY
+
+      - name: Create, verify, and restore an offline backup
+        shell: bash
+        run: |
+          set -euo pipefail
+          disaster_root="${RUNNER_TEMP}/nanoloop-ci-disaster"
+          backup_dir="${disaster_root}/backup"
+          restore_parent="${disaster_root}/restore"
+          test ! -e "${disaster_root}"
+          sudo install -d -o 10001 -g 10001 -m 0700 "${backup_dir}" "${restore_parent}"
+          test "$(stat -c '%u:%g' "${backup_dir}")" = "10001:10001"
+          test "$(stat -c '%u:%g' "${restore_parent}")" = "10001:10001"
+
+          docker stop --time 20 nanoloop-frontend-ci >/dev/null
+          docker stop --time 30 nanoloop-api-ci >/dev/null
+
+          docker run --rm --name nanoloop-backup-create-ci \
+            --user 10001:10001 \
+            --network none \
+            --read-only \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+            --entrypoint python \
+            --env DATABASE_URL=sqlite:////app/data/nanoloop.db \
+            --env OUTPUT_ROOT=/app/outputs \
+            --env MODEL_SNAPSHOT_ROOT=/app/data/model-snapshots \
+            --env KNOWLEDGE_SOURCE_DIR=/app/knowledge_base/sources \
+            --env FAISS_INDEX_PATH=/app/knowledge_base/index/faiss.index \
+            --mount type=volume,src=nanoloop-ci-data,dst=/app/data \
+            --mount type=volume,src=nanoloop-ci-outputs,dst=/app/outputs,readonly \
+            --mount type=volume,src=nanoloop-ci-sources,dst=/app/knowledge_base/sources,readonly \
+            --mount type=volume,src=nanoloop-ci-index,dst=/app/knowledge_base/index,readonly \
+            --mount "type=bind,src=${backup_dir},dst=/backup" \
+            nanoloop-agent:ci \
+            /app/scripts/backup_restore.py create /backup/nanoloop-ci.zip \
+            --offline-confirmed
+
+          docker run --rm --name nanoloop-backup-verify-ci \
+            --user 10001:10001 \
+            --network none \
+            --read-only \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+            --entrypoint python \
+            --mount "type=bind,src=${backup_dir},dst=/backup,readonly" \
+            nanoloop-agent:ci \
+            /app/scripts/backup_restore.py verify /backup/nanoloop-ci.zip \
+            --checksum-path /backup/nanoloop-ci.zip.sha256
+
+          sudo test ! -e "${restore_parent}/restored"
+          docker run --rm --name nanoloop-backup-restore-ci \
+            --user 10001:10001 \
+            --network none \
+            --read-only \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+            --entrypoint python \
+            --mount "type=bind,src=${backup_dir},dst=/backup,readonly" \
+            --mount "type=bind,src=${restore_parent},dst=/restore" \
+            nanoloop-agent:ci \
+            /app/scripts/backup_restore.py restore \
+            /backup/nanoloop-ci.zip /restore/restored \
+            --offline-confirmed \
+            --checksum-path /backup/nanoloop-ci.zip.sha256
+          test "$(sudo stat -c '%u:%g' "${restore_parent}/restored")" = "10001:10001"
+
+      - name: Start the API and frontend from restored state
+        shell: bash
+        run: |
+          set -euo pipefail
+          restored_root="${RUNNER_TEMP}/nanoloop-ci-disaster/restore/restored"
+          sudo test -d "${restored_root}/data"
+          sudo test -d "${restored_root}/outputs"
+          sudo test -d "${restored_root}/knowledge_base/sources"
+          sudo test -d "${restored_root}/knowledge_base/index"
+
+          docker rm nanoloop-api-ci >/dev/null
+          docker volume create nanoloop-ci-restored-logs >/dev/null
+          docker run --detach --name nanoloop-api-restored-ci \
+            --network nanoloop-ci-network \
+            --network-alias api \
+            --read-only \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+            --env NANOLOOP_API_KEY=ci_api_key_0123456789abcdef123456 \
+            --env API_RATE_LIMIT_REQUESTS=20 \
+            --env TRUSTED_HOSTS=localhost,127.0.0.1,api \
+            --mount "type=bind,src=${restored_root}/data,dst=/app/data" \
+            --mount "type=bind,src=${restored_root}/outputs,dst=/app/outputs" \
+            --mount type=volume,src=nanoloop-ci-restored-logs,dst=/app/logs \
+            --mount "type=bind,src=${restored_root}/knowledge_base/sources,dst=/app/knowledge_base/sources" \
+            --mount "type=bind,src=${restored_root}/knowledge_base/index,dst=/app/knowledge_base/index" \
+            nanoloop-agent:ci >/dev/null
+
+          for attempt in $(seq 1 40); do
+            status=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' \
+              nanoloop-api-restored-ci)
+            if [ "${status}" = "healthy" ]; then
+              break
+            fi
+            if [ "${status}" = "unhealthy" ] || [ "${attempt}" -eq 40 ]; then
+              docker logs nanoloop-api-restored-ci
+              exit 1
+            fi
+            sleep 2
+          done
+          readonly_root=$(docker inspect --format '{{.HostConfig.ReadonlyRootfs}}' \
+            nanoloop-api-restored-ci)
+          test "${readonly_root}" = "true"
+
+          docker start nanoloop-frontend-ci >/dev/null
+          for attempt in $(seq 1 40); do
+            status=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' \
+              nanoloop-frontend-ci)
+            if [ "${status}" = "healthy" ]; then
+              docker exec nanoloop-frontend-ci python -c \
+                "import json,urllib.request; r=urllib.request.Request('http://api:8000/api/v1/health',headers={'X-API-Key':'ci_api_key_0123456789abcdef123456'}); p=json.load(urllib.request.urlopen(r,timeout=3)); assert p['status']=='success' and p['data']['database']['status']=='healthy'"
+              exit 0
+            fi
+            if [ "${status}" = "unhealthy" ] || [ "${attempt}" -eq 40 ]; then
+              docker logs nanoloop-frontend-ci
+              exit 1
+            fi
+            sleep 2
+          done
+
+      - name: Verify restored database, downloads, and component state
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker exec -i nanoloop-api-restored-ci python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import sqlite3
+          from pathlib import Path
+
+          import httpx
+
+          from app.db.migration_state import expected_alembic_heads
+
+          state = json.loads(
+              Path("/app/data/ci-disaster-state.json").read_text(encoding="utf-8")
+          )
+          with httpx.Client(
+              base_url="http://127.0.0.1:8000",
+              headers={"X-API-Key": "ci_api_key_0123456789abcdef123456"},
+              timeout=10,
+          ) as client:
+              download = client.get(state["original_download_url"])
+              if download.status_code != 200:
+                  raise RuntimeError(f"restored download failed with {download.status_code}")
+              if hashlib.sha256(download.content).hexdigest() != state["sha256"]:
+                  raise RuntimeError("restored download digest changed")
+              analysis = client.get(f"/api/v1/analyses/{state['job_id']}")
+              if analysis.status_code != 200:
+                  raise RuntimeError(f"restored analysis failed with {analysis.status_code}")
+              images = analysis.json()["data"]["images"]
+              if not any(
+                  image["image_id"] == state["image_id"]
+                  and image["sha256"] == state["sha256"]
+                  for image in images
+              ):
+                  raise RuntimeError("restored analysis image is missing or changed")
+              health = client.get("/api/v1/health")
+              if health.status_code != 200:
+                  raise RuntimeError(f"restored health failed with {health.status_code}")
+              if health.json()["data"]["database"]["status"] != "healthy":
+                  raise RuntimeError("restored database health is not healthy")
+
+          connection = sqlite3.connect("/app/data/nanoloop.db")
+          try:
+              if connection.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
+                  raise RuntimeError("restored SQLite integrity_check failed")
+              if connection.execute("PRAGMA foreign_key_check").fetchall():
+                  raise RuntimeError("restored SQLite foreign_key_check failed")
+              job_count = connection.execute(
+                  "SELECT COUNT(*) FROM analysis_jobs WHERE job_id = ?",
+                  (state["job_id"],),
+              ).fetchone()[0]
+              image_count = connection.execute(
+                  "SELECT COUNT(*) FROM image_assets WHERE image_id = ? AND job_id = ?",
+                  (state["image_id"], state["job_id"]),
+              ).fetchone()[0]
+              revisions = tuple(
+                  sorted(
+                      row[0]
+                      for row in connection.execute(
+                          "SELECT version_num FROM alembic_version"
+                      ).fetchall()
+                  )
+              )
+          finally:
+              connection.close()
+          if job_count != 1 or image_count != 1:
+              raise RuntimeError("restored analysis database rows are missing")
+          if revisions != expected_alembic_heads():
+              raise RuntimeError("restored database is not at the packaged Alembic head")
+
+          sentinels = {
+              Path("/app/data/model-snapshots/ci-model-snapshot.txt"):
+                  "nanoloop-ci-model-snapshot-v1\n",
+              Path("/app/outputs/ci-output.txt"): "nanoloop-ci-output-v1\n",
+              Path("/app/knowledge_base/sources/ci-source.txt"):
+                  "nanoloop-ci-knowledge-source-v1\n",
+              Path("/app/knowledge_base/index/ci-index.txt"):
+                  "nanoloop-ci-knowledge-index-v1\n",
+          }
+          for path, expected in sentinels.items():
+              if path.read_text(encoding="utf-8") != expected:
+                  raise RuntimeError(f"restored sentinel is missing or changed: {path}")
+
+          if os.getuid() != 10001 or os.getgid() != 10001:
+              raise RuntimeError("restored API is not running as UID/GID 10001")
+          writable_roots = (
+              Path("/app/data"),
+              Path("/app/data/model-snapshots"),
+              Path("/app/outputs"),
+              Path("/app/knowledge_base/sources"),
+              Path("/app/knowledge_base/index"),
+          )
+          for root in writable_roots:
+              probe = root / ".nanoloop-ci-write-probe"
+              probe.write_text("ok\n", encoding="utf-8")
+              probe.unlink()
+          PY
+
       - name: Clean up container smoke resources
         if: always()
         shell: bash
         run: |
-          docker rm --force nanoloop-frontend-ci nanoloop-api-ci >/dev/null 2>&1 || true
+          docker rm --force \
+            nanoloop-frontend-ci nanoloop-api-ci nanoloop-api-restored-ci \
+            nanoloop-backup-create-ci nanoloop-backup-verify-ci \
+            nanoloop-backup-restore-ci \
+            >/dev/null 2>&1 || true
           docker volume rm \
             nanoloop-ci-data nanoloop-ci-outputs nanoloop-ci-logs \
-            nanoloop-ci-sources nanoloop-ci-index \
+            nanoloop-ci-sources nanoloop-ci-index nanoloop-ci-restored-logs \
             >/dev/null 2>&1 || true
           docker network rm nanoloop-ci-network >/dev/null 2>&1 || true
+          if [ -n "${RUNNER_TEMP:-}" ]; then
+            disaster_root="${RUNNER_TEMP}/nanoloop-ci-disaster"
+            if [ "${disaster_root}" != "${RUNNER_TEMP}/nanoloop-ci-disaster" ]; then
+              echo "Refusing to remove an unexpected disaster-recovery path" >&2
+              exit 1
+            fi
+            sudo rm -rf -- "${disaster_root}"
+          fi

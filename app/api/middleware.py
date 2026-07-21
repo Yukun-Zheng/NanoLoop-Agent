@@ -6,6 +6,7 @@ import logging
 import re
 import time
 from collections.abc import Awaitable, Callable, Mapping, MutableMapping, Sequence
+from ipaddress import IPv6Address, ip_address
 from typing import Any
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -16,8 +17,21 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from app.api.responses import error_response
+from app.authentication import (
+    AUTH_MODE_STATE_KEY,
+    AUTH_OUTCOME_STATE_KEY,
+    AUTH_REASON_STATE_KEY,
+    AUTHENTICATION_VERIFIED_STATE_KEY,
+    RequestAuthenticator,
+)
+from app.contracts.identity import AuthMode, PrincipalContext
 from app.core.logging import bind_log_context, log_context, reset_log_context
-from app.core.rate_limit import RateLimitBucket, TokenBucketLimiter
+from app.core.rate_limit import (
+    BoundedKeyedTokenBucketLimiter,
+    RateLimitBucket,
+    RateLimitDecision,
+    TokenBucketLimiter,
+)
 from app.core.security import ApiKeyVerifier, normalize_http_origin, trusted_request_id
 
 logger = logging.getLogger(__name__)
@@ -32,37 +46,105 @@ _TRUSTED_FETCH_SITES = frozenset({"same-origin", "same-site", "none"})
 
 
 class ApiKeyAuthMiddleware:
-    """Authenticate protected HTTP routes before request bodies are parsed."""
+    """Authenticate protected HTTP routes before request bodies are parsed.
+
+    ``verifier`` remains accepted for compatibility with integrations that constructed the old
+    shared-key middleware directly.  Application assembly always supplies the unified
+    ``authenticator``.
+    """
 
     def __init__(
         self,
         app: Callable[..., Awaitable[None]],
         *,
-        verifier: ApiKeyVerifier,
+        authenticator: RequestAuthenticator | None = None,
+        verifier: ApiKeyVerifier | None = None,
+        principal_limiter: BoundedKeyedTokenBucketLimiter | None = None,
         public_paths: Sequence[str],
     ) -> None:
+        if (authenticator is None) == (verifier is None):
+            raise ValueError("provide exactly one authenticator or legacy verifier")
         self.app = app
-        self.verifier = verifier
+        if authenticator is not None:
+            self.authenticator = authenticator
+        else:
+            assert verifier is not None
+            self.authenticator = RequestAuthenticator.from_legacy_verifier(verifier)
+        if principal_limiter is not None and self.authenticator.mode is not AuthMode.PRINCIPAL:
+            raise ValueError("principal_limiter requires principal authentication mode")
+        self.principal_limiter = principal_limiter
         self.public_paths = frozenset(public_paths)
 
     async def __call__(self, scope: Message, receive: Receive, send: Send) -> None:
         if (
             scope.get("type") != "http"
-            or not self.verifier.enabled
             or scope.get("path") in self.public_paths
         ):
             await self.app(scope, receive, send)
             return
 
         values = Headers(scope=scope).getlist("x-api-key")
-        if self.verifier.matches(values):
-            scope.setdefault("state", {})["api_key_authenticated"] = True
-            await self.app(scope, receive, send)
+        decision = await self.authenticator.authenticate(values)
+        state = scope.setdefault("state", {})
+        state[AUTH_MODE_STATE_KEY] = self.authenticator.mode.value
+        state[AUTH_OUTCOME_STATE_KEY] = decision.outcome
+        state[AUTH_REASON_STATE_KEY] = decision.reason
+        if decision.authenticated:
+            principal = decision.principal
+            if principal is None:  # Defensive narrowing; AuthenticationDecision enforces this.
+                await self._send_unavailable(scope, send)
+                return
+            state["principal"] = principal
+            state[AUTHENTICATION_VERIFIED_STATE_KEY] = True
+            state["api_key_authenticated"] = True  # Transitional compatibility for extensions.
+            principal_decision: RateLimitDecision | None = None
+            if self.principal_limiter is not None:
+                principal_id = principal.principal_id
+                if not isinstance(principal_id, str) or not principal_id:
+                    await self._send_unavailable(scope, send)
+                    return
+                principal_decision = self.principal_limiter.consume(
+                    f"principal:{principal_id}"
+                )
+                if not principal_decision.allowed:
+                    await _send_rate_limit_rejection(
+                        scope,
+                        send,
+                        decision=principal_decision,
+                        window_seconds=self.principal_limiter.window_seconds,
+                    )
+                    return
+            identity_context = _principal_log_context(principal)
+            token = bind_log_context(**identity_context)
+            try:
+                if principal_decision is None:
+                    await self.app(scope, receive, send)
+                else:
+                    await self.app(
+                        scope,
+                        receive,
+                        _send_with_rate_limit_headers(
+                            send,
+                            principal_decision,
+                            authoritative=True,
+                        ),
+                    )
+            finally:
+                reset_log_context(token)
             return
 
+        if decision.outcome == "unavailable":
+            await self._send_unavailable(scope, send)
+            return
         logger.warning(
             "api_key_authentication_failed",
-            extra={"event": "authentication_failed", "status_code": 401},
+            extra={
+                "auth_mode": self.authenticator.mode.value,
+                "auth_outcome": decision.outcome,
+                "auth_reason": decision.reason,
+                "event": "authentication_failed",
+                "status_code": 401,
+            },
         )
         await _send_security_rejection(
             scope,
@@ -73,6 +155,26 @@ class ApiKeyAuthMiddleware:
             headers={"WWW-Authenticate": 'ApiKey realm="nanoloop"'},
         )
 
+    async def _send_unavailable(self, scope: Message, send: Send) -> None:
+        logger.error(
+            "authentication_backend_unavailable",
+            extra={
+                "auth_mode": self.authenticator.mode.value,
+                "auth_outcome": "unavailable",
+                "auth_reason": "backend_unavailable",
+                "event": "authentication_unavailable",
+                "status_code": 503,
+            },
+        )
+        await _send_security_rejection(
+            scope,
+            send,
+            status_code=503,
+            code="AUTHENTICATION_UNAVAILABLE",
+            message="认证服务暂时不可用",
+            retryable=True,
+        )
+
 
 class InMemoryRateLimitMiddleware:
     """Apply one bounded token bucket per fixed authentication class."""
@@ -81,13 +183,38 @@ class InMemoryRateLimitMiddleware:
         self,
         app: Callable[..., Awaitable[None]],
         *,
-        verifier: ApiKeyVerifier,
-        limiter: TokenBucketLimiter,
+        authenticator: RequestAuthenticator | None = None,
+        verifier: ApiKeyVerifier | None = None,
+        limiter: TokenBucketLimiter | None = None,
+        principal_preauth_limiter: BoundedKeyedTokenBucketLimiter | None = None,
+        prefer_downstream_rate_limit_headers: bool = False,
         public_paths: Sequence[str],
     ) -> None:
+        if (authenticator is None) == (verifier is None):
+            raise ValueError("provide exactly one authenticator or legacy verifier")
         self.app = app
-        self.verifier = verifier
+        if authenticator is not None:
+            self.authenticator = authenticator
+        else:
+            assert verifier is not None
+            self.authenticator = RequestAuthenticator.from_legacy_verifier(verifier)
+        if self.authenticator.mode is AuthMode.PRINCIPAL:
+            if limiter is not None or principal_preauth_limiter is None:
+                raise ValueError(
+                    "principal mode requires exactly one principal_preauth_limiter"
+                )
+        elif limiter is None or principal_preauth_limiter is not None:
+            raise ValueError("compatibility modes require exactly one fixed limiter")
+        if (
+            prefer_downstream_rate_limit_headers
+            and self.authenticator.mode is not AuthMode.PRINCIPAL
+        ):
+            raise ValueError(
+                "downstream rate-limit headers are only valid for principal two-stage limiting"
+            )
         self.limiter = limiter
+        self.principal_preauth_limiter = principal_preauth_limiter
+        self.prefer_downstream_rate_limit_headers = prefer_downstream_rate_limit_headers
         self.public_paths = frozenset(public_paths)
 
     async def __call__(self, scope: Message, receive: Receive, send: Send) -> None:
@@ -99,47 +226,103 @@ class InMemoryRateLimitMiddleware:
             return
 
         values = Headers(scope=scope).getlist("x-api-key")
-        bucket: RateLimitBucket
-        if not self.verifier.enabled:
-            bucket = "service"
-        elif self.verifier.matches(values):
-            bucket = "authenticated"
+        if self.authenticator.mode is AuthMode.PRINCIPAL:
+            principal_limiter = self.principal_preauth_limiter
+            if principal_limiter is None:  # Construction invariant.
+                raise RuntimeError("principal pre-authentication limiter is unavailable")
+            decision = principal_limiter.consume(_direct_peer_rate_limit_key(scope))
+            window_seconds = principal_limiter.window_seconds
         else:
-            bucket = "anonymous"
-        decision = self.limiter.consume(bucket)
-        rate_headers = {
-            "X-RateLimit-Limit": str(decision.limit),
-            "X-RateLimit-Remaining": str(decision.remaining),
-        }
+            limiter = self.limiter
+            if limiter is None:  # Construction invariant.
+                raise RuntimeError("fixed rate limiter is unavailable")
+            bucket: RateLimitBucket = self.authenticator.rate_limit_bucket(values)
+            decision = limiter.consume(bucket)
+            window_seconds = limiter.window_seconds
         if not decision.allowed:
-            retry_after = str(decision.retry_after_seconds)
-            logger.warning(
-                "api_rate_limit_exceeded",
-                extra={"event": "rate_limit_exceeded", "status_code": 429},
-            )
-            await _send_security_rejection(
+            await _send_rate_limit_rejection(
                 scope,
                 send,
-                status_code=429,
-                code="RATE_LIMITED",
-                message="请求过于频繁，请稍后重试",
-                details={
-                    "limit": decision.limit,
-                    "window_seconds": self.limiter.window_seconds,
-                },
-                retryable=True,
-                headers={**rate_headers, "Retry-After": retry_after},
+                decision=decision,
+                window_seconds=window_seconds,
             )
             return
+        await self.app(
+            scope,
+            receive,
+            _send_with_rate_limit_headers(
+                send,
+                decision,
+                authoritative=not self.prefer_downstream_rate_limit_headers,
+            ),
+        )
 
-        async def send_with_rate_limit(message: Message) -> None:
-            if message.get("type") == "http.response.start":
-                response_headers = MutableHeaders(scope=message)
-                for name, value in rate_headers.items():
+
+def _direct_peer_rate_limit_key(scope: Mapping[str, Any]) -> str:
+    """Return a bounded key from the socket peer, never from proxy-supplied headers."""
+
+    client = scope.get("client")
+    host = client[0] if isinstance(client, (list, tuple)) and client else None
+    if not isinstance(host, str):
+        return "peer:unknown"
+    try:
+        address = ip_address(host)
+    except ValueError:
+        return "peer:unknown"
+    if isinstance(address, IPv6Address) and address.ipv4_mapped is not None:
+        address = address.ipv4_mapped
+    normalized = address.compressed
+    return f"peer:{normalized}"
+
+
+def _rate_limit_headers(decision: RateLimitDecision) -> dict[str, str]:
+    return {
+        "X-RateLimit-Limit": str(decision.limit),
+        "X-RateLimit-Remaining": str(decision.remaining),
+    }
+
+
+def _send_with_rate_limit_headers(
+    send: Send,
+    decision: RateLimitDecision,
+    *,
+    authoritative: bool = False,
+) -> Send:
+    async def send_with_rate_limit(message: Message) -> None:
+        if message.get("type") == "http.response.start":
+            response_headers = MutableHeaders(scope=message)
+            for name, value in _rate_limit_headers(decision).items():
+                if authoritative:
                     response_headers[name] = value
-            await send(message)
+                else:
+                    response_headers.setdefault(name, value)
+        await send(message)
 
-        await self.app(scope, receive, send_with_rate_limit)
+    return send_with_rate_limit
+
+
+async def _send_rate_limit_rejection(
+    scope: Message,
+    send: Send,
+    *,
+    decision: RateLimitDecision,
+    window_seconds: float,
+) -> None:
+    retry_after = str(decision.retry_after_seconds)
+    logger.warning(
+        "api_rate_limit_exceeded",
+        extra={"event": "rate_limit_exceeded", "status_code": 429},
+    )
+    await _send_security_rejection(
+        scope,
+        send,
+        status_code=429,
+        code="RATE_LIMITED",
+        message="请求过于频繁，请稍后重试",
+        details={"limit": decision.limit, "window_seconds": window_seconds},
+        retryable=True,
+        headers={**_rate_limit_headers(decision), "Retry-After": retry_after},
+    )
 
 
 class _RequestBodyTooLarge(Exception):
@@ -400,10 +583,30 @@ class RequestContextMiddleware:
                 for key, value in path_params.items()
                 if key in {"job_id", "image_id", "run_id", "model_id"} and isinstance(value, str)
             }
-            with log_context(**resource_context):
+            state = scope.get("state", {})
+            principal = state.get("principal") if isinstance(state, Mapping) else None
+            identity_context = (
+                _principal_log_context(principal)
+                if isinstance(principal, PrincipalContext)
+                else {}
+            )
+            auth_fields = {
+                key: value
+                for key, state_key in (
+                    ("auth_mode", AUTH_MODE_STATE_KEY),
+                    ("auth_outcome", AUTH_OUTCOME_STATE_KEY),
+                    ("auth_reason", AUTH_REASON_STATE_KEY),
+                )
+                if isinstance(state, Mapping)
+                and isinstance(value := state.get(state_key), str)
+                and value
+            }
+            with log_context(**resource_context, **identity_context):
                 logger.info(
                     "request_completed",
                     extra={
+                        **auth_fields,
+                        **identity_context,
                         "duration_ms": duration_ms,
                         "event": "request_completed",
                         "method": scope.get("method"),
@@ -412,6 +615,18 @@ class RequestContextMiddleware:
                     },
                 )
             reset_log_context(token)
+
+
+def _principal_log_context(principal: PrincipalContext) -> dict[str, str]:
+    return {
+        key: value
+        for key, value in (
+            ("tenant_id", principal.tenant_id),
+            ("principal_id", principal.principal_id),
+            ("credential_id", principal.credential_id),
+        )
+        if isinstance(value, str) and value
+    }
 
 
 def _safe_log_path(value: object) -> object:

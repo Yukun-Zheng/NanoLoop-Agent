@@ -25,8 +25,12 @@ class ModelMetadata(ContractModel):
     status: ModelStatus
     supports_box_prompt: bool
     default_threshold: float | None = Field(default=None, ge=0, le=1)
+    default_min_area_px: int | None = Field(default=None, ge=0)
     preprocess_profile: str
     postprocess_profile: str
+    inference_invalid_bottom_px: int = Field(default=0, ge=0, le=4096)
+    expected_input_width: int | None = Field(default=None, ge=1, le=50_000)
+    expected_input_height: int | None = Field(default=None, ge=1, le=50_000)
     applicable_materials: list[str] = Field(default_factory=list)
     metrics: dict[str, float] = Field(default_factory=dict)
     metric_context: dict[str, Any] = Field(default_factory=dict)

@@ -17,6 +17,15 @@ from app.operations.backup import (
     restore_backup,
     verify_backup,
 )
+from app.operations.drill import (
+    DrillCounts,
+    DrillDurations,
+    DrillError,
+    DrillValidationError,
+    OfflineFilesystemRestoreDrillReport,
+    OfflineFilesystemRestoreDrillResult,
+    run_offline_filesystem_restore_drill,
+)
 
 __all__ = [
     "BackupComponent",
@@ -29,9 +38,16 @@ __all__ = [
     "BackupSourceChangedError",
     "BackupValidationError",
     "BackupVerificationResult",
+    "DrillCounts",
+    "DrillDurations",
+    "DrillError",
+    "DrillValidationError",
+    "OfflineFilesystemRestoreDrillReport",
+    "OfflineFilesystemRestoreDrillResult",
     "RestoreResult",
     "StateDirectoryLock",
     "create_backup",
     "restore_backup",
+    "run_offline_filesystem_restore_drill",
     "verify_backup",
 ]

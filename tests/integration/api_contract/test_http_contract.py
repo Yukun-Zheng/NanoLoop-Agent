@@ -58,6 +58,21 @@ def _assert_error_envelope(payload: dict[str, object], code: str) -> None:
     assert error["code"] == code
 
 
+def _wait_for_terminal_run(client: TestClient, run_id: str) -> dict[str, object]:
+    """Wait on real work instead of assuming a fast hosted runner finishes in one second."""
+
+    deadline = time.monotonic() + 10.0
+    run: dict[str, object] = {}
+    while time.monotonic() < deadline:
+        response = client.get(f"/api/v1/runs/{run_id}")
+        assert response.status_code == 200
+        run = response.json()["data"]
+        if run["status"] in {"COMPLETED", "COMPLETED_WITH_WARNINGS", "FAILED"}:
+            return run
+        time.sleep(0.02)
+    pytest.fail(f"run did not reach a terminal state before the deadline: {run.get('status')}")
+
+
 def test_health_alias_and_versioned_health_are_real(api_harness: ApiHarness) -> None:
     for path in ("/health", "/api/v1/health"):
         response = api_harness.client.get(path)
@@ -399,14 +414,7 @@ def test_analysis_upload_is_persisted_and_immediately_downloadable(
     )
     assert submitted.status_code == 202
     run_id = submitted.json()["data"]["run_ids"][0]
-    run: dict[str, object] = {}
-    for _attempt in range(100):
-        run_response = api_harness.client.get(f"/api/v1/runs/{run_id}")
-        assert run_response.status_code == 200
-        run = run_response.json()["data"]
-        if run["status"] in {"COMPLETED", "COMPLETED_WITH_WARNINGS", "FAILED"}:
-            break
-        time.sleep(0.01)
+    run = _wait_for_terminal_run(api_harness.client, run_id)
     assert run["status"] in {"COMPLETED", "COMPLETED_WITH_WARNINGS"}
     artifacts = run["artifacts"]
     assert isinstance(artifacts, dict)

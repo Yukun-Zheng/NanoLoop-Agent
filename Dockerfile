@@ -44,6 +44,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     APP_ENV=production \
     DATABASE_URL=sqlite:////app/data/nanoloop.db \
     OUTPUT_ROOT=/app/outputs \
+    FILE_TOKEN_V2_KEYRING_PATH=/app/data/.file_token_v2_keyring.json \
     MODEL_REGISTRY_PATH=/app/model_artifacts/registry.yaml \
     MODEL_SNAPSHOT_ROOT=/app/data/model-snapshots \
     MODEL_DEVICE=cpu \
@@ -83,9 +84,13 @@ COPY --chown=nanoloop:nanoloop app/db/migrations ./app/db/migrations
 COPY --chown=nanoloop:nanoloop model_artifacts ./model_artifacts
 COPY --chown=nanoloop:nanoloop LICENSES.md ./LICENSES.md
 COPY --chown=nanoloop:nanoloop scripts/backup_restore.py ./scripts/backup_restore.py
+COPY --chown=nanoloop:nanoloop scripts/manage_file_token_keyring.py ./scripts/manage_file_token_keyring.py
 COPY --chown=nanoloop:nanoloop scripts/docker-entrypoint.sh /usr/local/bin/nanoloop-entrypoint
 
-RUN chmod 0555 /usr/local/bin/nanoloop-entrypoint /app/scripts/backup_restore.py \
+RUN chmod 0555 \
+        /usr/local/bin/nanoloop-entrypoint \
+        /app/scripts/backup_restore.py \
+        /app/scripts/manage_file_token_keyring.py \
     && chown -R nanoloop:nanoloop /app/model_artifacts /app/knowledge_base
 
 USER nanoloop:nanoloop
@@ -97,4 +102,4 @@ HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=5 \
     CMD ["python", "-c", "import json,urllib.request; p=json.load(urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=3)); assert p['status']=='success' and p['data']['service']['status']=='healthy' and p['data']['database']['status']=='healthy'"]
 
 ENTRYPOINT ["/usr/local/bin/nanoloop-entrypoint"]
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--timeout-keep-alive", "5"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--timeout-keep-alive", "5", "--no-proxy-headers"]

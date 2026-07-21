@@ -6,10 +6,12 @@ from fastapi import APIRouter, Depends, File, Request, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
 
 from app.analysis.application import AnalysisApplicationService
+from app.analysis.authorization import require_read
 from app.api.deps import (
     get_analysis_application_service,
-    get_file_store,
+    get_file_artifact_access_service,
     get_repositories,
+    require_api_key_contract,
 )
 from app.api.downloads import decorate_run_downloads
 from app.api.responses import success_response
@@ -23,9 +25,10 @@ from app.contracts.analyses import (
     SegmentationRunDTO,
 )
 from app.contracts.common import ApiResponse
+from app.contracts.identity import PrincipalContext
 from app.core.errors import InvalidImageError
 from app.db.repositories import SqlAlchemyRepositorySet
-from app.storage import LocalFileStore
+from app.files import FileArtifactAccessService
 
 router = APIRouter(
     tags=["runs"],
@@ -44,9 +47,8 @@ async def upload_corrected_mask(
     run_id: str,
     request: Request,
     file: Annotated[UploadFile, File()],
-    service: Annotated[
-        AnalysisApplicationService, Depends(get_analysis_application_service)
-    ],
+    service: Annotated[AnalysisApplicationService, Depends(get_analysis_application_service)],
+    principal: Annotated[PrincipalContext, Depends(require_api_key_contract)],
 ) -> ApiResponse[CorrectedMaskUploadData]:
     if not file.filename:
         raise InvalidImageError(details={"reason": "missing_corrected_mask_filename"})
@@ -55,6 +57,7 @@ async def upload_corrected_mask(
         run_id,
         file.file,
         file.filename,
+        principal=principal,
     )
     return success_response(data, request=request)
 
@@ -69,11 +72,15 @@ async def create_runs(
     job_id: str,
     payload: CreateRunsRequest,
     request: Request,
-    service: Annotated[
-        AnalysisApplicationService, Depends(get_analysis_application_service)
-    ],
+    service: Annotated[AnalysisApplicationService, Depends(get_analysis_application_service)],
+    principal: Annotated[PrincipalContext, Depends(require_api_key_contract)],
 ) -> ApiResponse[CreateRunsData]:
-    run_ids = await run_in_threadpool(service.create_runs, job_id, payload)
+    run_ids = await run_in_threadpool(
+        service.create_runs,
+        job_id,
+        payload,
+        principal=principal,
+    )
     return success_response(
         CreateRunsData(run_ids=run_ids),
         request=request,
@@ -90,14 +97,26 @@ def get_run(
     run_id: str,
     request: Request,
     repositories: Annotated[SqlAlchemyRepositorySet, Depends(get_repositories)],
-    file_store: Annotated[LocalFileStore, Depends(get_file_store)],
+    file_access: Annotated[
+        FileArtifactAccessService,
+        Depends(get_file_artifact_access_service),
+    ],
+    principal: Annotated[PrincipalContext, Depends(require_api_key_contract)],
 ) -> ApiResponse[SegmentationRunDTO]:
-    run = repositories.runs.get(run_id)
+    tenant_id = principal.tenant_id
+    if tenant_id is None:
+        raise ValueError("principal must carry a tenant ID")
+    run, scope = repositories.runs.get_with_scope(run_id, tenant_id=tenant_id)
+    require_read(principal, scope)
     decorated = decorate_run_downloads(
         run,
-        private_paths=repositories.runs.get_artifact_paths(run_id),
+        private_paths=repositories.runs.get_artifact_paths_scoped(
+            run_id,
+            tenant_id=tenant_id,
+        ),
         request=request,
-        file_store=file_store,
+        file_access=file_access,
+        principal=principal,
     )
     return success_response(decorated, request=request)
 
@@ -112,11 +131,15 @@ async def review_run(
     run_id: str,
     payload: ReviewRunRequest,
     request: Request,
-    service: Annotated[
-        AnalysisApplicationService, Depends(get_analysis_application_service)
-    ],
+    service: Annotated[AnalysisApplicationService, Depends(get_analysis_application_service)],
+    principal: Annotated[PrincipalContext, Depends(require_api_key_contract)],
 ) -> ApiResponse[ReviewRunData]:
-    child_run_id = await run_in_threadpool(service.create_review_run, run_id, payload)
+    child_run_id = await run_in_threadpool(
+        service.create_review_run,
+        run_id,
+        payload,
+        principal=principal,
+    )
     return success_response(
         ReviewRunData(parent_run_id=run_id, run_id=child_run_id),
         request=request,

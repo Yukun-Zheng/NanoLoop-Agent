@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from collections import deque
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from starlette.datastructures import Headers
@@ -12,12 +12,28 @@ from app.api.middleware import (
     ApiKeyAuthMiddleware,
     InMemoryRateLimitMiddleware,
     RequestBodyLimitMiddleware,
+    _direct_peer_rate_limit_key,
     _safe_log_path,
 )
-from app.core.rate_limit import TokenBucketLimiter
+from app.authentication import AuthenticationDecision, RequestAuthenticator
+from app.contracts.identity import (
+    AuthMode,
+    PrincipalContext,
+    PrincipalKind,
+    PrincipalRole,
+)
+from app.core.rate_limit import BoundedKeyedTokenBucketLimiter, TokenBucketLimiter
 from app.core.security import ApiKeyVerifier
 
 _API_KEY = "k" * 32
+_PRINCIPAL = PrincipalContext(
+    tenant_id=f"tnt_{'a' * 32}",
+    principal_id=f"prn_{'b' * 32}",
+    credential_id=f"crd_{'c' * 32}",
+    kind=PrincipalKind.USER,
+    role=PrincipalRole.ANALYST,
+    auth_mode=AuthMode.PRINCIPAL,
+)
 ASGIApp = Callable[
     [
         dict[str, Any],
@@ -34,6 +50,8 @@ async def _request_middleware(
     path: str = "/api/v1/models",
     method: str = "GET",
     headers: list[tuple[bytes, bytes]] | None = None,
+    client: tuple[str, int] = ("127.0.0.1", 1234),
+    downstream_headers: list[tuple[bytes, bytes]] | None = None,
 ) -> tuple[list[dict[str, Any]], bool]:
     scope: dict[str, Any] = {
         "type": "http",
@@ -45,7 +63,7 @@ async def _request_middleware(
         "raw_path": path.encode(),
         "query_string": b"",
         "headers": headers or [],
-        "client": ("127.0.0.1", 1234),
+        "client": client,
         "server": ("test", 80),
         "state": {"request_id": "req_security"},
     }
@@ -65,12 +83,37 @@ async def _request_middleware(
     ) -> None:
         nonlocal downstream_called
         downstream_called = True
-        await send_response({"type": "http.response.start", "status": 204, "headers": []})
+        await send_response(
+            {
+                "type": "http.response.start",
+                "status": 204,
+                "headers": downstream_headers or [],
+            }
+        )
         await send_response({"type": "http.response.body", "body": b""})
 
     target = factory(downstream)
     await target(scope, receive, send)
     return sent, downstream_called
+
+
+class _StubPrincipalAuthenticator:
+    mode = AuthMode.PRINCIPAL
+
+    async def authenticate(self, values: list[str]) -> AuthenticationDecision:
+        if values == ["valid"]:
+            return AuthenticationDecision(
+                outcome="authenticated",
+                reason="credential_active",
+                principal=_PRINCIPAL,
+            )
+        if values == ["unavailable"]:
+            return AuthenticationDecision(outcome="unavailable", reason="backend_unavailable")
+        return AuthenticationDecision(outcome="rejected", reason="credential_rejected")
+
+
+def _principal_authenticator() -> RequestAuthenticator:
+    return cast(RequestAuthenticator, _StubPrincipalAuthenticator())
 
 
 async def _exercise(
@@ -333,6 +376,220 @@ async def test_rate_limit_keeps_anonymous_and_authenticated_buckets_separate() -
     }
     assert valid_downstream is True
     assert valid[0]["status"] == 204
+
+
+@pytest.mark.asyncio
+async def test_single_stage_fixed_limiter_overrides_downstream_rate_headers() -> None:
+    verifier = ApiKeyVerifier(_API_KEY)
+    limiter = TokenBucketLimiter(2, 60, clock=lambda: 0.0)
+
+    sent, downstream_called = await _request_middleware(
+        lambda app: InMemoryRateLimitMiddleware(
+            app,
+            verifier=verifier,
+            limiter=limiter,
+            public_paths=("/health",),
+        ),
+        headers=[(b"x-api-key", _API_KEY.encode())],
+        downstream_headers=[
+            (b"x-ratelimit-limit", b"999"),
+            (b"x-ratelimit-remaining", b"999"),
+        ],
+    )
+    response_headers = Headers(raw=sent[0]["headers"])
+
+    assert downstream_called is True
+    assert response_headers["x-ratelimit-limit"] == "2"
+    assert response_headers["x-ratelimit-remaining"] == "1"
+
+
+@pytest.mark.asyncio
+async def test_principal_preauth_only_overrides_downstream_rate_headers() -> None:
+    authenticator = _principal_authenticator()
+    preauth = BoundedKeyedTokenBucketLimiter(3, 60, max_buckets=8, clock=lambda: 0.0)
+
+    sent, downstream_called = await _request_middleware(
+        lambda app: InMemoryRateLimitMiddleware(
+            app,
+            authenticator=authenticator,
+            principal_preauth_limiter=preauth,
+            public_paths=("/health",),
+        ),
+        headers=[(b"x-api-key", b"valid")],
+        downstream_headers=[
+            (b"x-ratelimit-limit", b"999"),
+            (b"x-ratelimit-remaining", b"999"),
+        ],
+    )
+    response_headers = Headers(raw=sent[0]["headers"])
+
+    assert downstream_called is True
+    assert response_headers["x-ratelimit-limit"] == "3"
+    assert response_headers["x-ratelimit-remaining"] == "2"
+
+
+@pytest.mark.asyncio
+async def test_principal_preauth_isolates_direct_peers_and_ignores_forwarded_headers() -> None:
+    authenticator = _principal_authenticator()
+    preauth = BoundedKeyedTokenBucketLimiter(1, 60, max_buckets=8, clock=lambda: 0.0)
+    postauth = BoundedKeyedTokenBucketLimiter(1, 60, max_buckets=8, clock=lambda: 0.0)
+
+    def chain(app: ASGIApp) -> ASGIApp:
+        authenticated = ApiKeyAuthMiddleware(
+            app,
+            authenticator=authenticator,
+            principal_limiter=postauth,
+            public_paths=("/health",),
+        )
+        return InMemoryRateLimitMiddleware(
+            authenticated,
+            authenticator=authenticator,
+            principal_preauth_limiter=preauth,
+            prefer_downstream_rate_limit_headers=True,
+            public_paths=("/health",),
+        )
+
+    attacker_headers = [
+        (b"x-api-key", b"wrong"),
+        (b"x-forwarded-for", b"198.51.100.10"),
+        (b"forwarded", b"for=198.51.100.11"),
+    ]
+    first, _ = await _request_middleware(
+        chain,
+        headers=attacker_headers,
+        client=("192.0.2.1", 1000),
+    )
+    same_peer, same_peer_downstream = await _request_middleware(
+        chain,
+        headers=[
+            (b"x-api-key", b"valid"),
+            (b"x-forwarded-for", b"203.0.113.99"),
+        ],
+        client=("192.0.2.1", 2000),
+    )
+    other_peer, other_peer_downstream = await _request_middleware(
+        chain,
+        headers=[(b"x-api-key", b"valid")],
+        client=("192.0.2.2", 3000),
+    )
+    same_principal_other_peer, principal_downstream = await _request_middleware(
+        chain,
+        headers=[(b"x-api-key", b"valid")],
+        client=("192.0.2.3", 4000),
+    )
+
+    assert first[0]["status"] == 401
+    assert same_peer[0]["status"] == 429
+    assert same_peer_downstream is False
+    assert other_peer[0]["status"] == 204
+    assert other_peer_downstream is True
+    assert same_principal_other_peer[0]["status"] == 429
+    assert principal_downstream is False
+    assert preauth.bucket_count == 3
+    assert postauth.bucket_count == 1
+
+
+@pytest.mark.asyncio
+async def test_principal_rejections_and_unavailability_do_not_consume_postauth_bucket() -> None:
+    authenticator = _principal_authenticator()
+    preauth = BoundedKeyedTokenBucketLimiter(10, 60, max_buckets=8, clock=lambda: 0.0)
+    postauth = BoundedKeyedTokenBucketLimiter(1, 60, max_buckets=8, clock=lambda: 0.0)
+
+    def chain(app: ASGIApp) -> ASGIApp:
+        authenticated = ApiKeyAuthMiddleware(
+            app,
+            authenticator=authenticator,
+            principal_limiter=postauth,
+            public_paths=("/health",),
+        )
+        return InMemoryRateLimitMiddleware(
+            authenticated,
+            authenticator=authenticator,
+            principal_preauth_limiter=preauth,
+            prefer_downstream_rate_limit_headers=True,
+            public_paths=("/health",),
+        )
+
+    rejected, _ = await _request_middleware(
+        chain,
+        headers=[(b"x-api-key", b"wrong")],
+        client=("192.0.2.10", 1000),
+    )
+    unavailable, _ = await _request_middleware(
+        chain,
+        headers=[(b"x-api-key", b"unavailable")],
+        client=("192.0.2.11", 1000),
+    )
+
+    assert rejected[0]["status"] == 401
+    assert unavailable[0]["status"] == 503
+    assert postauth.bucket_count == 0
+
+    accepted, accepted_downstream = await _request_middleware(
+        chain,
+        headers=[(b"x-api-key", b"valid")],
+        client=("192.0.2.12", 1000),
+    )
+    limited, limited_downstream = await _request_middleware(
+        chain,
+        headers=[(b"x-api-key", b"valid")],
+        client=("192.0.2.13", 1000),
+    )
+
+    assert accepted[0]["status"] == 204
+    assert accepted_downstream is True
+    assert limited[0]["status"] == 429
+    assert limited_downstream is False
+    assert postauth.bucket_count == 1
+
+
+@pytest.mark.asyncio
+async def test_principal_postauth_headers_override_preauth_headers() -> None:
+    authenticator = _principal_authenticator()
+    preauth = BoundedKeyedTokenBucketLimiter(5, 60, max_buckets=8, clock=lambda: 0.0)
+    postauth = BoundedKeyedTokenBucketLimiter(2, 60, max_buckets=8, clock=lambda: 0.0)
+
+    def chain(app: ASGIApp) -> ASGIApp:
+        authenticated = ApiKeyAuthMiddleware(
+            app,
+            authenticator=authenticator,
+            principal_limiter=postauth,
+            public_paths=("/health",),
+        )
+        return InMemoryRateLimitMiddleware(
+            authenticated,
+            authenticator=authenticator,
+            principal_preauth_limiter=preauth,
+            prefer_downstream_rate_limit_headers=True,
+            public_paths=("/health",),
+        )
+
+    sent, downstream_called = await _request_middleware(
+        chain,
+        headers=[(b"x-api-key", b"valid")],
+        client=("2001:db8::1", 1000),
+        downstream_headers=[
+            (b"x-ratelimit-limit", b"999"),
+            (b"x-ratelimit-remaining", b"999"),
+        ],
+    )
+    response_headers = Headers(raw=sent[0]["headers"])
+
+    assert downstream_called is True
+    assert response_headers["x-ratelimit-limit"] == "2"
+    assert response_headers["x-ratelimit-remaining"] == "1"
+    assert _direct_peer_rate_limit_key({"client": ("2001:0db8::1", 1000)}) == (
+        "peer:2001:db8::1"
+    )
+    assert _direct_peer_rate_limit_key({"client": ("::ffff:192.0.2.1", 1000)}) == (
+        "peer:192.0.2.1"
+    )
+    assert _direct_peer_rate_limit_key({"client": ("::ffff:c000:201", 1000)}) == (
+        "peer:192.0.2.1"
+    )
+    assert _direct_peer_rate_limit_key({"client": ("192.0.2.1", 1000)}) == (
+        "peer:192.0.2.1"
+    )
 
 
 @pytest.mark.asyncio

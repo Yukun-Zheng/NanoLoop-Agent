@@ -12,6 +12,7 @@ from uuid import uuid4
 import numpy as np
 from PIL import Image
 
+from app.analysis.authorization import require_create, require_mutation
 from app.analysis.config import (
     ExecutionBuildProvenance,
     MorphometryConfig,
@@ -34,22 +35,25 @@ from app.analysis.validation import infer_analysis_roi, validate_image
 from app.analysis.visualization import write_review_visualizations
 from app.contracts.analyses import (
     AnalysisJobDTO,
+    AnalysisROI,
     CorrectedMaskUploadData,
     CreateAnalysisMetadata,
     CreateRunsRequest,
     ImageAssetDTO,
     InferenceOptions,
+    InvalidPixelRegion,
     JobDetailDTO,
     ReviewRunRequest,
     RunConfiguration,
     SegmentationRunDTO,
 )
 from app.contracts.common import utc_now
-from app.contracts.enums import JobStatus, ModelStatus, QualityStatus, RoiMode
+from app.contracts.enums import JobStatus, ModelFamily, ModelStatus, QualityStatus, RoiMode
 from app.contracts.execution import (
     ExecutionRuntimeProvenance,
     scientific_build_mismatches,
 )
+from app.contracts.identity import PrincipalContext
 from app.contracts.inference import SegmentationOutput, SegmentationRequest
 from app.contracts.models import ModelBundleReference, ModelHealth, ModelMetadata
 from app.contracts.repositories import StoredImageAsset, UnitOfWork
@@ -58,6 +62,7 @@ from app.core.errors import (
     ExecutionBuildMismatchError,
     InferenceExecutionError,
     InputArtifactMismatchError,
+    InvalidBoxError,
     InvalidImageError,
     JobStateConflictError,
     ModelNotFoundError,
@@ -68,7 +73,9 @@ from app.core.errors import (
     ServiceUnavailableError,
 )
 from app.core.state_machine import aggregate_job_status
-from app.storage.file_store import FileTokenError, LocalFileStore, UploadSizeExceededError
+from app.files import FileAccessTokenError, FileArtifactAccessService
+from app.storage import open_pinned_managed_file
+from app.storage.file_store import LocalFileStore, UploadSizeExceededError
 from app.storage.paths import StoragePathError
 
 
@@ -160,9 +167,18 @@ class AnalysisCreationService:
         self,
         metadata: CreateAnalysisMetadata,
         uploads: list[AnalysisUpload],
+        *,
+        principal: PrincipalContext,
     ) -> JobDetailDTO:
+        if not isinstance(principal, PrincipalContext):
+            raise TypeError("principal must be PrincipalContext")
+        require_create(principal)
         if not isinstance(metadata, CreateAnalysisMetadata):
             raise TypeError("metadata must be CreateAnalysisMetadata")
+        tenant_id = principal.tenant_id
+        owner_principal_id = principal.principal_id
+        if tenant_id is None or owner_principal_id is None:
+            raise ValueError("principal must carry tenant and principal IDs")
         filenames = [upload.filename for upload in uploads]
         if len(filenames) != len(set(filenames)):
             raise InvalidImageError(details={"reason": "duplicate_upload_filename"})
@@ -187,7 +203,9 @@ class AnalysisCreationService:
                     config={"schema_version": "1.0"},
                     created_at=now,
                     updated_at=now,
-                )
+                ),
+                tenant_id=tenant_id,
+                owner_principal_id=owner_principal_id,
             )
             uow.commit()
         self._update_job(job_id, JobStatus.VALIDATING)
@@ -245,7 +263,9 @@ class AnalysisCreationService:
                     experiment_conditions=item.experiment_conditions,
                     scale_nm_per_pixel=scale,
                     analysis_roi=analysis_roi,
-                    original_download_url=f"/api/v1/files/{stored.file_token}",
+                    # The HTTP boundary decorates this persisted record only after
+                    # tenant authorization, artifact registration, and v2 signing.
+                    original_download_url=None,
                 )
                 stored_images.append(
                     StoredImageAsset(asset=asset, storage_path=stored.relative_path)
@@ -360,6 +380,7 @@ class AnalysisApplicationService:
         uow_factory: UnitOfWorkFactory,
         file_store: LocalFileStore,
         inference_gateway: InferenceGatewayProtocol,
+        file_artifact_access_service: FileArtifactAccessService | None = None,
         dispatcher: DispatcherProtocol | None = None,
         postprocess_config: PostprocessProfile | None = None,
         morphometry_config: MorphometryConfig | None = None,
@@ -368,17 +389,29 @@ class AnalysisApplicationService:
         self.uow_factory = uow_factory
         self.file_store = file_store
         self.inference_gateway = inference_gateway
+        self.file_artifact_access_service = file_artifact_access_service
         self.dispatcher = dispatcher
-        self.postprocess_config = (postprocess_config or PostprocessProfile()).model_copy(
-            deep=True
-        )
-        self.morphometry_config = (morphometry_config or MorphometryConfig()).model_copy(
-            deep=True
-        )
+        self.postprocess_config = (postprocess_config or PostprocessProfile()).model_copy(deep=True)
+        self.morphometry_config = (morphometry_config or MorphometryConfig()).model_copy(deep=True)
         self.quality_config = (quality_config or QualityGateConfig()).model_copy(deep=True)
         self.report_writer = ReportWriter(file_store)
 
-    def create_runs(self, job_id: str, request: CreateRunsRequest) -> list[str]:
+    def create_runs(
+        self,
+        job_id: str,
+        request: CreateRunsRequest,
+        *,
+        principal: PrincipalContext,
+    ) -> list[str]:
+        tenant_id = principal.tenant_id
+        if tenant_id is None:
+            raise ValueError("principal must carry a tenant ID")
+        # Fail before model discovery, health probes, or bundle freezing can
+        # cause observable work for an unauthorized resource identifier.
+        with self.uow_factory() as uow:
+            scope = uow.repositories.jobs.get_scope(job_id, tenant_id=tenant_id)
+            require_mutation(principal, scope)
+
         models = {model.model_id: model for model in self.inference_gateway.list_models()}
         selected_models = [
             self._require_ready_model(model_id, models) for model_id in request.model_ids
@@ -424,7 +457,9 @@ class AnalysisApplicationService:
 
         with self.uow_factory() as uow:
             repositories = uow.repositories
-            job = repositories.jobs.get(job_id)
+            scope = repositories.jobs.get_scope(job_id, tenant_id=tenant_id)
+            require_mutation(principal, scope)
+            job = scope.job
             allowed_job_states = {
                 JobStatus.READY_FOR_CONFIGURATION,
                 JobStatus.COMPLETED,
@@ -436,7 +471,13 @@ class AnalysisApplicationService:
                     "任务尚未完成上传校验，不能创建运行",
                     details={"job_id": job_id, "status": job.status.value},
                 )
-            images = {image.image_id: image for image in repositories.images.list_by_job(job_id)}
+            images = {
+                image.image_id: image
+                for image in repositories.images.list_by_job_scoped(
+                    job_id,
+                    tenant_id=tenant_id,
+                )
+            }
             if not images:
                 raise JobStateConflictError(
                     "任务没有可分析的已验证图像",
@@ -451,7 +492,11 @@ class AnalysisApplicationService:
                         details={"resource": "image", "image_id": image_id, "job_id": job_id}
                     )
                 selected_images.append(image)
-                box_set = repositories.boxes.get_active(image_id)
+                box_set = repositories.boxes.get_active_scoped(
+                    job_id,
+                    image_id,
+                    tenant_id=tenant_id,
+                )
                 boxes_by_image[image_id] = box_set
                 if request.roi_mode == RoiMode.BOXES:
                     expected = request.box_revisions[image_id]
@@ -472,17 +517,41 @@ class AnalysisApplicationService:
             for image in selected_images:
                 box_set = boxes_by_image[image.image_id]
                 for model in selected_models:
+                    model_analysis_roi = self._apply_model_invalid_bottom(image, model)
+                    if request.roi_mode == RoiMode.BOXES:
+                        try:
+                            build_analysis_roi(
+                                width=image.width,
+                                height=image.height,
+                                analysis_roi=model_analysis_roi,
+                                roi_mode=RoiMode.BOXES,
+                                boxes=box_set.boxes,
+                            )
+                        except InvalidBoxError as error:
+                            raise BoxRevisionConflictError(
+                                "选框与所选模型的有效分析区域没有交集，不能创建运行",
+                                details={
+                                    "image_id": image.image_id,
+                                    "model_id": model.model_id,
+                                    "revision": box_set.revision,
+                                    "reason": "empty_effective_model_roi",
+                                },
+                            ) from error
                     effective_threshold = (
                         request.inference.threshold
                         if request.inference.threshold is not None
                         else model.default_threshold
                     )
-                    inference = request.inference.model_copy(
-                        update={"threshold": effective_threshold}
-                    )
-                    box_revision = (
-                        box_set.revision if request.roi_mode == RoiMode.BOXES else None
-                    )
+                    inference_updates: dict[str, object] = {
+                        "threshold": effective_threshold
+                    }
+                    if (
+                        "min_area_px" not in request.inference.model_fields_set
+                        and model.default_min_area_px is not None
+                    ):
+                        inference_updates["min_area_px"] = model.default_min_area_px
+                    inference = request.inference.model_copy(update=inference_updates)
+                    box_revision = box_set.revision if request.roi_mode == RoiMode.BOXES else None
                     model_health = health.get(model.model_id)
                     resolved_weight_sha256 = model.weight_sha256 or (
                         model_health.weight_sha256 if model_health else None
@@ -521,7 +590,7 @@ class AnalysisApplicationService:
                         roi_mode=request.roi_mode,
                         box_revision=box_revision,
                         boxes=box_set.boxes if request.roi_mode == RoiMode.BOXES else [],
-                        analysis_roi=image.analysis_roi,
+                        analysis_roi=model_analysis_roi,
                         inference=inference,
                         preprocess_profile=model.preprocess_profile,
                         postprocess_profile=model.postprocess_profile,
@@ -559,14 +628,31 @@ class AnalysisApplicationService:
         self._dispatch_runs(run_ids)
         return run_ids
 
-    def create_review_run(self, parent_run_id: str, request: ReviewRunRequest) -> str:
+    def create_review_run(
+        self,
+        parent_run_id: str,
+        request: ReviewRunRequest,
+        *,
+        principal: PrincipalContext,
+    ) -> str:
         """Create an immutable child run with reviewed inference parameters."""
 
+        tenant_id = principal.tenant_id
+        if tenant_id is None:
+            raise ValueError("principal must carry a tenant ID")
         now = utc_now()
         with self.uow_factory() as uow:
             repositories = uow.repositories
-            parent = repositories.runs.get(parent_run_id)
-            image = repositories.images.get(parent.image_id)
+            parent, scope = repositories.runs.get_with_scope(
+                parent_run_id,
+                tenant_id=tenant_id,
+            )
+            require_mutation(principal, scope)
+            image = repositories.images.get_scoped(
+                parent.job_id,
+                parent.image_id,
+                tenant_id=tenant_id,
+            )
             if parent.status not in {
                 JobStatus.COMPLETED,
                 JobStatus.COMPLETED_WITH_WARNINGS,
@@ -586,13 +672,11 @@ class AnalysisApplicationService:
             "adapter_sha256",
         )
         needs_model_lookup = (
-            request.corrected_mask_token is None
-            and parent.configuration.model_bundle is None
+            request.corrected_mask_token is None and parent.configuration.model_bundle is None
         ) or (
             legacy_parent
             and any(
-                getattr(parent.configuration, field) is None
-                for field in model_provenance_fields
+                getattr(parent.configuration, field) is None for field in model_provenance_fields
             )
         )
         current_model_provenance: dict[str, object] = {}
@@ -645,8 +729,7 @@ class AnalysisApplicationService:
             missing_current = [
                 field
                 for field, value in current_model_provenance.items()
-                if value is None
-                and (field != "adapter_sha256" or supports_bundle_freeze)
+                if value is None and (field != "adapter_sha256" or supports_bundle_freeze)
             ]
             if missing_current:
                 raise ModelNotReadyError(
@@ -680,9 +763,7 @@ class AnalysisApplicationService:
         )
         child_run_id = f"run_{uuid4().hex}"
         configuration_updates: dict[str, object] = {
-            "schema_version": (
-                3 if parent.configuration.schema_version == 3 else 2
-            ),
+            "schema_version": (3 if parent.configuration.schema_version == 3 else 2),
             "provenance_status": "complete",
             "provenance_warnings": (
                 ["review_configuration_resolved_from_legacy_parent"]
@@ -690,9 +771,7 @@ class AnalysisApplicationService:
                 else list(parent.configuration.provenance_warnings)
             ),
             "inference": inference,
-            "image_sha256": (
-                image.sha256 if legacy_parent else parent.configuration.image_sha256
-            ),
+            "image_sha256": (image.sha256 if legacy_parent else parent.configuration.image_sha256),
             "scale_nm_per_pixel": (
                 image.scale_nm_per_pixel
                 if legacy_parent
@@ -717,9 +796,7 @@ class AnalysisApplicationService:
                     expected_adapter_path=current_model_provenance["adapter_path"],
                     expected_weight_sha256=current_model_provenance["weight_sha256"],
                     expected_config_sha256=current_model_provenance["config_sha256"],
-                    expected_model_card_sha256=current_model_provenance[
-                        "model_card_sha256"
-                    ],
+                    expected_model_card_sha256=current_model_provenance["model_card_sha256"],
                     expected_adapter_sha256=current_model_provenance["adapter_sha256"],
                 )
                 configuration_updates.update(
@@ -730,11 +807,32 @@ class AnalysisApplicationService:
                     }
                 )
         staged_corrected_path: Path | None = None
+        staged_artifact_id: str | None = None
+        corrected_path: Path | None = None
         if request.corrected_mask_token is not None:
-            corrected_mask, staged_corrected_path = self._load_corrected_mask(
-                request.corrected_mask_token,
+            file_access = self.file_artifact_access_service
+            if file_access is None:
+                raise ServiceUnavailableError(details={"component": "file_artifact_access"})
+            try:
+                resolved_mask = file_access.resolve_corrected_mask(
+                    request.corrected_mask_token,
+                    principal=principal,
+                    job_id=parent.job_id,
+                    image_id=parent.image_id,
+                    run_id=parent_run_id,
+                )
+            except FileAccessTokenError as error:
+                raise InvalidImageError(
+                    "人工修正掩膜令牌无效或已过期",
+                    details={"reason": "invalid_corrected_mask_token"},
+                ) from error
+            corrected_mask = self._decode_corrected_mask(
+                resolved_mask.content,
+                filename=resolved_mask.filename,
                 expected_shape=(image.height, image.width),
             )
+            staged_corrected_path = self.file_store.paths.root / resolved_mask.relative_path
+            staged_artifact_id = resolved_mask.artifact_id
             corrected_path = self.file_store.paths.run_artifact(
                 parent.job_id,
                 parent.image_id,
@@ -772,11 +870,32 @@ class AnalysisApplicationService:
             created_at=now,
             updated_at=now,
         )
-        with self.uow_factory() as uow:
-            repositories = uow.repositories
-            repositories.runs.create_many([child])
-            repositories.jobs.update_status(parent.job_id, JobStatus.QUEUED)
-            uow.commit()
+        try:
+            with self.uow_factory() as uow:
+                repositories = uow.repositories
+                _current_parent, scope = repositories.runs.get_with_scope(
+                    parent_run_id,
+                    tenant_id=tenant_id,
+                )
+                require_mutation(principal, scope)
+                if staged_artifact_id is not None and not (
+                    repositories.file_artifacts.consume_corrected_mask(
+                        staged_artifact_id,
+                        tenant_id=tenant_id,
+                        consumed_at=now,
+                    )
+                ):
+                    raise InvalidImageError(
+                        "人工修正掩膜令牌无效或已被使用",
+                        details={"reason": "invalid_corrected_mask_token"},
+                    )
+                repositories.runs.create_many([child])
+                repositories.jobs.update_status(parent.job_id, JobStatus.QUEUED)
+                uow.commit()
+        except Exception:
+            if corrected_path is not None:
+                corrected_path.unlink(missing_ok=True)
+            raise
 
         if staged_corrected_path is not None:
             self._delete_consumed_corrected_mask(
@@ -791,12 +910,25 @@ class AnalysisApplicationService:
         run_id: str,
         stream: BinaryIO,
         filename: str,
+        *,
+        principal: PrincipalContext,
     ) -> CorrectedMaskUploadData:
         """Store and validate a short-lived corrected-mask input for the review API."""
 
+        tenant_id = principal.tenant_id
+        if tenant_id is None:
+            raise ValueError("principal must carry a tenant ID")
         with self.uow_factory() as uow:
-            run = uow.repositories.runs.get(run_id)
-            image = uow.repositories.images.get(run.image_id)
+            run, scope = uow.repositories.runs.get_with_scope(
+                run_id,
+                tenant_id=tenant_id,
+            )
+            require_mutation(principal, scope)
+            image = uow.repositories.images.get_scoped(
+                run.job_id,
+                run.image_id,
+                tenant_id=tenant_id,
+            )
         try:
             stored = self.file_store.save_upload(
                 run.job_id,
@@ -813,15 +945,37 @@ class AnalysisApplicationService:
                 details={"filename": filename, "reason": "unsafe_filename"}
             ) from error
         try:
-            self._load_corrected_mask(
-                stored.file_token,
+            file_access = self.file_artifact_access_service
+            if file_access is None:
+                raise ServiceUnavailableError(details={"component": "file_artifact_access"})
+            with open_pinned_managed_file(
+                self.file_store.paths.root,
+                stored.relative_path,
+                expected_size_bytes=stored.size_bytes,
+                expected_sha256=stored.sha256,
+            ) as pinned:
+                content = b"".join(pinned.iter_chunks())
+            self._decode_corrected_mask(
+                content,
+                filename=filename,
                 expected_shape=(image.height, image.width),
+            )
+            token = file_access.issue_corrected_mask_token(
+                principal=principal,
+                job_id=run.job_id,
+                image_id=run.image_id,
+                run_id=run.run_id,
+                storage_path=stored.relative_path,
+                filename=filename,
+                media_type=self._corrected_mask_media_type(filename),
+                expected_sha256=stored.sha256,
+                expected_size_bytes=stored.size_bytes,
             )
         except Exception:
             stored.path.unlink(missing_ok=True)
             raise
         return CorrectedMaskUploadData(
-            corrected_mask_token=stored.file_token,
+            corrected_mask_token=token,
             sha256=stored.sha256,
             width=image.width,
             height=image.height,
@@ -1080,9 +1234,7 @@ class AnalysisApplicationService:
         build_mismatches: list[str],
         output: SegmentationOutput,
     ) -> ExecutionRuntimeProvenance:
-        warnings = [
-            f"execution_build_mismatch:{field}" for field in build_mismatches
-        ]
+        warnings = [f"execution_build_mismatch:{field}" for field in build_mismatches]
         evidence = output.execution
         if configuration.review_source == "corrected_mask":
             warnings.append("model_inference_not_applicable_corrected_mask")
@@ -1192,9 +1344,7 @@ class AnalysisApplicationService:
             return
 
     @staticmethod
-    def _require_ready_model(
-        model_id: str, models: dict[str, ModelMetadata]
-    ) -> ModelMetadata:
+    def _require_ready_model(model_id: str, models: dict[str, ModelMetadata]) -> ModelMetadata:
         model = models.get(model_id)
         if model is None:
             raise ModelNotFoundError(details={"model_id": model_id})
@@ -1206,7 +1356,75 @@ class AnalysisApplicationService:
                     "reason": model.health_error,
                 }
             )
+        if model.family == ModelFamily.UNET and model.default_threshold is None:
+            raise ModelNotReadyError(
+                "U-Net 模型缺少冻结的默认阈值，不能创建运行",
+                details={
+                    "model_id": model_id,
+                    "reason": "default_threshold_missing",
+                },
+            )
         return model
+
+    @staticmethod
+    def _apply_model_invalid_bottom(image: ImageAssetDTO, model: ModelMetadata) -> AnalysisROI:
+        """Freeze a model-declared bottom information bar outside the scientific ROI."""
+
+        bottom_px = model.inference_invalid_bottom_px
+        expected_size_declared = (
+            model.expected_input_width is not None
+            or model.expected_input_height is not None
+        )
+        if model.family == ModelFamily.UNET and (bottom_px or expected_size_declared):
+            if (
+                model.expected_input_width is None
+                or model.expected_input_height is None
+            ):
+                raise InvalidImageError(
+                    details={
+                        "image_id": image.image_id,
+                        "model_id": model.model_id,
+                        "reason": "model_input_contract_missing",
+                    }
+                )
+            if (image.width, image.height) != (
+                model.expected_input_width,
+                model.expected_input_height,
+            ):
+                raise InvalidImageError(
+                    details={
+                        "image_id": image.image_id,
+                        "model_id": model.model_id,
+                        "reason": "model_input_dimensions_mismatch",
+                        "expected": [
+                            model.expected_input_width,
+                            model.expected_input_height,
+                        ],
+                        "observed": [image.width, image.height],
+                    }
+                )
+        if bottom_px == 0:
+            return image.analysis_roi.model_copy(deep=True)
+        if bottom_px >= image.height:
+            raise InvalidImageError(
+                details={
+                    "image_id": image.image_id,
+                    "reason": "model_invalid_bottom_exhausts_image",
+                    "height": image.height,
+                    "inference_invalid_bottom_px": bottom_px,
+                }
+            )
+        invalid_bottom = InvalidPixelRegion(
+            x1=0,
+            y1=image.height - bottom_px,
+            x2=image.width,
+            y2=image.height,
+            reason="model_bottom_information_bar",
+        )
+        return image.analysis_roi.model_copy(
+            update={"invalid_rects": [*image.analysis_roi.invalid_rects, invalid_bottom]},
+            deep=True,
+        )
 
     def _normalize_output(
         self,
@@ -1346,24 +1564,21 @@ class AnalysisApplicationService:
                 }
             )
 
-    def _load_corrected_mask(
-        self,
-        token: str,
+    @staticmethod
+    def _decode_corrected_mask(
+        content: bytes,
         *,
+        filename: str,
         expected_shape: tuple[int, int],
-    ) -> tuple[np.ndarray, Path]:
+    ) -> np.ndarray:
+        if not isinstance(content, bytes):
+            raise TypeError("corrected mask content must be bytes")
         try:
-            path = self.file_store.resolve_file_token(token)
-        except (FileTokenError, FileNotFoundError, OSError, StoragePathError) as error:
-            raise InvalidImageError(
-                "人工修正掩膜令牌无效或已过期",
-                details={"reason": "invalid_corrected_mask_token"},
-            ) from error
-        try:
-            if path.suffix.casefold() == ".npy":
-                data = np.load(path, allow_pickle=False)
+            source = BytesIO(content)
+            if Path(filename).suffix.casefold() == ".npy":
+                data = np.load(source, allow_pickle=False)
             else:
-                with Image.open(path) as image:
+                with Image.open(source) as image:
                     expected_size = (expected_shape[1], expected_shape[0])
                     if image.size != expected_size:
                         raise InvalidImageError(
@@ -1397,7 +1612,18 @@ class AnalysisApplicationService:
                 "人工修正掩膜必须是二值图像",
                 details={"reason": "corrected_mask_not_binary", "unique_values": unique.size},
             )
-        return np.asarray(data > 0, dtype=bool), path
+        return np.asarray(data > 0, dtype=bool)
+
+    @staticmethod
+    def _corrected_mask_media_type(filename: str) -> str:
+        suffix = Path(filename).suffix.casefold()
+        return {
+            ".bmp": "image/bmp",
+            ".npy": "application/x-npy",
+            ".png": "image/png",
+            ".tif": "image/tiff",
+            ".tiff": "image/tiff",
+        }.get(suffix, "application/octet-stream")
 
     def _delete_consumed_corrected_mask(self, *, job_id: str, path: Path) -> None:
         """Consume one staged review upload without touching durable image originals."""
@@ -1410,10 +1636,7 @@ class AnalysisApplicationService:
         if (
             len(relative.parts) != 2
             or not relative.parts[0].startswith("review_mask_")
-            or (
-                relative.parts[1] != "original"
-                and not relative.parts[1].startswith("original.")
-            )
+            or (relative.parts[1] != "original" and not relative.parts[1].startswith("original."))
         ):
             return
 

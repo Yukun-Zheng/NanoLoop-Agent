@@ -10,7 +10,7 @@ import re
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import TextIO
+from typing import TextIO, cast
 
 from sqlalchemy.engine import make_url
 
@@ -21,12 +21,18 @@ if str(_PROJECT_ROOT) not in sys.path:
 from app.core.config import Settings  # noqa: E402
 from app.operations.backup import (  # noqa: E402
     BackupLayout,
+    BackupSourceChangedError,
     create_backup,
     restore_backup,
     verify_backup,
 )
+from app.operations.drill import (  # noqa: E402
+    OfflineFilesystemRestoreDrillResult,
+    run_offline_filesystem_restore_drill,
+)
 
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_SAFE_PRODUCTION_REQUIREMENTS = frozenset({"file_token_v2_keyring"})
 
 
 class CliUsageError(ValueError):
@@ -68,9 +74,9 @@ def _zip_path(value: str | Path) -> Path:
 def _value(result: object, names: Sequence[str]) -> object | None:
     for name in names:
         if isinstance(result, Mapping) and name in result:
-            return result[name]
+            return cast(object, result[name])
         if hasattr(result, name):
-            return getattr(result, name)
+            return cast(object, getattr(result, name))
     return None
 
 
@@ -102,11 +108,27 @@ def _safe_result_metrics(result: object) -> dict[str, object]:
     files = getattr(manifest, "files", None)
     if isinstance(files, (list, tuple)):
         metrics.setdefault("file_count", len(files))
-        sizes = [getattr(record, "size", None) for record in files]
-        if all(
-            isinstance(size, int) and not isinstance(size, bool) and size >= 0 for size in sizes
-        ):
+        sizes: list[int] = []
+        for record in files:
+            size = cast(object, getattr(record, "size", None))
+            if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+                break
+            sizes.append(size)
+        if len(sizes) == len(files):
             metrics.setdefault("total_bytes", sum(sizes))
+    production_ready = getattr(manifest, "production_ready", None)
+    missing_requirements = getattr(
+        manifest,
+        "missing_production_requirements",
+        None,
+    )
+    if isinstance(production_ready, bool):
+        metrics["production_ready"] = production_ready
+    if isinstance(missing_requirements, (list, tuple)) and all(
+        isinstance(item, str) and item in _SAFE_PRODUCTION_REQUIREMENTS
+        for item in missing_requirements
+    ):
+        metrics["missing_production_requirements"] = list(missing_requirements)
     return metrics
 
 
@@ -124,6 +146,25 @@ def _emit(payload: Mapping[str, object], *, stream: TextIO | None = None) -> Non
         json.dumps(payload, ensure_ascii=False, sort_keys=True),
         file=sys.stdout if stream is None else stream,
     )
+
+
+def _safe_failure_reason(error: Exception) -> str | None:
+    """Classify source-change failures without exposing managed filesystem paths."""
+
+    if not isinstance(error, BackupSourceChangedError):
+        return None
+    message = str(error)
+    if message == "database changed during SQLite backup":
+        return "database_snapshot_changed"
+    if message == "database or SQLite sidecar changed during backup":
+        return "database_files_changed"
+    if message == "backup source membership changed while the archive was assembled":
+        return "source_membership_changed"
+    if message == "backup archive changed while it was being restored":
+        return "archive_changed_during_restore"
+    if message.startswith(("backup source changed", "file changed")):
+        return "source_file_changed"
+    return "source_changed"
 
 
 def _layout_from_args(args: argparse.Namespace) -> BackupLayout:
@@ -160,6 +201,23 @@ def _layout_from_args(args: argparse.Namespace) -> BackupLayout:
         file_token_secret_file = (
             default_secret_file if os.path.lexists(default_secret_file) else None
         )
+    configured_v2_keyring_file = (
+        os.environ.get("FILE_TOKEN_V2_KEYRING_PATH")
+        or os.environ.get("NANOLOOP_FILE_TOKEN_V2_KEYRING_PATH")
+        or getattr(settings, "file_token_v2_keyring_path", None)
+    )
+    selected_v2_keyring_file = (
+        args.file_token_v2_keyring_file or configured_v2_keyring_file
+    )
+    if selected_v2_keyring_file:
+        file_token_v2_keyring_file: Path | None = _path(selected_v2_keyring_file)
+    else:
+        default_v2_keyring_file = data_root / ".file_token_v2_keyring.json"
+        file_token_v2_keyring_file = (
+            default_v2_keyring_file
+            if os.path.lexists(default_v2_keyring_file)
+            else None
+        )
     return BackupLayout(
         database_path=database_path,
         data_root=data_root,
@@ -168,17 +226,23 @@ def _layout_from_args(args: argparse.Namespace) -> BackupLayout:
         knowledge_source_root=knowledge_source_root,
         knowledge_index_root=knowledge_index_root,
         file_token_secret_file=file_token_secret_file,
+        file_token_v2_keyring_file=file_token_v2_keyring_file,
+        require_file_token_v2_keyring=(
+            getattr(settings, "app_env", "development") == "production"
+        ),
     )
 
 
-def _add_create_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("archive", help="destination .zip archive")
+def _add_offline_confirmation(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--offline-confirmed",
         action="store_true",
         required=True,
         help="confirm the API and all writers are stopped",
     )
+
+
+def _add_layout_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--database-path", help="override the SQLite file path")
     parser.add_argument("--data-root", help="override the managed data root")
     parser.add_argument("--output-root", help="override the output artifact root")
@@ -189,11 +253,21 @@ def _add_create_arguments(parser: argparse.ArgumentParser) -> None:
         "--file-token-secret-file",
         help="override the persisted download-token secret file",
     )
+    parser.add_argument(
+        "--file-token-v2-keyring-file",
+        help="override the persisted file-token v2 key-ring file",
+    )
+
+
+def _add_create_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("archive", help="destination .zip archive")
+    _add_offline_confirmation(parser)
+    _add_layout_arguments(parser)
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Create, verify, or restore an offline NanoLoop state backup."
+        description="Create, verify, restore, or drill an offline NanoLoop state backup."
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -208,12 +282,17 @@ def build_parser() -> argparse.ArgumentParser:
     restore_parser.add_argument("archive", help="source .zip archive")
     restore_parser.add_argument("destination_root", help="fresh restore destination")
     restore_parser.add_argument("--checksum-path", help="explicit SHA-256 sidecar path")
-    restore_parser.add_argument(
-        "--offline-confirmed",
-        action="store_true",
-        required=True,
-        help="confirm the API and all writers are stopped",
+    _add_offline_confirmation(restore_parser)
+
+    drill_parser = subparsers.add_parser(
+        "drill",
+        help="create, verify, and restore into a fresh root with a limited report",
     )
+    drill_parser.add_argument("archive", help="destination .zip archive")
+    drill_parser.add_argument("destination_root", help="fresh restore destination")
+    drill_parser.add_argument("report", help="destination JSON drill report")
+    _add_offline_confirmation(drill_parser)
+    _add_layout_arguments(drill_parser)
     return parser
 
 
@@ -275,6 +354,27 @@ def _run_restore(args: argparse.Namespace) -> dict[str, object]:
     return payload
 
 
+def _run_drill(args: argparse.Namespace) -> dict[str, object]:
+    result = run_offline_filesystem_restore_drill(
+        _layout_from_args(args),
+        _zip_path(args.archive),
+        _path(args.destination_root),
+        _path(args.report),
+        offline_confirmed=True,
+    )
+    return _safe_drill_payload(result)
+
+
+def _safe_drill_payload(
+    result: OfflineFilesystemRestoreDrillResult,
+) -> dict[str, object]:
+    """Expose the strict report only; never emit any drill filesystem path."""
+
+    payload: dict[str, object] = {"command": "drill"}
+    payload.update(result.report.model_dump(mode="json"))
+    return payload
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
@@ -282,8 +382,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             payload = _run_create(args)
         elif args.command == "verify":
             payload = _run_verify(args)
-        else:
+        elif args.command == "restore":
             payload = _run_restore(args)
+        else:
+            payload = _run_drill(args)
     except CliUsageError as error:
         _emit(
             {"error": {"message": str(error), "type": type(error).__name__}, "status": "error"},
@@ -294,13 +396,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         # Core errors can contain absolute managed paths. Keep CLI failure output deliberately
         # narrow; operators can enable application diagnostics without leaking source layout or
         # persisted secret material through automation logs.
-        _emit(
-            {
-                "error": {"message": "backup operation failed", "type": type(error).__name__},
-                "status": "error",
-            },
-            stream=sys.stderr,
-        )
+        safe_error: dict[str, object] = {
+            "message": "backup operation failed",
+            "type": type(error).__name__,
+        }
+        if (reason := _safe_failure_reason(error)) is not None:
+            safe_error["reason"] = reason
+        _emit({"error": safe_error, "status": "error"}, stream=sys.stderr)
         return 1
     _emit(payload)
     return 0

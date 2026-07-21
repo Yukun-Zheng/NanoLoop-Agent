@@ -3,13 +3,15 @@ VENV_DIR ?= .venv
 PYTHON_BIN ?= $(VENV_DIR)/bin/python
 BACKUP_ARCHIVE ?=
 BACKUP_CHECKSUM ?=
+BACKUP_REPORT ?=
 RESTORE_ROOT ?=
+IDENTITY_ARGS ?=
 
 .DEFAULT_GOAL := help
 
 .PHONY: help install lint typecheck test frontend-check openapi migration-check check serve frontend db-upgrade \
-	handoff-doc backup-create backup-verify backup-restore docker-build compose-config compose-up \
-	compose-down compose-logs
+	handoff-doc backup-create backup-verify backup-restore backup-drill docker-build compose-config compose-up \
+	compose-down compose-logs identity-manage rag-guide-doc
 
 help:
 	@echo "NanoLoop Agent development commands"
@@ -19,9 +21,12 @@ help:
 	@echo "  make frontend         Run the Streamlit workbench"
 	@echo "  make db-upgrade       Upgrade the configured database to Alembic head"
 	@echo "  make handoff-doc      Regenerate the v3 developer handoff DOCX"
+	@echo "  make rag-guide-doc    Regenerate the RAG development guide DOCX"
 	@echo "  make backup-create    Create BACKUP_ARCHIVE (offline writers only)"
 	@echo "  make backup-verify    Verify BACKUP_ARCHIVE and optional BACKUP_CHECKSUM"
 	@echo "  make backup-restore   Restore BACKUP_ARCHIVE into fresh RESTORE_ROOT"
+	@echo "  make backup-drill     Create, verify, and restore with a limited BACKUP_REPORT"
+	@echo "  make identity-manage  Run the operator identity CLI with IDENTITY_ARGS"
 	@echo "  make docker-build     Build the CPU API image"
 	@echo "  make compose-up       Start the hardened local container stack"
 	@echo "  make compose-down     Stop the local container stack"
@@ -55,7 +60,7 @@ check:
 	PYTHON_BIN=$(PYTHON_BIN) ./scripts/verify.sh
 
 serve:
-	$(PYTHON_BIN) -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+	$(PYTHON_BIN) -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload --no-proxy-headers
 
 frontend:
 	NANOLOOP_API_BASE_URL=http://127.0.0.1:8000 $(PYTHON_BIN) -m streamlit run frontend/app.py
@@ -65,6 +70,9 @@ db-upgrade:
 
 handoff-doc:
 	$(PYTHON_BIN) scripts/build_v3_handoff_doc.py
+
+rag-guide-doc:
+	$(PYTHON_BIN) scripts/build_rag_guide_doc.py
 
 backup-create:
 	@test -n "$(BACKUP_ARCHIVE)" || { echo "BACKUP_ARCHIVE is required" >&2; exit 2; }
@@ -78,6 +86,16 @@ backup-restore:
 	@test -n "$(BACKUP_ARCHIVE)" || { echo "BACKUP_ARCHIVE is required" >&2; exit 2; }
 	@test -n "$(RESTORE_ROOT)" || { echo "RESTORE_ROOT is required" >&2; exit 2; }
 	$(PYTHON_BIN) scripts/backup_restore.py restore "$(BACKUP_ARCHIVE)" "$(RESTORE_ROOT)" --offline-confirmed $(if $(BACKUP_CHECKSUM),--checksum-path "$(BACKUP_CHECKSUM)")
+
+backup-drill:
+	@test -n "$(BACKUP_ARCHIVE)" || { echo "BACKUP_ARCHIVE is required" >&2; exit 2; }
+	@test -n "$(RESTORE_ROOT)" || { echo "RESTORE_ROOT is required" >&2; exit 2; }
+	@test -n "$(BACKUP_REPORT)" || { echo "BACKUP_REPORT is required" >&2; exit 2; }
+	$(PYTHON_BIN) scripts/backup_restore.py drill "$(BACKUP_ARCHIVE)" "$(RESTORE_ROOT)" "$(BACKUP_REPORT)" --offline-confirmed
+
+identity-manage:
+	@test -n "$(IDENTITY_ARGS)" || { echo "IDENTITY_ARGS is required" >&2; exit 2; }
+	$(PYTHON_BIN) scripts/manage_identity.py $(IDENTITY_ARGS)
 
 docker-build:
 	docker build --tag nanoloop-agent:local .

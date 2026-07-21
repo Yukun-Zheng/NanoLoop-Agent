@@ -135,7 +135,14 @@ class ReplaceBoxesRequest(ContractModel):
 
 class InferenceOptions(ContractModel):
     threshold: float | None = Field(default=None, ge=0, le=1)
-    min_area_px: int = Field(default=8, ge=0)
+    min_area_px: int = Field(
+        default=8,
+        ge=0,
+        description=(
+            "Minimum component area. Omit to use the selected model default when declared; "
+            "explicit values, including 0 and 8, are preserved."
+        ),
+    )
     watershed_enabled: bool = False
     exclude_border: bool = True
     device: DevicePreference = DevicePreference.AUTO

@@ -8,6 +8,8 @@ from typing import Literal
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.contracts.identity import AuthMode
+
 _API_KEY_PATTERN = re.compile(r"^[A-Za-z0-9_-]{32,128}$")
 
 
@@ -23,6 +25,7 @@ class Settings(BaseSettings):
     app_env: Literal["development", "test", "production"] = "development"
     database_url: str = "sqlite:///./data/nanoloop.db"
     output_root: Path = Path("./outputs")
+    file_token_v2_keyring_path: Path | None = None
     model_registry_path: Path = Path("./model_artifacts/registry.yaml")
     model_snapshot_root: Path = Path("./data/model-snapshots")
     model_device: str = "auto"
@@ -65,9 +68,22 @@ class Settings(BaseSettings):
     api_prefix: str = "/api/v1"
     trusted_hosts: str = "localhost,127.0.0.1,testserver"
     cors_allow_origins: str = ""
+    auth_mode: Literal["auto", "disabled", "shared_key", "principal"] = "auto"
     nanoloop_api_key: SecretStr | None = None
+    credential_pepper: SecretStr | None = None
     api_rate_limit_requests: int = Field(default=0, ge=0, le=1_000_000)
     api_rate_limit_window_seconds: float = Field(default=60.0, gt=0, le=3_600)
+    api_principal_preauth_rate_limit_requests: int = Field(
+        default=600,
+        ge=0,
+        le=1_000_000,
+    )
+    api_principal_preauth_rate_limit_window_seconds: float = Field(
+        default=60.0,
+        gt=0,
+        le=3_600,
+    )
+    api_rate_limit_max_buckets: int = Field(default=4_096, ge=1, le=1_000_000)
 
     @field_validator(
         "embedding_model_revision",
@@ -75,6 +91,8 @@ class Settings(BaseSettings):
         "llm_api_key",
         "llm_model",
         "nanoloop_api_key",
+        "credential_pepper",
+        "file_token_v2_keyring_path",
         mode="before",
     )
     @classmethod
@@ -106,7 +124,24 @@ class Settings(BaseSettings):
     def request_limit_covers_one_upload(self) -> "Settings":
         if self.max_request_mb < self.max_upload_mb:
             raise ValueError("MAX_REQUEST_MB must be at least MAX_UPLOAD_MB")
+        if self.effective_auth_mode is AuthMode.SHARED_KEY and self.nanoloop_api_key is None:
+            raise ValueError("NANOLOOP_API_KEY is required when AUTH_MODE=shared_key")
+        if self.effective_auth_mode is AuthMode.PRINCIPAL:
+            if self.credential_pepper is None:
+                raise ValueError("CREDENTIAL_PEPPER is required when AUTH_MODE=principal")
+            if len(self.credential_pepper.get_secret_value().encode("utf-8")) < 32:
+                raise ValueError(
+                    "CREDENTIAL_PEPPER must contain at least 32 bytes when AUTH_MODE=principal"
+                )
         return self
+
+    @property
+    def effective_auth_mode(self) -> AuthMode:
+        """Resolve the compatibility ``auto`` mode without changing explicit modes."""
+
+        if self.auth_mode == "auto":
+            return AuthMode.SHARED_KEY if self.nanoloop_api_key is not None else AuthMode.DISABLED
+        return AuthMode(self.auth_mode)
 
 
 @lru_cache

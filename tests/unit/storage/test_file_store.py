@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import hmac
 import io
 import json
 import threading
@@ -12,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+import app.storage.file_store as file_store_module
 from app.core.errors import StorageError
 from app.storage import (
     FileTokenError,
@@ -22,6 +25,27 @@ from app.storage import (
 )
 
 _TOKEN_SECRET = b"test-only-file-token-secret-material"
+_LEGACY_CANONICAL_TOKEN = (
+    "v1.eyJleHAiOjQxMDI0NDQ4MDAsIm5vbmNlIjoiQUFBQUFBQUFBQUEiLCJwYXRoIjoi"
+    "am9iXzAwMS9qb2JfY29uZmlnLmpzb24iLCJ2IjoxfQ."
+    "2XgKi_zkGEdEPEG0JRdCWBITEOtfNcBqYBVauIaIfz4"
+)
+
+
+def _base64url(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
+
+
+def _sign_encoded_payload(encoded_payload: str) -> str:
+    signed_value = f"v1.{encoded_payload}".encode("ascii")
+    signature = _base64url(hmac.new(_TOKEN_SECRET, signed_value, hashlib.sha256).digest())
+    return f"v1.{encoded_payload}.{signature}"
+
+
+def _signed_token(payload: object, *, canonical_json: bool = True) -> str:
+    separators = (",", ":") if canonical_json else None
+    payload_bytes = json.dumps(payload, separators=separators, sort_keys=True).encode("utf-8")
+    return _sign_encoded_payload(_base64url(payload_bytes))
 
 
 @pytest.fixture
@@ -67,9 +91,10 @@ def test_save_upload_streams_hashes_and_uses_canonical_path(
     assert stored.relative_path == "job_001/input/img_001/original.tif"
     assert stored.size_bytes == len(content)
     assert stored.sha256 == hashlib.sha256(content).hexdigest()
+    assert not hasattr(stored, "file_token")
     assert stored.path.read_bytes() == content
     assert upload.requested_sizes == [1024 * 1024, 1024 * 1024, 1024 * 1024]
-    assert store.resolve_file_token(stored.file_token) == stored.path
+    assert store.resolve_file_token(store.create_file_token(stored.path)) == stored.path
 
 
 def test_save_upload_enforces_limit_and_removes_temporary_file(paths: StoragePaths) -> None:
@@ -85,6 +110,26 @@ def test_save_upload_enforces_limit_and_removes_temporary_file(paths: StoragePat
     assert error.value.limit_bytes == 5
     assert not paths.upload_file("job_001", "too-large.tif").exists()
     assert not list(paths.input_dir("job_001").glob("*.tmp"))
+
+
+@pytest.mark.parametrize("filename", ["control\nname.tif", "delete\x7fname.tif"])
+def test_save_upload_rejects_control_filenames_before_creating_or_reading(
+    paths: StoragePaths,
+    store: LocalFileStore,
+    filename: str,
+) -> None:
+    upload = TrackingUpload(b"must-not-be-read")
+
+    with pytest.raises(StoragePathError, match="control character"):
+        store.save_upload(
+            "job_001",
+            upload,
+            filename,
+            image_id="img_001",
+        )
+
+    assert upload.requested_sizes == []
+    assert not paths.job_dir("job_001").exists()
 
 
 def test_create_run_dir_uses_frozen_layout(
@@ -148,7 +193,7 @@ def test_build_zip_hashes_exact_members_and_writes_matching_manifest(
 
     assert exported.path == paths.export_zip("job_001", "job_001.zip")
     assert exported.sha256 == store.calculate_sha256(exported.path)
-    assert store.resolve_file_token(exported.file_token) == exported.path
+    assert store.resolve_file_token(store.create_file_token(exported.path)) == exported.path
     with zipfile.ZipFile(exported.path) as archive:
         names = set(archive.namelist())
         assert names == {
@@ -200,7 +245,7 @@ def test_content_addressed_zip_reuses_exact_selection_and_preserves_old_token_by
     changed = store.build_zip("job_001", [summary], filename=None)
     assert changed.path != first.path
     assert first.path.read_bytes() == first_bytes
-    assert store.resolve_file_token(first.file_token) == first.path
+    assert store.resolve_file_token(store.create_file_token(first.path)) == first.path
 
 
 def test_content_addressed_zip_publish_is_concurrent_and_never_replaces_mismatch(
@@ -302,6 +347,297 @@ def test_file_tokens_detect_tampering_expiry_and_missing_files(
         store.resolve_file_token(token, now=101)
 
 
+def test_file_token_ttl_none_falls_back_and_explicit_values_are_bounded(
+    paths: StoragePaths,
+) -> None:
+    store = LocalFileStore(
+        paths,
+        max_upload_bytes=10,
+        token_secret=_TOKEN_SECRET,
+        default_token_ttl_seconds=60,
+        max_token_ttl_seconds=3600,
+    )
+    target = paths.job_config("job_001")
+    store.atomic_write_json(target, {})
+
+    default_token = store.create_file_token(target, ttl_seconds=None, now=100)
+    assert store.resolve_file_token(default_token, now=159) == target
+    with pytest.raises(FileTokenError, match="expired"):
+        store.resolve_file_token(default_token, now=160)
+
+    maximum_token = store.create_file_token(target, ttl_seconds=3600, now=100)
+    assert store.resolve_file_token(maximum_token, now=3699) == target
+    with pytest.raises(FileTokenError, match="expired"):
+        store.resolve_file_token(maximum_token, now=3700)
+
+    for invalid_ttl in (0, -1, False, True, 1.5, 3601):
+        with pytest.raises(ValueError, match="ttl_seconds"):
+            store.create_file_token(  # type: ignore[arg-type]
+                target,
+                ttl_seconds=invalid_ttl,
+                now=100,
+            )
+    with pytest.raises(ValueError, match="expiration"):
+        store.create_file_token(target, now=253_402_300_799)
+
+
+@pytest.mark.parametrize("filename", ["backslash\\name.bin", "control\nname.bin"])
+def test_file_token_issuer_rejects_noncanonical_direct_managed_paths(
+    paths: StoragePaths,
+    store: LocalFileStore,
+    filename: str,
+) -> None:
+    target = paths.root / "job_001" / filename
+    store.atomic_write_bytes(target, b"managed-but-not-token-addressable")
+
+    with pytest.raises(ValueError, match="token path"):
+        store.create_file_token(target, now=100)
+
+
+def test_token_length_preflight_covers_direct_upload_and_export_issuance(
+    paths: StoragePaths,
+    store: LocalFileStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    existing = paths.job_config("job_existing")
+    export_input = paths.job_config("job_export")
+    store.atomic_write_json(existing, {})
+    store.atomic_write_json(export_input, {})
+    monkeypatch.setattr(file_store_module, "_MAX_TOKEN_LENGTH", 80)
+
+    with pytest.raises(ValueError, match="token exceeds"):
+        store.create_file_token(existing, now=100)
+
+    upload = TrackingUpload(b"must-not-be-written")
+    with pytest.raises(StoragePathError, match="represented by a file token"):
+        store.save_upload("job_upload", upload, "sample.tif")
+    assert upload.requested_sizes == []
+    assert not paths.job_dir("job_upload").exists()
+
+    with pytest.raises(ValueError, match="token exceeds"):
+        store.build_zip("job_export", [export_input], filename="export.zip")
+    assert not paths.export_zip("job_export", "export.zip").exists()
+    assert not paths.export_dir("job_export").exists()
+
+    with pytest.raises(ValueError, match="token exceeds"):
+        store.build_zip("job_export", [export_input], filename=None)
+    assert list(paths.export_dir("job_export").iterdir()) == []
+
+
+@pytest.mark.parametrize("invalid_now", [False, True, -1, 1.0, 10**30])
+def test_file_tokens_reject_boolean_non_integer_and_out_of_range_now(
+    paths: StoragePaths,
+    store: LocalFileStore,
+    invalid_now: object,
+) -> None:
+    target = paths.job_config("job_001")
+    store.atomic_write_json(target, {})
+    token = store.create_file_token(target, now=100)
+
+    with pytest.raises(ValueError, match="now"):
+        store.create_file_token(target, now=invalid_now)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="now"):
+        store.resolve_file_token(token, now=invalid_now)  # type: ignore[arg-type]
+
+
+def test_existing_canonical_v1_token_remains_valid(
+    paths: StoragePaths,
+    store: LocalFileStore,
+) -> None:
+    target = paths.job_config("job_001")
+    store.atomic_write_json(target, {})
+
+    assert store.resolve_file_token(_LEGACY_CANONICAL_TOKEN, now=4_102_444_799) == target
+
+
+def test_canonical_v1_token_beyond_supported_unix_time_is_rejected(
+    store: LocalFileStore,
+) -> None:
+    payload = {
+        "exp": 253_402_300_800,
+        "nonce": "AAAAAAAAAAA",
+        "path": "job_001/job_config.json",
+        "v": 1,
+    }
+
+    with pytest.raises(FileTokenError, match="invalid"):
+        store.resolve_file_token(_signed_token(payload), now=100)
+
+
+def test_file_tokens_reject_padded_and_noncanonical_base64url(
+    paths: StoragePaths,
+    store: LocalFileStore,
+) -> None:
+    target = paths.job_config("job_001")
+    store.atomic_write_json(target, {})
+    token = store.create_file_token(target, now=100)
+    version, encoded_payload, signature = token.split(".")
+
+    padded_signature = f"{version}.{encoded_payload}.{signature}="
+    with pytest.raises(FileTokenError, match="invalid"):
+        store.resolve_file_token(padded_signature, now=101)
+
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+    signature_index = alphabet.index(signature[-1])
+    assert signature_index % 4 == 0
+    noncanonical_signature = signature[:-1] + alphabet[signature_index + 1]
+    canonical_bytes = base64.urlsafe_b64decode(signature + "=")
+    noncanonical_bytes = base64.urlsafe_b64decode(noncanonical_signature + "=")
+    assert noncanonical_bytes == canonical_bytes
+    with pytest.raises(FileTokenError, match="invalid"):
+        store.resolve_file_token(
+            f"{version}.{encoded_payload}.{noncanonical_signature}",
+            now=101,
+        )
+
+    payload_bytes = base64.urlsafe_b64decode(encoded_payload + "==")
+    padded_payload = f"{_base64url(payload_bytes)}="
+    with pytest.raises(FileTokenError, match="invalid"):
+        store.resolve_file_token(_sign_encoded_payload(padded_payload), now=101)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"exp": 200, "nonce": "AAAAAAAAAAA", "path": "job_001/job_config.json"},
+        {"exp": 200, "path": "job_001/job_config.json", "v": 1},
+        {
+            "exp": 200,
+            "nonce": "AAAAAAAAAAA",
+            "path": "job_001/job_config.json",
+            "v": 1,
+            "extra": "rejected",
+        },
+        {
+            "exp": True,
+            "nonce": "AAAAAAAAAAA",
+            "path": "job_001/job_config.json",
+            "v": 1,
+        },
+        {
+            "exp": 0,
+            "nonce": "AAAAAAAAAAA",
+            "path": "job_001/job_config.json",
+            "v": 1,
+        },
+        {
+            "exp": 1.5,
+            "nonce": "AAAAAAAAAAA",
+            "path": "job_001/job_config.json",
+            "v": 1,
+        },
+        {
+            "exp": -1,
+            "nonce": "AAAAAAAAAAA",
+            "path": "job_001/job_config.json",
+            "v": 1,
+        },
+        {
+            "exp": 10**30,
+            "nonce": "AAAAAAAAAAA",
+            "path": "job_001/job_config.json",
+            "v": 1,
+        },
+        {
+            "exp": 200,
+            "nonce": "AAAAAAAAAAA",
+            "path": "job_001/job_config.json",
+            "v": True,
+        },
+        {
+            "exp": 200,
+            "nonce": "AAAAAAAAAAA",
+            "path": "job_001/job_config.json",
+            "v": 1.0,
+        },
+        {
+            "exp": 200,
+            "nonce": "AAAAAAAAAAA",
+            "path": "job_001/job_config.json",
+            "v": 2,
+        },
+        {
+            "exp": 200,
+            "nonce": "AAAAAAAAAA",
+            "path": "job_001/job_config.json",
+            "v": 1,
+        },
+        {
+            "exp": 200,
+            "nonce": "AAAAAAAAAAB",
+            "path": "job_001/job_config.json",
+            "v": 1,
+        },
+        {"exp": 200, "nonce": "AAAAAAAAAAA", "path": "", "v": 1},
+        {"exp": 200, "nonce": "AAAAAAAAAAA", "path": "../secret", "v": 1},
+        {"exp": 200, "nonce": "AAAAAAAAAAA", "path": "/tmp/secret", "v": 1},
+        {
+            "exp": 200,
+            "nonce": "AAAAAAAAAAA",
+            "path": "job_001//job_config.json",
+            "v": 1,
+        },
+        {
+            "exp": 200,
+            "nonce": "AAAAAAAAAAA",
+            "path": "job_001\\job_config.json",
+            "v": 1,
+        },
+    ],
+)
+def test_file_token_payload_requires_exact_keys_and_strict_field_shapes(
+    store: LocalFileStore,
+    payload: object,
+) -> None:
+    with pytest.raises(FileTokenError, match="invalid"):
+        store.resolve_file_token(_signed_token(payload), now=100)
+
+
+def test_file_token_payload_rejects_noncanonical_json_and_duplicate_keys(
+    store: LocalFileStore,
+) -> None:
+    payload = {
+        "exp": 200,
+        "nonce": "AAAAAAAAAAA",
+        "path": "job_001/job_config.json",
+        "v": 1,
+    }
+    with pytest.raises(FileTokenError, match="invalid"):
+        store.resolve_file_token(_signed_token(payload, canonical_json=False), now=100)
+
+    duplicate_payload = (
+        b'{"exp":200,"exp":201,"nonce":"AAAAAAAAAAA","path":"job_001/job_config.json","v":1}'
+    )
+    with pytest.raises(FileTokenError, match="invalid"):
+        store.resolve_file_token(
+            _sign_encoded_payload(_base64url(duplicate_payload)),
+            now=100,
+        )
+
+
+def test_file_token_errors_do_not_reflect_token_or_payload_path(store: LocalFileStore) -> None:
+    private_path = "job_001/private-marker.bin"
+    payload = {
+        "exp": 200,
+        "nonce": "AAAAAAAAAAA",
+        "path": private_path,
+        "v": 1,
+    }
+    token = _signed_token(payload)
+
+    with pytest.raises(FileTokenError) as missing_error:
+        store.resolve_file_token(token, now=100)
+    assert private_path not in str(missing_error.value)
+    assert token not in str(missing_error.value)
+    assert missing_error.value.__cause__ is None
+
+    invalid_token = f"v1.private-token-marker.{token.rsplit('.', maxsplit=1)[1]}"
+    with pytest.raises(FileTokenError) as invalid_error:
+        store.resolve_file_token(invalid_token, now=100)
+    assert "private-token-marker" not in str(invalid_error.value)
+    assert invalid_error.value.__cause__ is None
+
+
 def test_file_token_cannot_be_redirected_through_a_symlink(
     paths: StoragePaths,
     store: LocalFileStore,
@@ -341,3 +677,27 @@ def test_constructor_requires_secure_limits(paths: StoragePaths) -> None:
         LocalFileStore(paths, max_upload_bytes=0, token_secret=_TOKEN_SECRET)
     with pytest.raises(ValueError, match="at least 32 bytes"):
         LocalFileStore(paths, max_upload_bytes=1, token_secret=b"short")
+    for invalid_default in (0, -1, False, True, 1.5):
+        with pytest.raises(ValueError, match="default_token_ttl_seconds"):
+            LocalFileStore(
+                paths,
+                max_upload_bytes=1,
+                token_secret=_TOKEN_SECRET,
+                default_token_ttl_seconds=invalid_default,  # type: ignore[arg-type]
+            )
+    for invalid_maximum in (0, -1, False, True, 1.5, 10**30):
+        with pytest.raises(ValueError, match="max_token_ttl_seconds"):
+            LocalFileStore(
+                paths,
+                max_upload_bytes=1,
+                token_secret=_TOKEN_SECRET,
+                max_token_ttl_seconds=invalid_maximum,  # type: ignore[arg-type]
+            )
+    with pytest.raises(ValueError, match="must not exceed"):
+        LocalFileStore(
+            paths,
+            max_upload_bytes=1,
+            token_secret=_TOKEN_SECRET,
+            default_token_ttl_seconds=3601,
+            max_token_ttl_seconds=3600,
+        )

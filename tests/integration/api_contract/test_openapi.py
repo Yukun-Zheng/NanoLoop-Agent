@@ -41,6 +41,7 @@ def test_openapi_contains_the_frozen_v1_surface(api_harness: ApiHarness) -> None
     assert scheme["type"] == "apiKey"
     assert scheme["in"] == "header"
     assert scheme["name"] == "X-API-Key"
+    assert "principal" in scheme["description"]
     for path, method in expected_operations:
         assert schema["paths"][path][method]["security"] == [{"ApiKeyAuth": []}]
 

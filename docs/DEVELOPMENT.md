@@ -2,7 +2,20 @@
 
 ## 接手前必读
 
-先阅读 [v3 交接 DOCX](NanoLoop_Agent_协同开发规格与接口总文档_v3.0.docx)；检索代码路径、评审或修改内容时使用 [Markdown 源文件](NanoLoop_Agent_协同开发规格与接口总文档_v3.0.md)。该文档依据当前代码、迁移、路由和测试生成，A～F 分工分别对应模型推理、科学分析、平台后端、RAG/Agent、前端和 QA/交付。若 v2 计划与当前实现冲突，以代码、测试和 v3 的现状说明为准。
+先阅读 [v3 交接 DOCX](NanoLoop_Agent_协同开发规格与接口总文档_v3.0.docx)；检索代码路径、评审或修改内容时使用 [Markdown 源文件](NanoLoop_Agent_协同开发规格与接口总文档_v3.0.md)。该文档依据当前代码、迁移、路由和测试生成，A～F 分工分别对应模型推理、科学分析、平台后端、RAG/Agent、前端和 QA/交付。D、F 及语料协作者还应阅读 [RAG 与检索功能开发指南](RAG_RETRIEVAL_DEVELOPMENT_GUIDE.md)，其中给出当前代码事实、资产门槛、首周顺序和个人任务卡。A+B 开发者使用 [模型冻结、接入与 AI 协作指南](developer_handoffs/guo-jinghao-ab-model-integration-guide.md)；后续语音输入探索见 [FunASR Nano POC 记录](experiments/funasr-nano-poc.md)。若 v2 计划与当前实现冲突，以代码、测试和 v3 的现状说明为准。
+
+## 分支与合并基线
+
+- `main` 是阶段性稳定分支，平时不直接开发；只有负责人确认里程碑完整门禁全绿后，才从
+  `yukun` 向 `main` 发合并请求。
+- `yukun` 是当前集成分支。开发者先从最新全绿 `origin/yukun` 新建自己的 `feat/*` 或 `fix/*`
+  分支，再向 `yukun` 发 Pull Request；不得把本地训练目录直接复制覆盖仓库。
+- 每个 PR 只解决一个可独立验收的主题。模型权重、训练/测试数据、生产语料、向量索引、运行输出、
+  虚拟环境和密钥均作为外部资产管理，不进入 Git。
+- 合入前先跑模块窄测试，再跑 `make check`、`docker compose config --quiet` 和
+  `git diff --check`；以该提交自己的 GitHub Actions 为最终工程门禁，不沿用历史成功记录。
+- 分支声称的状态必须与证据一致：缺 checkpoint、依赖、许可、真实 fixture 或冷启动证据时，模型继续
+  `unavailable`；仅截图或 fake 测试不构成可交付验收。
 
 ## 冻结模块边界
 
@@ -28,6 +41,12 @@ make handoff-doc
 ```
 
 该命令从 `docs/NanoLoop_Agent_协同开发规格与接口总文档_v3.0.md` 重建同目录的 `.docx`。两者应在同一个提交中保持同步。
+
+RAG 指南同样以 Markdown 为编辑源、DOCX 为分发物，可单独重建：
+
+```bash
+make rag-guide-doc
+```
 
 在 macOS 上用 headless LibreOffice 转 PDF 做中文排版检查时，应显式使用 Homebrew 的 Fontconfig；否则进程可能找不到苹方等系统中文字体：
 
@@ -95,14 +114,31 @@ soffice --headless --convert-to pdf \
 - multipart 操作必须使用 `BoundedMultipartRoute` 的明确 policy，在 FastAPI 参数绑定前限制文件/字段
   数、名称、类型、基数和文本 part 大小；不得退回 Starlette 的 1000 files/1000 fields 默认值或修改
   全局 parser 状态。
-- 配置 `NANOLOOP_API_KEY` 后，所有版本化 API 与签名文件下载必须统一校验共享 `X-API-Key`；认证/限流
-  只精确豁免根级 `/health` 和 OpenAPI/文档路径。带 `Origin` 与 `Access-Control-Request-Method` 的合法
-  CORS 预检由更外层 `CORSMiddleware` 直接响应；普通 `OPTIONS` 仍须经过认证与限流。认证应在请求体
-  解析前失败关闭，错误响应、日志和缓存键不得暴露原始 Key。它只是服务级共享门禁，不得被描述为
-  用户/角色/租户授权。
-- `API_RATE_LIMIT_REQUESTS` 启用的 token bucket 只允许合法 Key、匿名/错误 Key、未启用认证的服务请求
-  三个固定桶，避免按攻击者输入创建无界状态。计数只在当前 API 进程内存在并会随重启清空；多进程、
-  多副本或公网部署必须另接集中限流，不能把该机制当成用户 quota 或分布式 rate limit。
+- `AUTH_MODE=auto|disabled|shared_key|principal` 必须保持显式失败关闭：`auto` 只兼容旧共享 Key/关闭认证
+  行为，`principal` 必须使用稳定 pepper、严格 token、单次身份查询和 middleware 已验证的
+  `PrincipalContext`，不得回退共享 Key 或在 dependency 重查数据库。认证/限流只精确豁免根级 `/health`
+  和 OpenAPI/文档路径。合法 CORS 预检由更外层 `CORSMiddleware` 直接响应；普通 `OPTIONS` 仍须经过认证
+  与限流。认证应在请求体解析前完成；错误响应与日志不得暴露 header、token、digest 或 body。
+  Analysis 聚合的 HTTP 路径必须先用 tenant-scoped repository 查询，再执行角色/owner 策略；跨租户
+  与缺失统一 404，同租户权限不足为 403，mutation 必须在写入 UoW 内重检。Query 路由与数据工具必须
+  各自在 SQL 层重复 tenant scope，最终 QueryLog 事务重检 job/image/run 并写入 actor；principal 的
+  knowledge/mixed 路径在语料租户化前必须于任何检索/提供器调用前安全 503。上述局部能力不等于
+  knowledge 已租户化，也不等于 quota 或公网多租户就绪。详见 ADR 0010。
+- 所有新下载和 corrected-mask 引用必须经 `file_artifacts` 登记并签发 subject-bound v2 token：claims
+  绑定 tenant、principal、job、artifact、purpose/audience、SHA-256 与短 TTL，不能包含 path 或 credential。
+  下载先验上下文和 active registry，再逐段 `openat/O_NOFOLLOW` 固定并校验同一 fd，最终也从该 fd 流出；
+  响应在正常结束、取消或客户端断连时都必须立即关闭 pinned fd，不得只依赖可能被跳过的 background
+  task，也不得退回 `FileResponse(path)`。corrected-mask 只在最终 child UoW 内 CAS 消费。principal 模式必须在
+  decode/文件 I/O 前拒绝 v1；disabled/shared 仅可在数据库证明 legacy job 后兼容 v1。生产必须加载
+  0600 持久 keyring，轮换时至少保留旧 key 一个最大 TTL + clock skew。详见 ADR 0011。
+- disabled/shared-key 继续使用 service/authenticated/anonymous 三个固定桶。principal 使用两阶段
+  严格有界 LRU：认证前只按规范化的直接 `scope.client` peer 分桶，认证成功后直接复用 middleware 已验证
+  `PrincipalContext.principal_id` 分桶，禁止第二次身份查询。应用和捆绑的 Uvicorn 启动命令都不得信任或
+  自动应用 `Forwarded`/`X-Forwarded-For`；IPv4-mapped IPv6 必须归一为同一 IPv4 key。LRU 达到上限时
+  淘汰最旧项并偏向 fail-open，不能创建可被单个攻击者耗尽的共享 overflow 桶。只有确实装配了内层主体桶
+  时，外层预鉴权层才允许保留下游 `X-RateLimit-*`；所有单层模式必须权威覆盖下游伪造值。计数只在当前
+  API 进程内存在并会随重启清空；NAT/反向代理会共享直接 peer 桶，多进程、多副本或公网部署必须另接
+  集中限流，不能把该机制当成用户 quota 或分布式 rate limit。详见 ADR 0007。
 - 图像在 `verify`/像素解码前检查声明尺寸和像素总数，人工修正 mask 在转数组前检查与原图尺寸一致。
   知识输入同时限制 PDF 页数、提取字符、单文档 chunk、材料别名和向量语料总量；文本读取在上限 + 1
   字符处停止，embedding 分批执行。数据工具的粒径总体统计在 SQL 完成，返回证据行有确定性上限。

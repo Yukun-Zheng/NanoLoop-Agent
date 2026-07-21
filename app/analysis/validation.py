@@ -10,12 +10,12 @@ from app.contracts.analyses import AnalysisROI, InvalidPixelRegion, PixelRect
 from app.core.errors import InvalidImageError
 
 ALLOWED_IMAGE_FORMATS = frozenset({"TIFF", "PNG", "JPEG"})
-_SUFFIX_FORMATS = {
-    ".tif": "TIFF",
-    ".tiff": "TIFF",
-    ".png": "PNG",
-    ".jpg": "JPEG",
-    ".jpeg": "JPEG",
+_SUFFIX_ALLOWED_FORMATS = {
+    ".tif": frozenset({"TIFF"}),
+    ".tiff": frozenset({"TIFF"}),
+    ".png": frozenset({"PNG"}),
+    ".jpg": frozenset({"JPEG"}),
+    ".jpeg": frozenset({"JPEG"}),
 }
 _MAX_IMAGE_DIMENSION = 50_000
 _MAX_IMAGE_PIXELS = 80_000_000
@@ -46,13 +46,13 @@ def _bit_depth(mode: str) -> int:
 def validate_image(path: Path) -> ValidatedImage:
     """Sniff and decode an image rather than trusting the filename extension."""
 
-    expected_format = _SUFFIX_FORMATS.get(path.suffix.casefold())
-    if expected_format is None:
+    allowed_formats = _SUFFIX_ALLOWED_FORMATS.get(path.suffix.casefold())
+    if allowed_formats is None:
         raise InvalidImageError(
             details={
                 "path": path.name,
                 "reason": "unsupported_extension",
-                "supported_extensions": sorted(_SUFFIX_FORMATS),
+                "supported_extensions": sorted(_SUFFIX_ALLOWED_FORMATS),
             }
         )
     try:
@@ -67,9 +67,7 @@ def validate_image(path: Path) -> ValidatedImage:
                 or height > _MAX_IMAGE_DIMENSION
                 or width * height > _MAX_IMAGE_PIXELS
             ):
-                raise InvalidImageError(
-                    details={"path": path.name, "reason": "invalid_dimensions"}
-                )
+                raise InvalidImageError(details={"path": path.name, "reason": "invalid_dimensions"})
             image.verify()
     except (
         FileNotFoundError,
@@ -83,12 +81,12 @@ def validate_image(path: Path) -> ValidatedImage:
         raise InvalidImageError(
             details={"path": path.name, "format": detected_format, "reason": "unsupported_format"}
         )
-    if detected_format != expected_format:
+    if detected_format not in allowed_formats:
         raise InvalidImageError(
             details={
                 "path": path.name,
                 "reason": "extension_content_mismatch",
-                "expected_format": expected_format,
+                "allowed_formats": sorted(allowed_formats),
                 "detected_format": detected_format,
             }
         )
@@ -122,9 +120,7 @@ def infer_analysis_roi(image: ValidatedImage) -> AnalysisROI:
 
     boundary = _instrument_footer_boundary(image.path)
     if boundary is None or boundary <= 0 or boundary >= image.height:
-        return AnalysisROI(
-            valid_rect=PixelRect(x1=0, y1=0, x2=image.width, y2=image.height)
-        )
+        return AnalysisROI(valid_rect=PixelRect(x1=0, y1=0, x2=image.width, y2=image.height))
     return AnalysisROI(
         valid_rect=PixelRect(x1=0, y1=0, x2=image.width, y2=boundary),
         invalid_rects=[

@@ -3,6 +3,7 @@ from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -17,11 +18,13 @@ from app.analysis.application import (
     AnalysisCreationService,
     AnalysisUpload,
 )
+from app.analysis.authorization import require_mutation as enforce_mutation
 from app.analysis.config import MorphometryConfig, PostprocessProfile, QualityGateConfig
 from app.analysis.instance_artifacts import decode_binary_mask
 from app.analysis.morphometry import MorphometryResult
 from app.analysis.morphometry import measure as measure_particles
 from app.analysis.postprocessing import NormalizedInstance
+from app.analysis.preprocessing import build_analysis_roi
 from app.contracts.analyses import (
     AnalysisJobDTO,
     AnalysisROI,
@@ -42,27 +45,42 @@ from app.contracts.enums import (
     ModelFamily,
     ModelStatus,
     ModelVariant,
+    QualityStatus,
     QualityTier,
     RoiMode,
     ScaleMode,
 )
+from app.contracts.file_artifacts import FileArtifactKind, FileArtifactState
+from app.contracts.identity import (
+    LEGACY_PRINCIPAL_ID,
+    LEGACY_TENANT_ID,
+    AuthMode,
+    PrincipalContext,
+    PrincipalKind,
+    PrincipalRole,
+)
 from app.contracts.inference import SegmentationOutput, SegmentationRequest
-from app.contracts.models import ModelHealth, ModelMetadata
-from app.contracts.repositories import StoredImageAsset, UnitOfWork
+from app.contracts.models import ModelBundleReference, ModelHealth, ModelMetadata
+from app.contracts.repositories import AnalysisResourceScope, StoredImageAsset, UnitOfWork
 from app.core.config import Settings
 from app.core.errors import (
+    BoxRevisionConflictError,
     ExecutionBuildMismatchError,
+    ForbiddenError,
     InputArtifactMismatchError,
     InvalidImageError,
     ModelNotReadyError,
+    ResourceNotFoundError,
 )
+from app.core.identity import legacy_principal_context
 from app.db.base import Base
+from app.db.models import FileArtifact, ModelRegistryRecord, SegmentationRun
 from app.db.models import ImageAsset as ImageAssetRecord
-from app.db.models import ModelRegistryRecord, SegmentationRun
 from app.db.repositories import SqlAlchemyRepositorySet, SqlAlchemyUnitOfWork
 from app.db.session import Database
+from app.files import FileAccessTokenError, FileArtifactAccessService
 from app.inference.gateway import InferenceGateway
-from app.storage import FileTokenError, LocalFileStore, StoragePaths
+from app.storage import FileTokenV2KeyRing, LocalFileStore, StoragePaths
 from tests.unit.inference.fakes import FakeAdapter
 from tests.unit.inference.helpers import build_registry, model_entry
 
@@ -71,9 +89,134 @@ ApplicationHarness = tuple[
     LocalFileStore,
     Callable[[], UnitOfWork],
 ]
+LEGACY_ADMIN = legacy_principal_context(AuthMode.DISABLED)
+_FILE_TOKEN_V2_TEST_KEYRING = FileTokenV2KeyRing(
+    {"analysis-test": b"analysis-file-token-v2-test-key-0001"},
+    active_kid="analysis-test",
+    clock_skew_seconds=0,
+)
+
+
+def _principal(
+    role: PrincipalRole,
+    *,
+    tenant_hex: str = "0",
+    principal_hex: str = "1",
+) -> PrincipalContext:
+    return PrincipalContext(
+        tenant_id=f"tnt_{tenant_hex * 32}",
+        principal_id=f"prn_{principal_hex * 32}",
+        credential_id=f"crd_{principal_hex * 32}",
+        kind=PrincipalKind.USER,
+        role=role,
+        auth_mode=AuthMode.PRINCIPAL,
+    )
+
+
+def _file_artifact_access_service(
+    factory: Callable[[], UnitOfWork],
+    file_store: LocalFileStore,
+) -> FileArtifactAccessService:
+    return FileArtifactAccessService(
+        uow_factory=factory,
+        file_store=file_store,
+        keyring=_FILE_TOKEN_V2_TEST_KEYRING,
+    )
+
+
+def test_model_bottom_information_bar_is_frozen_outside_scientific_roi() -> None:
+    image = ImageAssetDTO(
+        image_id="img_bottom_bar",
+        job_id="job_1",
+        filename="sample.png",
+        sha256="a" * 64,
+        width=20,
+        height=200,
+        bit_depth=8,
+        sample_id="sample_1",
+        analysis_roi=AnalysisROI(valid_rect=PixelRect(x1=0, y1=0, x2=20, y2=200)),
+    )
+    model = FakeGateway().model.model_copy(
+        update={
+            "inference_invalid_bottom_px": 130,
+            "expected_input_width": 20,
+            "expected_input_height": 200,
+        }
+    )
+
+    analysis_roi = AnalysisApplicationService._apply_model_invalid_bottom(image, model)
+    roi_mask = build_analysis_roi(
+        width=image.width,
+        height=image.height,
+        analysis_roi=analysis_roi,
+        roi_mode=RoiMode.FULL_IMAGE,
+        boxes=[],
+    )
+
+    assert analysis_roi.invalid_rects[-1].model_dump() == {
+        "x1": 0,
+        "y1": 70,
+        "x2": 20,
+        "y2": 200,
+        "reason": "model_bottom_information_bar",
+    }
+    assert int(roi_mask.sum()) == 20 * 70
+    assert not roi_mask[70:].any()
+
+
+def test_model_bottom_crop_rejects_image_outside_frozen_size_contract() -> None:
+    image = ImageAssetDTO(
+        image_id="img_wrong_size",
+        job_id="job_1",
+        filename="sample.png",
+        sha256="a" * 64,
+        width=20,
+        height=201,
+        bit_depth=8,
+        sample_id="sample_1",
+        analysis_roi=AnalysisROI(valid_rect=PixelRect(x1=0, y1=0, x2=20, y2=201)),
+    )
+    model = FakeGateway().model.model_copy(
+        update={
+            "inference_invalid_bottom_px": 130,
+            "expected_input_width": 20,
+            "expected_input_height": 200,
+        }
+    )
+
+    with pytest.raises(InvalidImageError) as exc_info:
+        AnalysisApplicationService._apply_model_invalid_bottom(image, model)
+
+    assert exc_info.value.details["reason"] == "model_input_dimensions_mismatch"
+    assert exc_info.value.details["expected"] == [20, 200]
+    assert exc_info.value.details["observed"] == [20, 201]
+
+
+def test_model_bottom_crop_requires_frozen_size_contract() -> None:
+    image = ImageAssetDTO(
+        image_id="img_missing_contract",
+        job_id="job_1",
+        filename="sample.png",
+        sha256="a" * 64,
+        width=20,
+        height=200,
+        bit_depth=8,
+        sample_id="sample_1",
+        analysis_roi=AnalysisROI(valid_rect=PixelRect(x1=0, y1=0, x2=20, y2=200)),
+    )
+    model = FakeGateway().model.model_copy(update={"inference_invalid_bottom_px": 130})
+
+    with pytest.raises(InvalidImageError) as exc_info:
+        AnalysisApplicationService._apply_model_invalid_bottom(image, model)
+
+    assert exc_info.value.details["reason"] == "model_input_contract_missing"
 
 
 class FakeGateway:
+    # Keep these lightweight fakes on the legacy, non-bundled execution path while
+    # remaining structurally compatible with the production gateway protocol.
+    freeze_model_bundle: Any = None
+
     def __init__(self, *, fail: bool = False) -> None:
         self.fail = fail
         self.predict_calls = 0
@@ -117,6 +260,8 @@ class FakeGateway:
         expected_weight_sha256: str | None = None,
         expected_config_sha256: str | None = None,
         expected_model_card_sha256: str | None = None,
+        expected_adapter_sha256: str | None = None,
+        model_bundle: ModelBundleReference | None = None,
     ) -> SegmentationOutput:
         self.predict_calls += 1
         assert request.image_bytes is not None
@@ -157,6 +302,8 @@ class HoleGateway(FakeGateway):
         expected_weight_sha256: str | None = None,
         expected_config_sha256: str | None = None,
         expected_model_card_sha256: str | None = None,
+        expected_adapter_sha256: str | None = None,
+        model_bundle: ModelBundleReference | None = None,
     ) -> SegmentationOutput:
         output = super().predict(
             model_id,
@@ -166,6 +313,8 @@ class HoleGateway(FakeGateway):
             expected_weight_sha256=expected_weight_sha256,
             expected_config_sha256=expected_config_sha256,
             expected_model_card_sha256=expected_model_card_sha256,
+            expected_adapter_sha256=expected_adapter_sha256,
+            model_bundle=model_bundle,
         )
         with Image.open(output.binary_mask_path) as image:
             mask = np.asarray(image).copy()
@@ -185,6 +334,8 @@ class BoundaryGateway(FakeGateway):
         expected_weight_sha256: str | None = None,
         expected_config_sha256: str | None = None,
         expected_model_card_sha256: str | None = None,
+        expected_adapter_sha256: str | None = None,
+        model_bundle: ModelBundleReference | None = None,
     ) -> SegmentationOutput:
         assert expected_model_version == self.model.version
         assert expected_adapter_path == self.model.adapter_path
@@ -204,6 +355,8 @@ class BoundaryGateway(FakeGateway):
 
 
 class CartesianGateway:
+    freeze_model_bundle: Any = None
+
     def __init__(self) -> None:
         self.models = [
             ModelMetadata(
@@ -281,6 +434,8 @@ class CartesianGateway:
         expected_weight_sha256: str | None = None,
         expected_config_sha256: str | None = None,
         expected_model_card_sha256: str | None = None,
+        expected_adapter_sha256: str | None = None,
+        model_bundle: ModelBundleReference | None = None,
     ) -> SegmentationOutput:
         raise AssertionError("Cartesian-product creation must not execute inference")
 
@@ -322,7 +477,9 @@ def application_harness(tmp_path: Path) -> Iterator[ApplicationHarness]:
                 status=JobStatus.READY_FOR_CONFIGURATION,
                 created_at=now,
                 updated_at=now,
-            )
+            ),
+            tenant_id=LEGACY_TENANT_ID,
+            owner_principal_id=LEGACY_PRINCIPAL_ID,
         )
         repositories.images.add_many(
             [
@@ -339,9 +496,7 @@ def application_harness(tmp_path: Path) -> Iterator[ApplicationHarness]:
                         sample_id="sample_1",
                         material_formula="TiO2",
                         scale_nm_per_pixel=1.0,
-                        analysis_roi=AnalysisROI(
-                            valid_rect=PixelRect(x1=0, y1=0, x2=64, y2=64)
-                        ),
+                        analysis_roi=AnalysisROI(valid_rect=PixelRect(x1=0, y1=0, x2=64, y2=64)),
                     ),
                 )
             ]
@@ -357,6 +512,7 @@ def application_harness(tmp_path: Path) -> Iterator[ApplicationHarness]:
                 status=ModelStatus.READY.value,
             )
         )
+
     def factory() -> UnitOfWork:
         return SqlAlchemyUnitOfWork(database.session_factory)
 
@@ -381,6 +537,7 @@ def test_create_and_execute_run_closes_the_analysis_loop(
             roi_mode=RoiMode.FULL_IMAGE,
             inference=InferenceOptions(min_area_px=8, exclude_border=True),
         ),
+        principal=LEGACY_ADMIN,
     )
     assert len(run_ids) == 1
 
@@ -394,9 +551,7 @@ def test_create_and_execute_run_closes_the_analysis_loop(
     assert completed.configuration.model_card_sha256 == "c" * 64
     assert completed.execution is not None
     assert completed.execution.actual_device == "not_applicable"
-    assert "runtime_execution_evidence_unavailable_legacy_adapter" in (
-        completed.execution.warnings
-    )
+    assert "runtime_execution_evidence_unavailable_legacy_adapter" in (completed.execution.warnings)
     assert [event.to_status for event in completed.status_history] == [
         JobStatus.QUEUED,
         JobStatus.PREPROCESSING,
@@ -445,11 +600,216 @@ def test_create_and_execute_run_closes_the_analysis_loop(
     assert np.array_equal(decoded_instance, normalized_pixels > 0)
 
 
+def test_create_runs_rejects_ready_unet_without_frozen_default_threshold(
+    application_harness: ApplicationHarness,
+) -> None:
+    _database, file_store, factory = application_harness
+    gateway = FakeGateway()
+    gateway.model = gateway.model.model_copy(update={"default_threshold": None})
+    service = AnalysisApplicationService(
+        uow_factory=factory,
+        file_store=file_store,
+        inference_gateway=gateway,
+    )
+
+    with pytest.raises(ModelNotReadyError) as exc_info:
+        service.create_runs(
+            "job_1",
+            CreateRunsRequest(
+                image_ids=["img_1"],
+                model_ids=[gateway.model.model_id],
+                roi_mode=RoiMode.FULL_IMAGE,
+            ),
+            principal=LEGACY_ADMIN,
+        )
+
+    assert exc_info.value.details["reason"] == "default_threshold_missing"
+    with factory() as uow:
+        assert uow.repositories.runs.list_by_job("job_1") == []
+
+
+def test_frozen_bottom_crop_does_not_downgrade_quality_to_warning(
+    application_harness: ApplicationHarness,
+) -> None:
+    _database, file_store, factory = application_harness
+    gateway = FakeGateway()
+    gateway.model = gateway.model.model_copy(
+        update={
+            "inference_invalid_bottom_px": 1,
+            "expected_input_width": 64,
+            "expected_input_height": 64,
+        }
+    )
+    service = AnalysisApplicationService(
+        uow_factory=factory,
+        file_store=file_store,
+        inference_gateway=gateway,
+    )
+    run_id = service.create_runs(
+        "job_1",
+        CreateRunsRequest(
+            image_ids=["img_1"],
+            model_ids=[gateway.model.model_id],
+            roi_mode=RoiMode.FULL_IMAGE,
+        ),
+        principal=LEGACY_ADMIN,
+    )[0]
+
+    completed = service.execute_run(run_id)
+
+    assert completed.status == JobStatus.COMPLETED
+    assert completed.quality is not None
+    assert completed.quality.status == QualityStatus.PASS
+    assert completed.configuration.analysis_roi.invalid_rects[-1].reason == (
+        "model_bottom_information_bar"
+    )
+
+
+def test_create_runs_rejects_boxes_entirely_inside_model_bottom_region(
+    application_harness: ApplicationHarness,
+) -> None:
+    _database, file_store, factory = application_harness
+    gateway = FakeGateway()
+    gateway.model = gateway.model.model_copy(
+        update={
+            "inference_invalid_bottom_px": 32,
+            "expected_input_width": 64,
+            "expected_input_height": 64,
+        }
+    )
+    with factory() as uow:
+        box_set = uow.repositories.boxes.replace(
+            "img_1",
+            0,
+            [ROIBox(box_id="bottom-only", x1=0, y1=32, x2=32, y2=64)],
+        )
+        uow.commit()
+    service = AnalysisApplicationService(
+        uow_factory=factory,
+        file_store=file_store,
+        inference_gateway=gateway,
+    )
+
+    with pytest.raises(BoxRevisionConflictError) as exc_info:
+        service.create_runs(
+            "job_1",
+            CreateRunsRequest(
+                image_ids=["img_1"],
+                model_ids=[gateway.model.model_id],
+                roi_mode=RoiMode.BOXES,
+                box_revisions={"img_1": box_set.revision},
+            ),
+            principal=LEGACY_ADMIN,
+        )
+
+    assert exc_info.value.details["reason"] == "empty_effective_model_roi"
+    with factory() as uow:
+        assert uow.repositories.runs.list_by_job("job_1") == []
+
+
+def test_create_runs_rejects_boxes_entirely_inside_image_invalid_region(
+    application_harness: ApplicationHarness,
+) -> None:
+    database, file_store, factory = application_harness
+    invalid_roi = AnalysisROI(
+        valid_rect=PixelRect(x1=0, y1=0, x2=64, y2=64),
+        invalid_rects=[
+            {
+                "x1": 0,
+                "y1": 0,
+                "x2": 32,
+                "y2": 32,
+                "reason": "detected_instrument_overlay",
+            }
+        ],
+    )
+    with factory() as uow:
+        box_set = uow.repositories.boxes.replace(
+            "img_1",
+            0,
+            [ROIBox(box_id="invalid-only", x1=0, y1=0, x2=32, y2=32)],
+        )
+        uow.commit()
+    # Simulate an image-level invalid region being detected after the saved box revision.
+    with database.session() as session:
+        session.execute(
+            update(ImageAssetRecord)
+            .where(ImageAssetRecord.image_id == "img_1")
+            .values(analysis_roi_json=invalid_roi.model_dump(mode="json"))
+        )
+        session.commit()
+    service = AnalysisApplicationService(
+        uow_factory=factory,
+        file_store=file_store,
+        inference_gateway=FakeGateway(),
+    )
+
+    with pytest.raises(BoxRevisionConflictError) as exc_info:
+        service.create_runs(
+            "job_1",
+            CreateRunsRequest(
+                image_ids=["img_1"],
+                model_ids=["unet-general-balanced-v1"],
+                roi_mode=RoiMode.BOXES,
+                box_revisions={"img_1": box_set.revision},
+            ),
+            principal=LEGACY_ADMIN,
+        )
+
+    assert exc_info.value.details["reason"] == "empty_effective_model_roi"
+    with factory() as uow:
+        assert uow.repositories.runs.list_by_job("job_1") == []
+
+
+@pytest.mark.parametrize(
+    ("inference", "expected_min_area_px"),
+    [
+        (InferenceOptions(), 512),
+        (InferenceOptions(min_area_px=8), 8),
+        (InferenceOptions(min_area_px=0), 0),
+    ],
+)
+def test_create_runs_applies_model_min_area_only_when_request_omits_it(
+    application_harness: ApplicationHarness,
+    inference: InferenceOptions,
+    expected_min_area_px: int,
+) -> None:
+    _database, file_store, factory = application_harness
+    gateway = FakeGateway()
+    gateway.model = gateway.model.model_copy(update={"default_min_area_px": 512})
+    service = AnalysisApplicationService(
+        uow_factory=factory,
+        file_store=file_store,
+        inference_gateway=gateway,
+    )
+
+    run_id = service.create_runs(
+        "job_1",
+        CreateRunsRequest(
+            image_ids=["img_1"],
+            model_ids=[gateway.model.model_id],
+            roi_mode=RoiMode.FULL_IMAGE,
+            inference=inference,
+        ),
+        principal=LEGACY_ADMIN,
+    )[0]
+
+    with factory() as uow:
+        run = uow.repositories.runs.get(run_id)
+    assert run.inference.min_area_px == expected_min_area_px
+    assert run.configuration.inference.min_area_px == expected_min_area_px
+    assert run.configuration.resolved_postprocess is not None
+    assert (
+        run.configuration.resolved_postprocess.min_area_px
+        == expected_min_area_px
+    )
+
+
 def test_queued_run_executes_complete_bundle_after_config_and_card_sources_change(
     application_harness: ApplicationHarness,
     tmp_path: Path,
 ) -> None:
-    _database, file_store, factory = application_harness
+    database, file_store, factory = application_harness
     artifact_root = tmp_path / "model"
     artifact_root.mkdir()
     entry = model_entry(
@@ -484,10 +844,12 @@ def test_queued_run_executes_complete_bundle_after_config_and_card_sources_chang
         resolver=lambda _: QueuedBundleAdapter,
     )
     gateway = InferenceGateway(registry)
+    file_access = _file_artifact_access_service(factory, file_store)
     service = AnalysisApplicationService(
         uow_factory=factory,
         file_store=file_store,
         inference_gateway=gateway,
+        file_artifact_access_service=file_access,
     )
     run_id = service.create_runs(
         "job_1",
@@ -496,6 +858,7 @@ def test_queued_run_executes_complete_bundle_after_config_and_card_sources_chang
             model_ids=["unet-general-balanced-v1"],
             roi_mode=RoiMode.FULL_IMAGE,
         ),
+        principal=LEGACY_ADMIN,
     )[0]
     with factory() as uow:
         queued = uow.repositories.runs.get(run_id)
@@ -527,19 +890,43 @@ def test_queued_run_executes_complete_bundle_after_config_and_card_sources_chang
     inference_review_id = service.create_review_run(
         run_id,
         ReviewRunRequest(threshold=0.61),
+        principal=LEGACY_ADMIN,
     )
     corrected_mask = BytesIO()
     Image.new("L", (64, 64), color=255).save(corrected_mask, format="PNG")
     corrected_mask.seek(0)
-    staged = service.stage_corrected_mask(run_id, corrected_mask, "corrected.png")
-    staged_path = file_store.resolve_file_token(staged.corrected_mask_token)
+    staged = service.stage_corrected_mask(
+        run_id,
+        corrected_mask,
+        "corrected.png",
+        principal=LEGACY_ADMIN,
+    )
+    assert staged.corrected_mask_token.startswith("v2.analysis-test.")
+    artifact_id = file_access.keyring.verify(staged.corrected_mask_token).aid
+    with database.session() as session:
+        staged_artifact = session.get(FileArtifact, artifact_id)
+        assert staged_artifact is not None
+        assert staged_artifact.state == FileArtifactState.ACTIVE.value
+        staged_path = file_store.paths.root / staged_artifact.storage_path
+    assert staged_path.is_file()
     corrected_review_id = service.create_review_run(
         run_id,
         ReviewRunRequest(corrected_mask_token=staged.corrected_mask_token),
+        principal=LEGACY_ADMIN,
     )
     assert not staged_path.exists()
-    with pytest.raises(FileTokenError, match="available"):
-        file_store.resolve_file_token(staged.corrected_mask_token)
+    with database.session() as session:
+        consumed_artifact = session.get(FileArtifact, artifact_id)
+        assert consumed_artifact is not None
+        assert consumed_artifact.state == FileArtifactState.CONSUMED.value
+        assert consumed_artifact.consumed_at is not None
+    with pytest.raises(InvalidImageError) as replay:
+        service.create_review_run(
+            run_id,
+            ReviewRunRequest(corrected_mask_token=staged.corrected_mask_token),
+            principal=LEGACY_ADMIN,
+        )
+    assert replay.value.details["reason"] == "invalid_corrected_mask_token"
     with factory() as uow:
         inference_review = uow.repositories.runs.get(inference_review_id)
         corrected_review = uow.repositories.runs.get(corrected_review_id)
@@ -595,6 +982,7 @@ def test_execution_uses_only_the_frozen_scientific_configuration(
             model_ids=["unet-general-balanced-v1"],
             roi_mode=RoiMode.FULL_IMAGE,
         ),
+        principal=LEGACY_ADMIN,
     )[0]
 
     # These are deliberately changed after the immutable run was created.
@@ -673,6 +1061,7 @@ def test_schema_v3_build_mismatch_fails_before_adapter_load(
             model_ids=["unet-general-balanced-v1"],
             roi_mode=RoiMode.FULL_IMAGE,
         ),
+        principal=LEGACY_ADMIN,
     )[0]
     with database.session() as session:
         record = session.get(SegmentationRun, run_id)
@@ -691,9 +1080,7 @@ def test_schema_v3_build_mismatch_fails_before_adapter_load(
     with pytest.raises(ExecutionBuildMismatchError) as captured:
         service.execute_run(run_id)
 
-    assert captured.value.details["mismatched_fields"] == [
-        "application_source_sha256"
-    ]
+    assert captured.value.details["mismatched_fields"] == ["application_source_sha256"]
     assert load_calls == []
     with database.session() as session:
         failed = session.get(SegmentationRun, run_id)
@@ -719,6 +1106,7 @@ def test_changed_original_image_fails_before_gateway_call(
             model_ids=["unet-general-balanced-v1"],
             roi_mode=RoiMode.FULL_IMAGE,
         ),
+        principal=LEGACY_ADMIN,
     )[0]
     with factory() as uow:
         storage_path = uow.repositories.images.get_storage_path("img_1")
@@ -770,6 +1158,7 @@ def test_complete_configuration_rejects_missing_provenance_field(
             model_ids=["unet-general-balanced-v1"],
             roi_mode=RoiMode.FULL_IMAGE,
         ),
+        principal=LEGACY_ADMIN,
     )[0]
     with factory() as uow:
         payload = uow.repositories.runs.get(run_id).configuration.model_dump(mode="python")
@@ -795,6 +1184,7 @@ def test_schema_v1_run_uses_explicit_legacy_fallback_and_review_upgrades_snapsho
             model_ids=["unet-general-balanced-v1"],
             roi_mode=RoiMode.FULL_IMAGE,
         ),
+        principal=LEGACY_ADMIN,
     )[0]
     with database.session() as session:
         record = session.get(SegmentationRun, run_id)
@@ -827,16 +1217,18 @@ def test_schema_v1_run_uses_explicit_legacy_fallback_and_review_upgrades_snapsho
     completed = service.execute_run(run_id)
 
     assert completed.configuration.provenance_status == "legacy_fallback"
-    assert completed.configuration.provenance_warnings == [
-        "legacy_run_configuration_incomplete"
-    ]
+    assert completed.configuration.provenance_warnings == ["legacy_run_configuration_incomplete"]
     assert completed.summary is not None
     assert completed.summary.mean_equivalent_diameter_nm is None
     assert completed.quality is not None
     assert "legacy_run_configuration_fallback" in completed.quality.reasons
     assert "legacy_physical_scale_not_frozen_pixel_metrics_only" in completed.quality.reasons
 
-    review_id = service.create_review_run(run_id, ReviewRunRequest(threshold=0.7))
+    review_id = service.create_review_run(
+        run_id,
+        ReviewRunRequest(threshold=0.7),
+        principal=LEGACY_ADMIN,
+    )
     with factory() as uow:
         review = uow.repositories.runs.get(review_id)
     assert review.configuration.schema_version == 2
@@ -965,6 +1357,7 @@ def test_create_runs_persists_two_by_three_cartesian_product_without_duplicate_d
             box_revisions={"img_1": 2, "img_2": 1},
             inference=requested_inference,
         ),
+        principal=LEGACY_ADMIN,
     )
 
     assert len(run_ids) == 6
@@ -1003,11 +1396,7 @@ def test_create_runs_persists_two_by_three_cartesian_product_without_duplicate_d
         )
         persisted_runs = [repositories.runs.get(run_id) for run_id in run_ids]
 
-    expected_pairs = [
-        (image_id, model_id)
-        for image_id in image_ids
-        for model_id in model_ids
-    ]
+    expected_pairs = [(image_id, model_id) for image_id in image_ids for model_id in model_ids]
     assert [(run.image_id, run.model_id) for run in persisted_runs] == expected_pairs
     expected_revisions = {"img_1": 2, "img_2": 1}
     for run in persisted_runs:
@@ -1050,6 +1439,7 @@ def test_border_exclusion_preserves_prefilter_quality_diagnostics(
             roi_mode=RoiMode.FULL_IMAGE,
             inference=InferenceOptions(min_area_px=8, exclude_border=True),
         ),
+        principal=LEGACY_ADMIN,
     )[0]
 
     completed = service.execute_run(run_id)
@@ -1086,6 +1476,7 @@ def test_execution_failure_is_isolated_and_persisted(
             model_ids=["unet-general-balanced-v1"],
             roi_mode=RoiMode.FULL_IMAGE,
         ),
+        principal=LEGACY_ADMIN,
     )[0]
     with pytest.raises(RuntimeError, match="fixture inference failed"):
         service.execute_run(run_id)
@@ -1119,6 +1510,7 @@ def test_create_analysis_validates_and_persists_upload(
             ],
         ),
         [AnalysisUpload(filename="fresh.png", stream=content)],
+        principal=legacy_principal_context(AuthMode.DISABLED),
     )
 
     assert detail.job.status == JobStatus.READY_FOR_CONFIGURATION
@@ -1127,7 +1519,9 @@ def test_create_analysis_validates_and_persists_upload(
     assert (image.width, image.height, image.bit_depth) == (17, 13, 16)
     assert image.scale_nm_per_pixel == 0.75
     assert image.analysis_roi.valid_rect == PixelRect(x1=0, y1=0, x2=17, y2=13)
-    assert image.original_download_url is not None
+    # The service persists storage facts only; the HTTP route decorates authorized
+    # responses with a subject-bound v2 download URL.
+    assert image.original_download_url is None
     assert file_store.paths.job_config(detail.job.job_id).is_file()
     assert file_store.paths.job_manifest(detail.job.job_id).is_file()
     assert file_store.paths.image_metadata(detail.job.job_id, image.image_id).is_file()
@@ -1151,6 +1545,7 @@ def test_create_analysis_rejects_metadata_upload_mismatch(
         service.create_analysis(
             metadata,
             [AnalysisUpload(filename="actual.png", stream=BytesIO(b"not-read"))],
+            principal=legacy_principal_context(AuthMode.DISABLED),
         )
 
     assert captured.value.details["missing_uploads"] == ["declared.png"]
@@ -1180,6 +1575,7 @@ def test_create_analysis_failure_removes_only_unreferenced_uploads(
                 AnalysisUpload(filename="first.png", stream=BytesIO(payload)),
                 AnalysisUpload(filename="second.png", stream=BytesIO(payload)),
             ],
+            principal=legacy_principal_context(AuthMode.DISABLED),
         )
 
     failed_jobs = set(file_store.paths.root.glob("job_*")) - existing_jobs
@@ -1212,6 +1608,7 @@ def test_create_analysis_late_failure_retains_database_referenced_original(
                 images=[ImageMetadataInput(filename="retained.png", sample_id="sample_1")],
             ),
             [AnalysisUpload(filename="retained.png", stream=image_bytes)],
+            principal=legacy_principal_context(AuthMode.DISABLED),
         )
 
     with database.session() as session:
@@ -1245,6 +1642,7 @@ def test_review_creates_immutable_child_run(application_harness: ApplicationHarn
             model_ids=["unet-general-balanced-v1"],
             roi_mode=RoiMode.FULL_IMAGE,
         ),
+        principal=LEGACY_ADMIN,
     )[0]
     service.execute_run(parent_id)
     with database.session() as session:
@@ -1258,6 +1656,7 @@ def test_review_creates_immutable_child_run(application_harness: ApplicationHarn
     child_id = service.create_review_run(
         parent_id,
         ReviewRunRequest(threshold=0.8, min_area_px=12, watershed_enabled=True),
+        principal=LEGACY_ADMIN,
     )
 
     with database.session() as session:
@@ -1302,12 +1701,17 @@ def test_review_rejects_changed_model_provenance(
             model_ids=["unet-general-balanced-v1"],
             roi_mode=RoiMode.FULL_IMAGE,
         ),
+        principal=LEGACY_ADMIN,
     )[0]
     service.execute_run(parent_id)
     gateway.model = gateway.model.model_copy(update={"config_sha256": "d" * 64})
 
     with pytest.raises(ModelNotReadyError) as captured:
-        service.create_review_run(parent_id, ReviewRunRequest(threshold=0.8))
+        service.create_review_run(
+            parent_id,
+            ReviewRunRequest(threshold=0.8),
+            principal=LEGACY_ADMIN,
+        )
 
     assert captured.value.details["reason"] == "config_sha256_mismatch"
 
@@ -1317,10 +1721,12 @@ def test_corrected_mask_review_bypasses_model_and_preserves_hash(
 ) -> None:
     database, file_store, factory = application_harness
     gateway = FakeGateway()
+    file_access = _file_artifact_access_service(factory, file_store)
     service = AnalysisApplicationService(
         uow_factory=factory,
         file_store=file_store,
         inference_gateway=gateway,
+        file_artifact_access_service=file_access,
     )
     parent_id = service.create_runs(
         "job_1",
@@ -1329,6 +1735,7 @@ def test_corrected_mask_review_bypasses_model_and_preserves_hash(
             model_ids=["unet-general-balanced-v1"],
             roi_mode=RoiMode.FULL_IMAGE,
         ),
+        principal=LEGACY_ADMIN,
     )[0]
     service.execute_run(parent_id)
 
@@ -1336,14 +1743,23 @@ def test_corrected_mask_review_bypasses_model_and_preserves_hash(
     corrected[10:18, 11:19] = 255
     buffer = BytesIO()
     Image.fromarray(corrected).save(buffer, format="PNG")
-    staged_path = file_store.paths.job_dir("job_1") / "review-mask.png"
-    file_store.atomic_write_bytes(staged_path, buffer.getvalue())
-    token = file_store.create_file_token(staged_path)
+    buffer.seek(0)
+    staged = service.stage_corrected_mask(
+        parent_id,
+        buffer,
+        "corrected.png",
+        principal=LEGACY_ADMIN,
+    )
+    assert staged.corrected_mask_token.startswith("v2.analysis-test.")
 
     gateway.fail = True
     child_id = service.create_review_run(
         parent_id,
-        ReviewRunRequest(corrected_mask_token=token, min_area_px=4),
+        ReviewRunRequest(
+            corrected_mask_token=staged.corrected_mask_token,
+            min_area_px=4,
+        ),
+        principal=LEGACY_ADMIN,
     )
     completed = service.execute_run(child_id)
 
@@ -1359,14 +1775,16 @@ def test_corrected_mask_review_bypasses_model_and_preserves_hash(
     )
 
 
-def test_corrected_mask_review_never_deletes_a_referenced_original(
+def test_corrected_mask_token_is_consumed_once_without_duplicate_child(
     application_harness: ApplicationHarness,
 ) -> None:
     database, file_store, factory = application_harness
+    file_access = _file_artifact_access_service(factory, file_store)
     service = AnalysisApplicationService(
         uow_factory=factory,
         file_store=file_store,
         inference_gateway=FakeGateway(),
+        file_artifact_access_service=file_access,
     )
     parent_id = service.create_runs(
         "job_1",
@@ -1375,39 +1793,173 @@ def test_corrected_mask_review_never_deletes_a_referenced_original(
             model_ids=["unet-general-balanced-v1"],
             roi_mode=RoiMode.FULL_IMAGE,
         ),
+        principal=LEGACY_ADMIN,
     )[0]
     service.execute_run(parent_id)
-    with database.session() as session:
-        repositories = SqlAlchemyRepositorySet(session)
-        original_path = file_store.paths.require_managed(
-            repositories.images.get_storage_path("img_1"), must_exist=True
-        )
-    original_bytes = original_path.read_bytes()
-    original_token = file_store.create_file_token(original_path)
-
-    service.create_review_run(
+    mask = BytesIO()
+    Image.new("L", (64, 64), color=255).save(mask, format="PNG")
+    mask.seek(0)
+    staged = service.stage_corrected_mask(
         parent_id,
-        ReviewRunRequest(corrected_mask_token=original_token, min_area_px=4),
+        mask,
+        "single-use.png",
+        principal=LEGACY_ADMIN,
     )
+    artifact_id = file_access.keyring.verify(staged.corrected_mask_token).aid
 
-    assert original_path.read_bytes() == original_bytes
-    assert file_store.resolve_file_token(original_token) == original_path
+    child_id = service.create_review_run(
+        parent_id,
+        ReviewRunRequest(corrected_mask_token=staged.corrected_mask_token),
+        principal=LEGACY_ADMIN,
+    )
+    with database.session() as session:
+        consumed = session.get(FileArtifact, artifact_id)
+        assert consumed is not None
+        assert consumed.state == FileArtifactState.CONSUMED.value
+        consumed_at = consumed.consumed_at
+        assert consumed_at is not None
+        staged_path = file_store.paths.root / consumed.storage_path
+    assert not staged_path.exists()
+    with factory() as uow:
+        first_children = [
+            run.run_id
+            for run in uow.repositories.runs.list_by_job("job_1")
+            if run.parent_run_id == parent_id
+        ]
+    assert first_children == [child_id]
+
+    with pytest.raises(InvalidImageError) as replay:
+        service.create_review_run(
+            parent_id,
+            ReviewRunRequest(corrected_mask_token=staged.corrected_mask_token),
+            principal=LEGACY_ADMIN,
+        )
+
+    assert replay.value.details["reason"] == "invalid_corrected_mask_token"
+    with factory() as uow:
+        final_children = [
+            run.run_id
+            for run in uow.repositories.runs.list_by_job("job_1")
+            if run.parent_run_id == parent_id
+        ]
+    assert final_children == first_children
+    with database.session() as session:
+        still_consumed = session.get(FileArtifact, artifact_id)
+        assert still_consumed is not None
+        assert still_consumed.state == FileArtifactState.CONSUMED.value
+        assert still_consumed.consumed_at == consumed_at
 
 
-def test_corrected_mask_rejects_wrong_dimensions_before_pixel_decode(
+def test_original_image_download_token_is_rejected_as_corrected_mask_and_preserved(
     application_harness: ApplicationHarness,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _database, file_store, factory = application_harness
+    database, file_store, factory = application_harness
+    file_access = _file_artifact_access_service(factory, file_store)
     service = AnalysisApplicationService(
         uow_factory=factory,
         file_store=file_store,
         inference_gateway=FakeGateway(),
+        file_artifact_access_service=file_access,
     )
-    staged_path = file_store.paths.job_dir("job_1") / "oversized-review.png"
-    file_store.atomic_write_bytes(staged_path, b"header-only-test-double")
-    token = file_store.create_file_token(staged_path)
+    parent_id = service.create_runs(
+        "job_1",
+        CreateRunsRequest(
+            image_ids=["img_1"],
+            model_ids=["unet-general-balanced-v1"],
+            roi_mode=RoiMode.FULL_IMAGE,
+        ),
+        principal=LEGACY_ADMIN,
+    )[0]
+    service.execute_run(parent_id)
+    with database.session() as session:
+        repositories = SqlAlchemyRepositorySet(session)
+        original = repositories.images.get("img_1")
+        storage_path = repositories.images.get_storage_path("img_1")
+        original_path = file_store.paths.require_managed(
+            storage_path,
+            must_exist=True,
+        )
+    original_bytes = original_path.read_bytes()
+    original_token = file_access.issue_download_token(
+        principal=LEGACY_ADMIN,
+        job_id="job_1",
+        image_id="img_1",
+        artifact_kind=FileArtifactKind.ORIGINAL_IMAGE,
+        storage_path=storage_path,
+        filename=original.filename,
+        media_type="image/png",
+        expected_sha256=original.sha256,
+    )
 
+    with pytest.raises(InvalidImageError) as captured:
+        service.create_review_run(
+            parent_id,
+            ReviewRunRequest(corrected_mask_token=original_token, min_area_px=4),
+            principal=LEGACY_ADMIN,
+        )
+
+    assert captured.value.details["reason"] == "invalid_corrected_mask_token"
+    assert original_path.read_bytes() == original_bytes
+
+
+def test_principal_mode_rejects_legacy_v1_original_and_corrected_mask_tokens(
+    application_harness: ApplicationHarness,
+) -> None:
+    _database, file_store, factory = application_harness
+    file_access = _file_artifact_access_service(factory, file_store)
+    run_service = AnalysisApplicationService(
+        uow_factory=factory,
+        file_store=file_store,
+        inference_gateway=FakeGateway(),
+    )
+    parent_id = run_service.create_runs(
+        "job_1",
+        CreateRunsRequest(
+            image_ids=["img_1"],
+            model_ids=["unet-general-balanced-v1"],
+            roi_mode=RoiMode.FULL_IMAGE,
+        ),
+        principal=LEGACY_ADMIN,
+    )[0]
+    with factory() as uow:
+        original_storage_path = uow.repositories.images.get_storage_path("img_1")
+    original_path = file_store.paths.require_managed(
+        original_storage_path,
+        must_exist=True,
+    )
+    original_token = file_store.create_file_token(original_path)
+    corrected = BytesIO()
+    Image.new("L", (64, 64), color=255).save(corrected, format="PNG")
+    corrected.seek(0)
+    staged = file_store.save_upload(
+        "job_1",
+        corrected,
+        "legacy-corrected.png",
+        image_id="review_mask_legacy_v1",
+    )
+    principal = _principal(PrincipalRole.TENANT_ADMIN, principal_hex="0")
+
+    with pytest.raises(FileAccessTokenError, match=r"^invalid file token$"):
+        file_access.resolve_download(original_token, principal=principal)
+    with pytest.raises(
+        FileAccessTokenError,
+        match=r"^invalid corrected-mask token$",
+    ):
+        file_access.resolve_corrected_mask(
+            file_store.create_file_token(staged.path),
+            principal=principal,
+            job_id="job_1",
+            image_id="img_1",
+            run_id=parent_id,
+        )
+
+    assert original_path.is_file()
+    assert staged.path.is_file()
+
+
+def test_corrected_mask_rejects_wrong_dimensions_before_pixel_decode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     class WrongSizeImage:
         size = (50_001, 50_001)
         width = 50_001
@@ -1425,6 +1977,176 @@ def test_corrected_mask_rejects_wrong_dimensions_before_pixel_decode(
     monkeypatch.setattr(Image, "open", lambda _path: WrongSizeImage())
 
     with pytest.raises(InvalidImageError) as exc_info:
-        service._load_corrected_mask(token, expected_shape=(64, 64))
+        AnalysisApplicationService._decode_corrected_mask(
+            b"header-only-test-double",
+            filename="oversized-review.png",
+            expected_shape=(64, 64),
+        )
 
     assert exc_info.value.details["reason"] == "corrected_mask_shape_mismatch"
+
+
+def test_viewer_create_is_forbidden_before_stream_or_managed_file_side_effect(
+    application_harness: ApplicationHarness,
+) -> None:
+    _database, file_store, factory = application_harness
+    service = AnalysisCreationService(uow_factory=factory, file_store=file_store)
+
+    class UnreadableUpload(BytesIO):
+        read_calls = 0
+
+        def read(self, _size: int | None = -1) -> bytes:
+            self.read_calls += 1
+            raise AssertionError("forbidden create must not read the upload stream")
+
+    upload = UnreadableUpload()
+    before = set(file_store.paths.root.rglob("*"))
+    with pytest.raises(ForbiddenError):
+        service.create_analysis(
+            CreateAnalysisMetadata(
+                job_name="viewer must not create",
+                images=[ImageMetadataInput(filename="blocked.png", sample_id="blocked")],
+            ),
+            [AnalysisUpload(filename="blocked.png", stream=upload)],
+            principal=_principal(PrincipalRole.VIEWER, principal_hex="2"),
+        )
+
+    assert upload.read_calls == 0
+    assert set(file_store.paths.root.rglob("*")) == before
+
+
+@pytest.mark.parametrize(
+    ("principal", "expected_error"),
+    [
+        (_principal(PrincipalRole.ANALYST, principal_hex="2"), ForbiddenError),
+        (
+            _principal(PrincipalRole.ANALYST, tenant_hex="a", principal_hex="3"),
+            ResourceNotFoundError,
+        ),
+    ],
+)
+def test_create_runs_rejects_before_any_gateway_work(
+    application_harness: ApplicationHarness,
+    principal: PrincipalContext,
+    expected_error: type[Exception],
+) -> None:
+    _database, file_store, factory = application_harness
+
+    class UntouchedGateway:
+        list_calls = 0
+
+        def list_models(self, _only_ready: bool = False) -> list[ModelMetadata]:
+            self.list_calls += 1
+            raise AssertionError("authorization must precede model discovery")
+
+    gateway = UntouchedGateway()
+    service = AnalysisApplicationService(
+        uow_factory=factory,
+        file_store=file_store,
+        inference_gateway=gateway,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(expected_error):
+        service.create_runs(
+            "job_1",
+            CreateRunsRequest(
+                image_ids=["img_1"],
+                model_ids=["unet-general-balanced-v1"],
+                roi_mode=RoiMode.FULL_IMAGE,
+            ),
+            principal=principal,
+        )
+
+    assert gateway.list_calls == 0
+
+
+def test_corrected_mask_forbidden_before_upload_stream_read(
+    application_harness: ApplicationHarness,
+) -> None:
+    _database, file_store, factory = application_harness
+    file_access = _file_artifact_access_service(factory, file_store)
+    service = AnalysisApplicationService(
+        uow_factory=factory,
+        file_store=file_store,
+        inference_gateway=FakeGateway(),
+        file_artifact_access_service=file_access,
+    )
+    run_id = service.create_runs(
+        "job_1",
+        CreateRunsRequest(
+            image_ids=["img_1"],
+            model_ids=["unet-general-balanced-v1"],
+            roi_mode=RoiMode.FULL_IMAGE,
+        ),
+        principal=LEGACY_ADMIN,
+    )[0]
+
+    class UnreadableMask(BytesIO):
+        read_calls = 0
+
+        def read(self, _size: int | None = -1) -> bytes:
+            self.read_calls += 1
+            raise AssertionError("forbidden corrected mask must not be read")
+
+    stream = UnreadableMask()
+    before = set(file_store.paths.root.rglob("*"))
+    with pytest.raises(ForbiddenError):
+        service.stage_corrected_mask(
+            run_id,
+            stream,
+            "blocked.png",
+            principal=_principal(PrincipalRole.VIEWER, principal_hex="4"),
+        )
+
+    assert stream.read_calls == 0
+    assert set(file_store.paths.root.rglob("*")) == before
+
+
+def test_review_rechecks_mutation_in_final_child_creation_uow(
+    application_harness: ApplicationHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _database, file_store, factory = application_harness
+    service = AnalysisApplicationService(
+        uow_factory=factory,
+        file_store=file_store,
+        inference_gateway=FakeGateway(),
+    )
+    parent_id = service.create_runs(
+        "job_1",
+        CreateRunsRequest(
+            image_ids=["img_1"],
+            model_ids=["unet-general-balanced-v1"],
+            roi_mode=RoiMode.FULL_IMAGE,
+        ),
+        principal=LEGACY_ADMIN,
+    )[0]
+    service.execute_run(parent_id)
+    with factory() as uow:
+        before_ids = {run.run_id for run in uow.repositories.runs.list_by_job("job_1")}
+
+    checks = 0
+
+    def reject_final_check(
+        principal: PrincipalContext,
+        scope: AnalysisResourceScope,
+    ) -> None:
+        nonlocal checks
+        checks += 1
+        enforce_mutation(principal, scope)
+        if checks == 2:
+            raise ForbiddenError()
+
+    monkeypatch.setattr(analysis_application_module, "require_mutation", reject_final_check)
+
+    with pytest.raises(ForbiddenError):
+        service.create_review_run(
+            parent_id,
+            ReviewRunRequest(threshold=0.7),
+            principal=LEGACY_ADMIN,
+        )
+
+    assert checks == 2
+    with factory() as uow:
+        after_ids = {run.run_id for run in uow.repositories.runs.list_by_job("job_1")}
+    assert after_ids == before_ids

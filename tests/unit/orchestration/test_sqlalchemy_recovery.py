@@ -16,6 +16,7 @@ from app.contracts.enums import (
     QualityTier,
     RoiMode,
 )
+from app.contracts.identity import LEGACY_PRINCIPAL_ID, LEGACY_TENANT_ID
 from app.core.config import Settings
 from app.core.errors import JobStateConflictError, ResourceNotFoundError
 from app.db.base import Base
@@ -66,6 +67,8 @@ def _seed_runs(
         session.add(
             AnalysisJob(
                 job_id=job_id,
+                tenant_id=LEGACY_TENANT_ID,
+                owner_principal_id=LEGACY_PRINCIPAL_ID,
                 name="recovery fixture",
                 status=job_status.value,
                 config_json={"fixture": True},

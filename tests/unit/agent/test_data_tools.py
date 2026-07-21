@@ -17,6 +17,7 @@ from app.contracts.enums import (
     QualityTier,
     RoiMode,
 )
+from app.contracts.identity import LEGACY_PRINCIPAL_ID, LEGACY_TENANT_ID
 from app.core.config import Settings
 from app.db.base import Base
 from app.db.models import (
@@ -25,9 +26,14 @@ from app.db.models import (
     ImageSummary,
     ModelRegistryRecord,
     ParticleRecord,
+    Principal,
     SegmentationRun,
+    Tenant,
 )
 from app.db.session import Database
+
+_FOREIGN_TENANT_ID = f"tnt_{'a' * 32}"
+_FOREIGN_PRINCIPAL_ID = f"prn_{'b' * 32}"
 
 
 @pytest.fixture
@@ -227,10 +233,11 @@ def test_review_results_include_reasons_and_support_a_negative_answer(
 
 @pytest.mark.parametrize(
     ("job_id", "question", "image_id", "run_ids"),
-    [
-        ("job_1", "颗粒数是多少？", None, ("run_other",)),
-        ("job_1", "覆盖率是多少？", "img_other", ()),
-        ("missing", "任务概览", None, ()),
+        [
+            ("job_1", "颗粒数是多少？", None, ("run_other",)),
+            ("job_1", "覆盖率是多少？", "img_other", ()),
+            ("job_2", "任务概览", None, ()),
+            ("missing", "任务概览", None, ()),
     ],
 )
 def test_foreign_or_missing_scope_is_an_error_without_leaking_data(
@@ -243,6 +250,7 @@ def test_foreign_or_missing_scope_is_an_error_without_leaking_data(
     result = service.answer(
         DataQuery(
             job_id=job_id,
+            tenant_id=LEGACY_TENANT_ID,
             question=question,
             image_id=image_id,
             run_ids=run_ids,
@@ -444,6 +452,7 @@ def _query(
 ) -> DataQuery:
     return DataQuery(
         job_id="job_1",
+        tenant_id=LEGACY_TENANT_ID,
         question=question,
         image_id=image_id,
         run_ids=run_ids,
@@ -452,16 +461,39 @@ def _query(
 
 def _seed_experiment(database: Database) -> None:
     with database.session() as session:
+        session.add(
+            Tenant(
+                tenant_id=_FOREIGN_TENANT_ID,
+                slug="data-tools-foreign",
+                display_name="Data tools foreign",
+            )
+        )
+        session.flush()
+        session.add(
+            Principal(
+                principal_id=_FOREIGN_PRINCIPAL_ID,
+                tenant_id=_FOREIGN_TENANT_ID,
+                handle="data-tools-foreign",
+                display_name="Data tools foreign",
+                kind="user",
+                role="analyst",
+            )
+        )
+        session.flush()
         session.add_all(
             [
                 AnalysisJob(
                     job_id="job_1",
+                    tenant_id=LEGACY_TENANT_ID,
+                    owner_principal_id=LEGACY_PRINCIPAL_ID,
                     name="data tools fixture",
                     status=JobStatus.COMPLETED_WITH_WARNINGS.value,
                     config_json={},
                 ),
                 AnalysisJob(
                     job_id="job_2",
+                    tenant_id=_FOREIGN_TENANT_ID,
+                    owner_principal_id=_FOREIGN_PRINCIPAL_ID,
                     name="foreign fixture",
                     status=JobStatus.COMPLETED.value,
                     config_json={},

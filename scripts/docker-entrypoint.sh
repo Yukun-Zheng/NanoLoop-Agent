@@ -27,6 +27,42 @@ for writable_dir in \
     fi
 done
 
+# Production never lets the application invent process-local file-token v2 signing material.
+# Load the protected persisted key ring, or initialize it once through the audited Python store
+# when the path is genuinely absent. Existing unsafe or corrupt state fails closed, and neither
+# the path nor any key material is written to startup logs.
+if [ "${APP_ENV:-development}" = "production" ]; then
+    file_token_v2_keyring_path=${FILE_TOKEN_V2_KEYRING_PATH:-${NANOLOOP_FILE_TOKEN_V2_KEYRING_PATH:-/app/data/.file_token_v2_keyring.json}}
+    FILE_TOKEN_V2_KEYRING_PATH=${file_token_v2_keyring_path}
+    export FILE_TOKEN_V2_KEYRING_PATH
+    if ! python - "${FILE_TOKEN_V2_KEYRING_PATH}" <<'PY'
+import sys
+
+from app.storage.file_token_keyring_store import (
+    FileTokenV2KeyRingStore,
+    FileTokenV2KeyRingStoreError,
+)
+
+try:
+    store = FileTokenV2KeyRingStore(sys.argv[1])
+    try:
+        store.load()
+    except FileTokenV2KeyRingStoreError as error:
+        if error.code != "missing":
+            raise
+        store.initialize(active_kid="initial")
+except FileTokenV2KeyRingStoreError as error:
+    print(f"File-token v2 key ring unavailable: {error.code}", file=sys.stderr)
+    raise SystemExit(1) from None
+except Exception:
+    print("File-token v2 key ring unavailable: unexpected_error", file=sys.stderr)
+    raise SystemExit(1) from None
+PY
+    then
+        exit 1
+    fi
+fi
+
 # Persist a generated signing secret with the data volume when operators do not inject one. The
 # value is never printed and remains stable across single-container restarts.
 if [ -z "${NANOLOOP_FILE_TOKEN_SECRET:-}" ]; then
@@ -63,7 +99,7 @@ if [ "${NANOLOOP_SKIP_MIGRATIONS:-0}" != "1" ]; then
 fi
 
 if [ "$#" -eq 0 ]; then
-    set -- uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
+    set -- uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1 --no-proxy-headers
 fi
 
 exec "$@"

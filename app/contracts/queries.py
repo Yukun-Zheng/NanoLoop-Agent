@@ -1,12 +1,22 @@
 """Evidence-preserving data, knowledge, and mixed-query contracts."""
 
 from datetime import datetime
-from typing import Any, Literal
+from enum import StrEnum
+from typing import Any, Literal, Self
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from app.contracts.common import ContractModel
 from app.contracts.enums import QueryType
+from app.contracts.identity import (
+    LEGACY_PRINCIPAL_ID,
+    LEGACY_TENANT_ID,
+    PrincipalContext,
+    PrincipalRole,
+    validate_credential_id,
+    validate_principal_id,
+    validate_tenant_id,
+)
 from app.contracts.limits import MAX_MATERIAL_ALIASES, MaterialAlias
 
 
@@ -71,10 +81,64 @@ class UnifiedQueryResponse(ContractModel):
     outcome_code: Literal["OK", "INSUFFICIENT_EVIDENCE"] = "OK"
 
 
+class QueryActorAuthMode(StrEnum):
+    """Frozen query-auth fact, including the migration-only legacy sentinel."""
+
+    DISABLED = "disabled"
+    SHARED_KEY = "shared_key"
+    PRINCIPAL = "principal"
+    LEGACY_UNKNOWN = "legacy_unknown"
+
+
+class QueryActorDTO(ContractModel):
+    """Identity facts captured when a query is committed."""
+
+    tenant_id: str
+    principal_id: str
+    credential_id: str | None = None
+    role: PrincipalRole
+    auth_mode: QueryActorAuthMode
+
+    @classmethod
+    def from_principal(cls, principal: PrincipalContext) -> Self:
+        """Freeze a verified request principal without allowing legacy-unknown issuance."""
+
+        if principal.tenant_id is None or principal.principal_id is None:
+            raise ValueError("query actor requires tenant and principal IDs")
+        return cls(
+            tenant_id=principal.tenant_id,
+            principal_id=principal.principal_id,
+            credential_id=principal.credential_id,
+            role=principal.role,
+            auth_mode=QueryActorAuthMode(principal.auth_mode.value),
+        )
+
+    @model_validator(mode="after")
+    def validate_actor_shape(self) -> Self:
+        validate_tenant_id(self.tenant_id)
+        validate_principal_id(self.principal_id)
+        if self.credential_id is not None:
+            validate_credential_id(self.credential_id)
+        if self.auth_mode is QueryActorAuthMode.PRINCIPAL:
+            if self.credential_id is None:
+                raise ValueError("principal query actor requires a credential ID")
+            return self
+        if self.credential_id is not None:
+            raise ValueError("compatibility query actor cannot carry a credential ID")
+        if (
+            self.tenant_id != LEGACY_TENANT_ID
+            or self.principal_id != LEGACY_PRINCIPAL_ID
+            or self.role is not PrincipalRole.TENANT_ADMIN
+        ):
+            raise ValueError("compatibility query actor must use the fixed legacy administrator")
+        return self
+
+
 class QueryAuditRecordDTO(ContractModel):
     query_id: str
     job_id: str
     image_id: str | None = None
+    actor: QueryActorDTO
     request: UnifiedQueryRequest
     response: UnifiedQueryResponse
     created_at: datetime

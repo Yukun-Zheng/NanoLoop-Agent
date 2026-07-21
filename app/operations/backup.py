@@ -23,6 +23,11 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.storage.file_token_keyring_store import (
+    FileTokenV2KeyRingStore,
+    FileTokenV2KeyRingStoreError,
+)
+
 _BUFFER_BYTES = 1024 * 1024
 _MANIFEST_PATH = "manifest.json"
 _MANIFEST_LIMIT_BYTES = 16 * 1024 * 1024
@@ -30,6 +35,8 @@ _MAX_MEMBER_COUNT = 1_000_000
 _DIGEST_PATTERN = r"^[0-9a-f]{64}$"
 _CANONICAL_DATABASE_PATH = "data/nanoloop.db"
 _CANONICAL_TOKEN_PATH = "data/.file_token_secret"
+_CANONICAL_TOKEN_V2_KEYRING_PATH = "data/.file_token_v2_keyring.json"
+_FILE_TOKEN_V2_KEYRING_REQUIREMENT = "file_token_v2_keyring"
 _CANONICAL_DIRECTORIES = (
     "data",
     "data/model-snapshots",
@@ -79,6 +86,8 @@ class BackupLayout:
     knowledge_source_root: Path
     knowledge_index_root: Path
     file_token_secret_file: Path | None = None
+    file_token_v2_keyring_file: Path | None = None
+    require_file_token_v2_keyring: bool = False
 
 
 class BackupFileRecord(BaseModel):
@@ -105,8 +114,11 @@ class BackupFileRecord(BaseModel):
             )
         if self.mode & 0o7000:
             raise ValueError("setuid, setgid, and sticky permission bits are not allowed")
-        if self.path == _CANONICAL_TOKEN_PATH and self.mode != 0o600:
-            raise ValueError("the persisted file-token secret must use mode 0600")
+        if self.path in {
+            _CANONICAL_TOKEN_PATH,
+            _CANONICAL_TOKEN_V2_KEYRING_PATH,
+        } and self.mode != 0o600:
+            raise ValueError("persisted file-token signing material must use mode 0600")
         return self
 
 
@@ -138,6 +150,21 @@ class BackupManifest(BaseModel):
         if len(database) != 1 or database[0].path != _CANONICAL_DATABASE_PATH:
             raise ValueError("manifest must contain exactly one canonical database snapshot")
         return self
+
+    @property
+    def missing_production_requirements(self) -> tuple[str, ...]:
+        """Stable requirement codes which are safe to expose in operator reports."""
+
+        paths = {record.path for record in self.files}
+        if _CANONICAL_TOKEN_V2_KEYRING_PATH not in paths:
+            return (_FILE_TOKEN_V2_KEYRING_REQUIREMENT,)
+        return ()
+
+    @property
+    def production_ready(self) -> bool:
+        """Whether the archive carries all signing state required by the current runtime."""
+
+        return not self.missing_production_requirements
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,6 +228,7 @@ class _ResolvedLayout:
     knowledge_source_root: Path
     knowledge_index_root: Path
     file_token_secret_file: Path | None
+    file_token_v2_keyring_file: Path | None
 
     @property
     def roots(self) -> tuple[Path, ...]:
@@ -487,6 +515,14 @@ def restore_backup(
                 if record.path != _CANONICAL_DATABASE_PATH:
                     _extract_member(archive, record, staging)
 
+        restored_v2_keyring = staging / _CANONICAL_TOKEN_V2_KEYRING_PATH
+        if _CANONICAL_TOKEN_V2_KEYRING_PATH in records:
+            try:
+                FileTokenV2KeyRingStore(restored_v2_keyring).load()
+            except FileTokenV2KeyRingStoreError:
+                raise BackupValidationError(
+                    "restored file-token v2 key ring is invalid"
+                ) from None
         restored_revision = _validate_database_file(staging / _CANONICAL_DATABASE_PATH)
         if restored_revision != manifest.database_revision:
             raise BackupValidationError("restored database revision changed during restore")
@@ -530,6 +566,28 @@ def _resolve_layout(layout: BackupLayout) -> _ResolvedLayout:
         if configured_token_path is not None
         else None
     )
+    configured_v2_keyring_path = layout.file_token_v2_keyring_file
+    default_v2_keyring_path = data_root / _CANONICAL_TOKEN_V2_KEYRING_PATH.removeprefix(
+        "data/"
+    )
+    if configured_v2_keyring_path is None and os.path.lexists(default_v2_keyring_path):
+        configured_v2_keyring_path = default_v2_keyring_path
+    v2_keyring_path = (
+        _require_regular_existing(
+            configured_v2_keyring_path,
+            "file_token_v2_keyring_file",
+        )
+        if configured_v2_keyring_path is not None
+        else None
+    )
+    if not isinstance(layout.require_file_token_v2_keyring, bool):
+        raise BackupPreconditionError(
+            "require_file_token_v2_keyring must be a boolean"
+        )
+    if layout.require_file_token_v2_keyring and v2_keyring_path is None:
+        raise BackupPreconditionError(
+            "production-ready backup requires a file-token v2 key ring"
+        )
     roots = (
         data_root,
         output_root,
@@ -559,6 +617,10 @@ def _resolve_layout(layout: BackupLayout) -> _ResolvedLayout:
         raise BackupPreconditionError(
             "file_token_secret_file must be located inside data_root"
         )
+    if v2_keyring_path is not None and not v2_keyring_path.is_relative_to(data_root):
+        raise BackupPreconditionError(
+            "file_token_v2_keyring_file must be located inside data_root"
+        )
     _validate_source_permissions(database_path, "database_path")
     if token_path is not None:
         _validate_source_permissions(
@@ -566,15 +628,37 @@ def _resolve_layout(layout: BackupLayout) -> _ResolvedLayout:
             "file_token_secret_file",
             secret=True,
         )
+    if v2_keyring_path is not None:
+        _validate_source_permissions(
+            v2_keyring_path,
+            "file_token_v2_keyring_file",
+            secret=True,
+        )
+        try:
+            FileTokenV2KeyRingStore(v2_keyring_path).load()
+        except FileTokenV2KeyRingStoreError:
+            raise BackupPreconditionError(
+                "file_token_v2_keyring_file is not a valid protected key ring"
+            ) from None
     for special_file, label in (
         (database_path, "database_path"),
         *(([(token_path, "file_token_secret_file")]) if token_path is not None else []),
+        *(
+            ([(v2_keyring_path, "file_token_v2_keyring_file")])
+            if v2_keyring_path is not None
+            else []
+        ),
     ):
         for root in roots:
             if special_file.is_relative_to(root) and root != data_root:
                 raise BackupPreconditionError(f"{label} overlaps component root {root}")
-    if token_path is not None and token_path == database_path:
-        raise BackupPreconditionError("database and token secret must be different files")
+    signing_files = [
+        item for item in (token_path, v2_keyring_path) if item is not None
+    ]
+    if database_path in signing_files or len(signing_files) != len(set(signing_files)):
+        raise BackupPreconditionError(
+            "database and file-token signing files must be different files"
+        )
     return _ResolvedLayout(
         database_path=database_path,
         data_root=data_root,
@@ -583,6 +667,7 @@ def _resolve_layout(layout: BackupLayout) -> _ResolvedLayout:
         knowledge_source_root=knowledge_source_root,
         knowledge_index_root=knowledge_index_root,
         file_token_secret_file=token_path,
+        file_token_v2_keyring_file=v2_keyring_path,
     )
 
 
@@ -590,6 +675,9 @@ def _build_inventory(layout: _ResolvedLayout) -> list[_SourceFile]:
     inventory: list[_SourceFile] = []
     canonical_database_name = _CANONICAL_DATABASE_PATH.removeprefix("data/")
     canonical_token_name = _CANONICAL_TOKEN_PATH.removeprefix("data/")
+    canonical_v2_keyring_name = _CANONICAL_TOKEN_V2_KEYRING_PATH.removeprefix(
+        "data/"
+    )
     database_sidecars = {
         Path(f"{layout.database_path}{suffix}")
         for suffix in ("-wal", "-shm", "-journal")
@@ -600,8 +688,17 @@ def _build_inventory(layout: _ResolvedLayout) -> list[_SourceFile]:
             return True
         if layout.file_token_secret_file is not None and path == layout.file_token_secret_file:
             return True
+        if (
+            layout.file_token_v2_keyring_file is not None
+            and path == layout.file_token_v2_keyring_file
+        ):
+            return True
         relative_value = relative.as_posix()
-        if relative_value in {canonical_database_name, canonical_token_name}:
+        if relative_value in {
+            canonical_database_name,
+            canonical_token_name,
+            canonical_v2_keyring_name,
+        }:
             raise BackupPreconditionError(
                 f"runtime data collides with canonical backup path: {relative_value}"
             )
@@ -663,6 +760,20 @@ def _build_inventory(layout: _ResolvedLayout) -> list[_SourceFile]:
                 archive_path=_CANONICAL_TOKEN_PATH,
                 component=BackupComponent.RUNTIME_DATA,
                 state=_regular_file_state(layout.file_token_secret_file),
+            )
+        )
+    if layout.file_token_v2_keyring_file is not None:
+        _validate_source_permissions(
+            layout.file_token_v2_keyring_file,
+            "file_token_v2_keyring_file",
+            secret=True,
+        )
+        inventory.append(
+            _SourceFile(
+                source=layout.file_token_v2_keyring_file,
+                archive_path=_CANONICAL_TOKEN_V2_KEYRING_PATH,
+                component=BackupComponent.RUNTIME_DATA,
+                state=_regular_file_state(layout.file_token_v2_keyring_file),
             )
         )
     paths = [item.archive_path for item in inventory]
@@ -982,8 +1093,13 @@ def _component_for_member_path(value: str) -> BackupComponent:
         ),
     } or value.startswith("data/tmp/"):
         raise BackupValidationError("backup member path is reserved runtime state")
-    if value.startswith(f"{_CANONICAL_DATABASE_PATH}/") or value.startswith(
-        f"{_CANONICAL_TOKEN_PATH}/"
+    if any(
+        value.startswith(f"{canonical_path}/")
+        for canonical_path in (
+            _CANONICAL_DATABASE_PATH,
+            _CANONICAL_TOKEN_PATH,
+            _CANONICAL_TOKEN_V2_KEYRING_PATH,
+        )
     ):
         raise BackupValidationError("backup member path collides with a canonical file")
     if value.startswith("data/model-snapshots/"):
@@ -1170,11 +1286,21 @@ def _assert_inventory_unchanged(inventory: Iterable[_SourceFile]) -> None:
 
 
 def _database_watch_states(path: Path) -> dict[Path, _FileState | None]:
-    watched = [path, *(Path(f"{path}{suffix}") for suffix in ("-wal", "-shm", "-journal"))]
+    # SQLite may create or remove ``-shm`` while this process opens an existing WAL in
+    # read-only mode. That file contains transient locks and index metadata, not durable
+    # database pages. Watching it would make an offline backup reject its own harmless
+    # reader activity. The database, WAL, and rollback journal remain fail-closed.
+    wal_path = Path(f"{path}-wal")
+    watched = [path, wal_path, Path(f"{path}-journal")]
     result: dict[Path, _FileState | None] = {}
     for candidate in watched:
         if os.path.lexists(candidate):
-            result[candidate] = _regular_file_state(candidate)
+            state = _regular_file_state(candidate)
+            # Opening a clean WAL-mode database through SQLite's read-only URI can create an
+            # empty ``-wal`` file even though there are no frames to preserve.  Absence and a
+            # zero-byte WAL therefore describe the same durable database state.  Non-empty WAL
+            # files, the main database, and rollback journals remain strictly monitored.
+            result[candidate] = None if candidate == wal_path and state.size == 0 else state
         else:
             result[candidate] = None
     return result

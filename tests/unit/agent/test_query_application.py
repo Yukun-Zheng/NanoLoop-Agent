@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,7 @@ from sqlalchemy import select
 
 from app.agent.application import QueryApplicationService
 from app.contracts.enums import JobStatus, QueryType
+from app.contracts.identity import LEGACY_PRINCIPAL_ID, LEGACY_TENANT_ID, AuthMode
 from app.contracts.queries import (
     Citation,
     MaterialContext,
@@ -16,20 +18,41 @@ from app.contracts.queries import (
 )
 from app.core.config import Settings
 from app.core.errors import ResourceNotFoundError, StorageError
+from app.core.identity import legacy_principal_context
 from app.db.base import Base
-from app.db.models import AnalysisJob, ImageAsset, QueryLog
+from app.db.models import (
+    AnalysisJob,
+    ImageAsset,
+    ModelRegistryRecord,
+    QueryLog,
+    SegmentationRun,
+)
 from app.db.repositories import SqlAlchemyRepositorySet
 from app.db.session import Database
 from app.storage import LocalFileStore, StoragePaths
+
+_LEGACY_ADMIN = legacy_principal_context(AuthMode.DISABLED)
 
 
 class FakeUnifiedQuery:
     def __init__(self) -> None:
         self.requests: list[UnifiedQueryRequest] = []
+        self.before_return: Callable[[], None] | None = None
 
-    def answer(self, job_id: str, request: UnifiedQueryRequest) -> UnifiedQueryResponse:
+    def answer(
+        self,
+        job_id: str,
+        request: UnifiedQueryRequest,
+        *,
+        tenant_id: str,
+        auth_mode: AuthMode,
+    ) -> UnifiedQueryResponse:
         assert job_id == "job_1"
+        assert tenant_id == LEGACY_TENANT_ID
+        assert auth_mode is AuthMode.DISABLED
         self.requests.append(request)
+        if self.before_return is not None:
+            self.before_return()
         return UnifiedQueryResponse(
             query_type=QueryType.MATERIAL_KNOWLEDGE,
             answer=f"grounded: {request.question} [C1]",
@@ -64,6 +87,8 @@ def _service(
         session.add(
             AnalysisJob(
                 job_id="job_1",
+                tenant_id=LEGACY_TENANT_ID,
+                owner_principal_id=LEGACY_PRINCIPAL_ID,
                 name="query fixture",
                 status=JobStatus.READY_FOR_CONFIGURATION.value,
                 config_json={},
@@ -102,6 +127,14 @@ def _service(
     return service, database, store, unified_query
 
 
+def _answer(
+    service: QueryApplicationService,
+    job_id: str,
+    request: UnifiedQueryRequest,
+) -> UnifiedQueryResponse:
+    return service.answer(job_id, request, principal=_LEGACY_ADMIN)
+
+
 def _add_material_image(
     database: Database,
     *,
@@ -136,7 +169,8 @@ def test_query_is_persisted_and_written_to_audit_artifacts(tmp_path: Path) -> No
     service, database, store, _unified_query = _service(tmp_path)
     try:
         for question in ("first", "second"):
-            response = service.answer(
+            response = _answer(
+                service,
                 "job_1",
                 UnifiedQueryRequest(
                     question=question,
@@ -173,7 +207,8 @@ def test_committed_query_survives_audit_projection_failure(
     monkeypatch.setattr(store, failing_method, fail_projection)
     try:
         with caplog.at_level("WARNING", logger="app.agent.application"):
-            response = service.answer(
+            response = _answer(
+                service,
                 "job_1",
                 UnifiedQueryRequest(
                     question="committed despite projection outage",
@@ -210,10 +245,72 @@ def test_query_rejects_unknown_job_before_provider_call(tmp_path: Path) -> None:
     service, database, _store, _unified_query = _service(tmp_path)
     try:
         with pytest.raises(ResourceNotFoundError):
-            service.answer(
+            _answer(
+                service,
                 "missing",
                 UnifiedQueryRequest(question="question", query_type=QueryType.ANALYSIS_DATA),
             )
+    finally:
+        database.dispose()
+
+
+def test_final_audit_transaction_rechecks_run_scope_after_provider_race(
+    tmp_path: Path,
+) -> None:
+    service, database, store, unified_query = _service(tmp_path)
+
+    with database.session() as session:
+        session.add(
+            ModelRegistryRecord(
+                model_id="query-race-model",
+                family="unet",
+                variant="general",
+                quality_tier="balanced",
+                version="1",
+                adapter="tests.fake:QueryRaceAdapter",
+                status="ready",
+            )
+        )
+        session.flush()
+        session.add(
+            SegmentationRun(
+                run_id="run_raced",
+                job_id="job_1",
+                image_id="image_1",
+                model_id="query-race-model",
+                roi_mode="full_image",
+                status=JobStatus.COMPLETED.value,
+                inference_json={},
+                run_config_json={},
+                paths_json={},
+            )
+        )
+
+    def delete_validated_run() -> None:
+        with database.session() as session:
+            run = session.get(SegmentationRun, "run_raced")
+            assert run is not None
+            session.delete(run)
+
+    unified_query.before_return = delete_validated_run
+    try:
+        with pytest.raises(ResourceNotFoundError):
+            _answer(
+                service,
+                "job_1",
+                UnifiedQueryRequest(
+                    question="任务概览",
+                    query_type=QueryType.ANALYSIS_DATA,
+                    image_id="image_1",
+                    run_ids=["run_raced"],
+                ),
+            )
+
+        assert len(unified_query.requests) == 1
+        with database.session() as session:
+            assert session.scalar(select(QueryLog)) is None
+        assert not store.paths.query_history("job_1").exists()
+        assert not store.paths.rag_citations("job_1").exists()
     finally:
         database.dispose()
 
@@ -223,7 +320,8 @@ def test_query_resolves_image_material_metadata_and_preserves_explicit_context(
 ) -> None:
     service, database, store, unified_query = _service(tmp_path)
     try:
-        response = service.answer(
+        response = _answer(
+            service,
             "job_1",
             UnifiedQueryRequest(
                 question="该材料有什么用途？",
@@ -248,7 +346,8 @@ def test_query_resolves_image_material_metadata_and_preserves_explicit_context(
         }
 
         call_count = len(unified_query.requests)
-        conflict = service.answer(
+        conflict = _answer(
+            service,
             "job_1",
             UnifiedQueryRequest(
                 question="该材料有什么性质？",
@@ -266,7 +365,8 @@ def test_query_resolves_image_material_metadata_and_preserves_explicit_context(
             formula="confirmed-formula",
             source="user_confirmation",
         )
-        service.answer(
+        _answer(
+            service,
             "job_1",
             UnifiedQueryRequest(
                 question="该材料有什么性质？",
@@ -290,7 +390,8 @@ def test_query_without_image_uses_the_jobs_unique_material(tmp_path: Path) -> No
             material_name="Perovskite nickelate",
             sha_character="c",
         )
-        response = service.answer(
+        response = _answer(
+            service,
             "job_1",
             UnifiedQueryRequest(
                 question="这种材料有什么用途？",
@@ -324,14 +425,16 @@ def test_query_without_image_clarifies_multiple_job_materials_before_retrieval(
             sha_character="b",
         )
 
-        explicit = service.answer(
+        explicit = _answer(
+            service,
             "job_1",
             UnifiedQueryRequest(
                 question="材料有什么用途？",
                 query_type=QueryType.MATERIAL_KNOWLEDGE,
             ),
         )
-        contextual_auto = service.answer(
+        contextual_auto = _answer(
+            service,
             "job_1",
             UnifiedQueryRequest(question="这个材料怎么样？"),
         )

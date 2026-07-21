@@ -7,19 +7,19 @@
 
 | 子系统 | 已有接缝 | 尚未交付 |
 | --- | --- | --- |
-| 模型 | `InferenceGateway`、三类 Adapter、`AdapterCache.lease()` 并发保护、注册表健康校验、不可变运行、统一后处理、canonical `pred_mask.png`/`instances.json` 和过滤前边界诊断已接通。正常运行的 schema v3 冻结原图/尺度、resolved 科学设置及权重/配置/模型卡/Adapter 源码完整 bundle；执行时核对 build identity 并单独保存实际设备/seed/后端证据。U-Net 已有 overlap tiling；每次状态转换写入事件时间线。 | `model_artifacts/weights` 无真实 checkpoint；U-Net、YOLO-Seg、SAM2 三项均为 `unavailable`，没有真实 fixture 推理、模型评测或冷启动结果。 |
+| 模型 | `InferenceGateway`、三类 Adapter、`AdapterCache.lease()` 并发保护、注册表健康校验、不可变运行、统一后处理、canonical `pred_mask.png`/`instances.json` 和过滤前边界诊断已接通。正常运行的 schema v3 冻结原图/尺度、resolved 科学设置及权重/配置/模型卡/Adapter 源码完整 bundle；执行时核对 build identity 并单独保存实际设备/seed/后端证据。U-Net 已有灰度/百分位预处理、底部无效区和 overlap tiling；Large/Agglomerated 另有校准、独立评测和真实 Analysis smoke 工具，每次状态转换写入事件时间线。 | `model_artifacts/weights` 无真实 checkpoint；Small/Large/Agglomerated U-Net、YOLO-Seg、SAM2 五项均为 `unavailable`。郭境濠 ZIP 未交付完整私有 bundle、资产/许可台账、无泄漏 split manifest 或机器可读运行证据；卡片中的开发者报告指标尚不能归因到当前整合源码，也没有真实 fixture 推理或冷启动结果。 |
 | RAG | 文档摄取/切块、SQLite FTS5、RRF、严格材料标签、多材料澄清、摘录/OpenAI-compatible 提供器、引用 provenance 与文档启停已实现。页数/字符/chunk/别名/向量语料有界，embedding 分批。可选向量 runtime 已接通 local-files-only SentenceTransformers、不可变 FAISS generation、原子 manifest、数据库映射校验和失败降级。 | 当前环境没有固定真实 embedding 模型及经许可并覆盖演示材料的正式语料包；fake backend 门禁不能替代真实资产的重启/检索冒烟，因此不得宣称生产向量 RAG 已交付。 |
 
 关键入口：
 
 - 模型：[注册表](../model_artifacts/registry.yaml)、[注册服务](../app/inference/registry.py)、[InferenceGateway](../app/inference/gateway.py)、[Adapter 合同](../app/inference/adapters/base.py)。
 - RAG：[启动装配](../app/main.py)、[摄取服务](../app/rag/application.py)、[Embedding 实现与合同](../app/rag/embeddings.py)、[VectorStore 实现与合同](../app/rag/vector_store.py)、[RetrievalService](../app/rag/retrieval.py)。
-- 共同边界：[DTO](../app/contracts)、[ADR-0001](adr/0001-contract-first-modular-monolith.md)、[ADR-0002](adr/0002-v2-contract-ambiguity-resolutions.md)。
+- 共同边界：[DTO](../app/contracts)、[ADR-0001](adr/0001-contract-first-modular-monolith.md)、[ADR-0002](adr/0002-v2-contract-ambiguity-resolutions.md)、[ADR-0005](adr/0005-principal-credentials-and-legacy-compatibility.md)。
 
 ### 1.1 部署假设（模型/RAG 接入必须保持）
 
 - [Compose](../docker-compose.yml) 默认只绑定宿主机 `127.0.0.1`；容器内 Uvicorn 是 1 process。SQLite、进程内调度和导出协调按单 API 实例设计，不能直接增加 worker/replica。
-- API 已拒绝不受信任/歧义 Host，并对浏览器写请求校验 Origin/fetch metadata；可选共享 `X-API-Key` 与单进程固定三桶限流也已接通。但它仍没有账号/租户身份、角色授权、分布式限流、调用 quota 或磁盘 quota/retention。不要将 `NANOLOOP_BIND_HOST` 改为公网地址并宣称 production-ready；远程访问至少需要受信任反向代理上的 TLS、真实用户认证/授权、边缘限速和访问审计，多实例还需替换单机状态协调。
+- API 已拒绝不受信任/歧义 Host，并对浏览器写请求校验 Origin/fetch metadata；共享 Key 与可撤销 principal credential authentication 均已接通，tenant/principal/credential 状态由数据库和运维 CLI 管理。Analysis 聚合已绑定 tenant/owner 并执行角色策略，query actor 与数值数据工具也已在两层 SQL 边界隔离。文件能力 v2 已绑定 tenant、principal、job、artifact、purpose/audience、内容哈希和时限，principal 模式拒绝 v1，下载从核验后的固定文件描述符流出；但知识文档、FTS 和向量 generation 尚未租户化，principal 的知识与混合查询因此会在检索前安全 503。分布式限流、调用 quota、磁盘 quota/retention 和多副本协调仍未完成。不要将 `NANOLOOP_BIND_HOST` 改为公网地址并宣称 production-ready；远程访问至少需要受信任反向代理上的 TLS、所需的用户登录/联邦身份、剩余业务授权、边缘限速和访问审计，多实例还需替换单机状态协调。
 - 整体请求已有 [RequestBodyLimitMiddleware](../app/api/middleware.py)，`MAX_REQUEST_MB` 默认 512；[有界 multipart 路由](../app/api/routing.py) 在字段绑定前限制各操作的文件/字段数、名称、类型、基数和文本 part。Compose 将 `TMPDIR` 指向数据卷，避免大 multipart 落入小型 tmpfs。后续仍需模型/语料/输出累计磁盘配额和清理保留策略。
 - 重型模型和向量 RAG 依赖没有安装进默认 CPU API 镜像。修改镜像时应保持非 root、只读根文件系统、模型/语料/索引挂载和诚实 health，而不是把私有资产烘焙进公开镜像。
 - Compose 使用 `NANOLOOP_MODEL_ARTIFACTS_DIR` 将一整套 `registry.yaml`、`configs/`、

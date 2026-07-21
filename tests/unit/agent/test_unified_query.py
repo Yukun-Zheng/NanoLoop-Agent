@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import cast
 
+import pytest
+
 from app.agent.router import QueryRouter
 from app.agent.unified_query import (
     DataQuery,
@@ -12,6 +14,7 @@ from app.agent.unified_query import (
     UnifiedQueryService,
 )
 from app.contracts.enums import QueryType
+from app.contracts.identity import LEGACY_TENANT_ID, AuthMode
 from app.contracts.queries import (
     Citation,
     MaterialContext,
@@ -19,6 +22,7 @@ from app.contracts.queries import (
     ToolEvidence,
     UnifiedQueryRequest,
 )
+from app.core.errors import ServiceUnavailableError
 from app.rag.service import KnowledgeAnswer, KnowledgeService
 
 
@@ -101,12 +105,27 @@ def _service(
     )
 
 
+def _answer(
+    service: UnifiedQueryService,
+    request: UnifiedQueryRequest,
+    *,
+    auth_mode: AuthMode = AuthMode.DISABLED,
+    tenant_id: str = LEGACY_TENANT_ID,
+):
+    return service.answer(
+        "job_1",
+        request,
+        tenant_id=tenant_id,
+        auth_mode=auth_mode,
+    )
+
+
 def test_unknown_auto_query_clarifies_without_calling_tools() -> None:
     data = FakeDataTools()
     knowledge = FakeKnowledgeService()
 
-    response = _service(data, knowledge).answer(
-        "job_1",
+    response = _answer(
+        _service(data, knowledge),
         UnifiedQueryRequest(question="帮我看看"),
     )
 
@@ -120,8 +139,8 @@ def test_data_query_delegates_all_numbers_to_injected_tool_service() -> None:
     data = FakeDataTools()
     knowledge = FakeKnowledgeService()
 
-    response = _service(data, knowledge).answer(
-        "job_1",
+    response = _answer(
+        _service(data, knowledge),
         UnifiedQueryRequest(
             question="哪组覆盖率最高？",
             query_type=QueryType.ANALYSIS_DATA,
@@ -132,6 +151,7 @@ def test_data_query_delegates_all_numbers_to_injected_tool_service() -> None:
     assert response.answer == "样品 A 覆盖率最高，为 0.42。"
     assert response.data_evidence[0].rows[0]["coverage_ratio"] == 0.42
     assert data.queries[0].job_id == "job_1"
+    assert data.queries[0].tenant_id == LEGACY_TENANT_ID
     assert knowledge.calls == 0
 
 
@@ -139,8 +159,8 @@ def test_auto_mixed_query_keeps_data_and_knowledge_in_separate_sections() -> Non
     data = FakeDataTools()
     knowledge = FakeKnowledgeService()
 
-    response = _service(data, knowledge).answer(
-        "job_1",
+    response = _answer(
+        _service(data, knowledge),
         UnifiedQueryRequest(
             question="已有研究用途是什么，我们这批覆盖率最高吗？",
             material_context=MaterialContext(formula="SrNi"),
@@ -157,8 +177,8 @@ def test_auto_mixed_query_keeps_data_and_knowledge_in_separate_sections() -> Non
 
 
 def test_mixed_query_exposes_partial_insufficiency() -> None:
-    response = _service(FakeDataTools(), FakeKnowledgeService("INSUFFICIENT_EVIDENCE")).answer(
-        "job_1",
+    response = _answer(
+        _service(FakeDataTools(), FakeKnowledgeService("INSUFFICIENT_EVIDENCE")),
         UnifiedQueryRequest(
             question="已有研究用途是什么，我们这批覆盖率最高吗？",
             query_type=QueryType.MIXED,
@@ -169,3 +189,55 @@ def test_mixed_query_exposes_partial_insufficiency() -> None:
     assert response.data_evidence
     assert not response.citations
     assert "empty corpus" in response.limitations
+
+
+@pytest.mark.parametrize(
+    "query_request",
+    [
+        UnifiedQueryRequest(
+            question="该材料有什么用途？",
+            query_type=QueryType.MATERIAL_KNOWLEDGE,
+        ),
+        UnifiedQueryRequest(
+            question="我们这批覆盖率最高吗，已有研究用途是什么？",
+            query_type=QueryType.MIXED,
+        ),
+        UnifiedQueryRequest(question="已有研究用途是什么？"),
+    ],
+)
+def test_principal_knowledge_routes_fail_before_any_tool_or_provider(
+    query_request: UnifiedQueryRequest,
+) -> None:
+    data = FakeDataTools()
+    knowledge = FakeKnowledgeService()
+
+    with pytest.raises(ServiceUnavailableError) as error:
+        _answer(
+            _service(data, knowledge),
+            query_request,
+            auth_mode=AuthMode.PRINCIPAL,
+            tenant_id=f"tnt_{'a' * 32}",
+        )
+
+    assert error.value.details == {"component": "knowledge_tenant_scope"}
+    assert not data.queries
+    assert knowledge.calls == 0
+
+
+@pytest.mark.parametrize("auth_mode", [AuthMode.DISABLED, AuthMode.SHARED_KEY])
+def test_compatibility_modes_keep_global_knowledge_behavior(auth_mode: AuthMode) -> None:
+    data = FakeDataTools()
+    knowledge = FakeKnowledgeService()
+
+    response = _answer(
+        _service(data, knowledge),
+        UnifiedQueryRequest(
+            question="该材料有什么用途？",
+            query_type=QueryType.MATERIAL_KNOWLEDGE,
+        ),
+        auth_mode=auth_mode,
+    )
+
+    assert response.query_type is QueryType.MATERIAL_KNOWLEDGE
+    assert knowledge.calls == 1
+    assert not data.queries

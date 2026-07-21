@@ -4,17 +4,22 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import (
+    DDL,
     JSON,
+    BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
+    event,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -25,9 +30,12 @@ from app.contracts.enums import (
     ModelStatus,
     QualityStatus,
 )
+from app.contracts.identity import LEGACY_PRINCIPAL_ID, LEGACY_TENANT_ID
 from app.db.base import Base
 
 JsonObject = dict[str, Any]
+_HEX_32_GLOB = "[0-9a-f]" * 32
+_HEX_64_GLOB = "[0-9a-f]" * 64
 
 
 class TimestampMixin:
@@ -41,8 +49,33 @@ class TimestampMixin:
 
 class AnalysisJob(TimestampMixin, Base):
     __tablename__ = "analysis_jobs"
+    __table_args__ = (
+        UniqueConstraint("job_id", "tenant_id", name="uq_analysis_jobs_job_tenant"),
+        ForeignKeyConstraint(
+            ["owner_principal_id", "tenant_id"],
+            ["principals.principal_id", "principals.tenant_id"],
+            name="fk_analysis_jobs_owner_principal_tenant",
+            ondelete="RESTRICT",
+        ),
+        Index("ix_analysis_jobs_tenant_created", "tenant_id", "created_at"),
+        Index(
+            "ix_analysis_jobs_tenant_owner_created",
+            "tenant_id",
+            "owner_principal_id",
+            "created_at",
+        ),
+    )
 
     job_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("tenants.tenant_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    owner_principal_id: Mapped[str] = mapped_column(
+        String(36),
+        nullable=False,
+    )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     status: Mapped[str] = mapped_column(String(40), default=JobStatus.CREATED.value, nullable=False)
     config_json: Mapped[JsonObject] = mapped_column(JSON, default=dict, nullable=False)
@@ -62,6 +95,7 @@ class AnalysisJob(TimestampMixin, Base):
 class ImageAsset(TimestampMixin, Base):
     __tablename__ = "image_assets"
     __table_args__ = (
+        UniqueConstraint("image_id", "job_id", name="uq_image_assets_image_job"),
         UniqueConstraint("job_id", "filename", name="job_filename"),
         UniqueConstraint("job_id", "sha256", name="job_sha256"),
         CheckConstraint("width > 0", name="width_positive"),
@@ -98,7 +132,9 @@ class ImageAsset(TimestampMixin, Base):
         back_populates="image", cascade="all, delete-orphan"
     )
     runs: Mapped[list["SegmentationRun"]] = relationship(
-        back_populates="image", cascade="all, delete-orphan"
+        back_populates="image",
+        cascade="all, delete-orphan",
+        foreign_keys="SegmentationRun.image_id",
     )
 
 
@@ -174,6 +210,24 @@ class ModelRegistryRecord(TimestampMixin, Base):
 class SegmentationRun(TimestampMixin, Base):
     __tablename__ = "segmentation_runs"
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["image_id", "job_id"],
+            ["image_assets.image_id", "image_assets.job_id"],
+            name="fk_segmentation_runs_image_job",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["parent_run_id", "job_id"],
+            ["segmentation_runs.run_id", "segmentation_runs.job_id"],
+            name="fk_segmentation_runs_parent_job",
+        ),
+        UniqueConstraint("run_id", "job_id", name="uq_segmentation_runs_run_job"),
+        UniqueConstraint(
+            "run_id",
+            "image_id",
+            "job_id",
+            name="uq_segmentation_runs_run_image_job",
+        ),
         CheckConstraint(
             "threshold IS NULL OR (threshold >= 0 AND threshold <= 1)", name="threshold"
         ),
@@ -185,9 +239,7 @@ class SegmentationRun(TimestampMixin, Base):
     job_id: Mapped[str] = mapped_column(
         ForeignKey("analysis_jobs.job_id", ondelete="CASCADE"), nullable=False
     )
-    image_id: Mapped[str] = mapped_column(
-        ForeignKey("image_assets.image_id", ondelete="CASCADE"), nullable=False
-    )
+    image_id: Mapped[str] = mapped_column(String(64), nullable=False)
     model_id: Mapped[str] = mapped_column(
         ForeignKey("model_registry.model_id", ondelete="RESTRICT"), nullable=False
     )
@@ -207,7 +259,10 @@ class SegmentationRun(TimestampMixin, Base):
     error_message: Mapped[str | None] = mapped_column(Text)
 
     job: Mapped[AnalysisJob] = relationship(back_populates="runs")
-    image: Mapped[ImageAsset] = relationship(back_populates="runs")
+    image: Mapped[ImageAsset] = relationship(
+        back_populates="runs",
+        foreign_keys=[image_id],
+    )
     model: Mapped[ModelRegistryRecord] = relationship(back_populates="runs")
     particles: Mapped[list["ParticleRecord"]] = relationship(
         back_populates="run", cascade="all, delete-orphan"
@@ -239,6 +294,146 @@ class RunStatusEvent(Base):
     )
 
     run: Mapped[SegmentationRun] = relationship(back_populates="status_events")
+
+
+class FileArtifact(Base):
+    """Immutable file facts with a one-way active/terminal lifecycle."""
+
+    __tablename__ = "file_artifacts"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["job_id"],
+            ["analysis_jobs.job_id"],
+            name="fk_file_artifacts_job",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["image_id", "job_id"],
+            ["image_assets.image_id", "image_assets.job_id"],
+            name="fk_file_artifacts_image_job",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["run_id", "job_id"],
+            ["segmentation_runs.run_id", "segmentation_runs.job_id"],
+            name="fk_file_artifacts_run_job",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["run_id", "image_id", "job_id"],
+            [
+                "segmentation_runs.run_id",
+                "segmentation_runs.image_id",
+                "segmentation_runs.job_id",
+            ],
+            name="fk_file_artifacts_run_image_job",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint("length(artifact_id) = 36", name="artifact_id_length"),
+        CheckConstraint(
+            f"artifact_id GLOB 'art_{_HEX_32_GLOB}'",
+            name="artifact_id_canonical",
+        ),
+        CheckConstraint(
+            "artifact_kind IN "
+            "('original_image', 'run_artifact', 'analysis_export', "
+            "'corrected_mask_input')",
+            name="artifact_kind_known",
+        ),
+        CheckConstraint(
+            "(artifact_kind = 'original_image' AND image_id IS NOT NULL "
+            "AND run_id IS NULL) OR "
+            "(artifact_kind IN ('run_artifact', 'corrected_mask_input') "
+            "AND image_id IS NOT NULL AND run_id IS NOT NULL) OR "
+            "(artifact_kind = 'analysis_export' AND image_id IS NULL AND run_id IS NULL)",
+            name="artifact_relationship_shape",
+        ),
+        CheckConstraint(
+            "length(storage_path) BETWEEN 1 AND 4096 "
+            "AND substr(storage_path, 1, 1) <> '/' "
+            "AND substr(storage_path, -1, 1) <> '/' "
+            "AND instr(storage_path, char(92)) = 0 "
+            "AND instr(storage_path, char(0)) = 0 "
+            "AND instr(storage_path, char(10)) = 0 "
+            "AND instr(storage_path, char(13)) = 0 "
+            "AND storage_path NOT LIKE '%//%' "
+            "AND storage_path <> '.' AND storage_path <> '..' "
+            "AND storage_path NOT LIKE './%' "
+            "AND storage_path NOT LIKE '../%' "
+            "AND storage_path NOT LIKE '%/./%' "
+            "AND storage_path NOT LIKE '%/../%' "
+            "AND storage_path NOT LIKE '%/.' "
+            "AND storage_path NOT LIKE '%/..'",
+            name="storage_path_managed_relative",
+        ),
+        CheckConstraint(
+            "length(trim(filename)) BETWEEN 1 AND 255 "
+            "AND filename = trim(filename) "
+            "AND filename NOT IN ('.', '..') "
+            "AND instr(filename, '/') = 0 "
+            "AND instr(filename, char(92)) = 0 "
+            "AND instr(filename, char(0)) = 0 "
+            "AND instr(filename, char(10)) = 0 "
+            "AND instr(filename, char(13)) = 0",
+            name="filename_basename",
+        ),
+        CheckConstraint(
+            "length(media_type) BETWEEN 3 AND 255 "
+            "AND media_type = lower(media_type) "
+            "AND instr(media_type, '/') > 1 "
+            "AND instr(media_type, ' ') = 0 "
+            "AND instr(media_type, char(0)) = 0 "
+            "AND instr(media_type, char(10)) = 0 "
+            "AND instr(media_type, char(13)) = 0",
+            name="media_type_canonical",
+        ),
+        CheckConstraint("length(sha256) = 64", name="sha256_length"),
+        CheckConstraint(
+            f"sha256 GLOB '{_HEX_64_GLOB}'",
+            name="sha256_canonical",
+        ),
+        CheckConstraint("size_bytes >= 0", name="size_bytes_nonnegative"),
+        CheckConstraint(
+            "state IN ('active', 'consumed', 'revoked')",
+            name="state_known",
+        ),
+        CheckConstraint(
+            "state <> 'consumed' OR artifact_kind = 'corrected_mask_input'",
+            name="consumed_kind",
+        ),
+        CheckConstraint(
+            "(state = 'active' AND consumed_at IS NULL AND revoked_at IS NULL) OR "
+            "(state = 'consumed' AND consumed_at IS NOT NULL AND revoked_at IS NULL "
+            "AND consumed_at >= created_at) OR "
+            "(state = 'revoked' AND consumed_at IS NULL AND revoked_at IS NOT NULL "
+            "AND revoked_at >= created_at)",
+            name="state_timestamp_shape",
+        ),
+        UniqueConstraint("storage_path", name="uq_file_artifacts_storage_path"),
+        Index(
+            "ix_file_artifacts_job_kind_state",
+            "job_id",
+            "artifact_kind",
+            "state",
+        ),
+    )
+
+    artifact_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    job_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    image_id: Mapped[str | None] = mapped_column(String(64))
+    run_id: Mapped[str | None] = mapped_column(String(64))
+    artifact_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    storage_path: Mapped[str] = mapped_column(Text, nullable=False)
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    media_type: Mapped[str] = mapped_column(String(255), nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class ParticleRecord(Base):
@@ -334,11 +529,62 @@ class KnowledgeChunk(Base):
 
 class QueryLog(Base):
     __tablename__ = "query_logs"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["image_id", "job_id"],
+            ["image_assets.image_id", "image_assets.job_id"],
+            name="fk_query_logs_image_job",
+        ),
+        ForeignKeyConstraint(
+            ["job_id", "actor_tenant_id"],
+            ["analysis_jobs.job_id", "analysis_jobs.tenant_id"],
+            name="fk_query_logs_job_actor_tenant",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["actor_principal_id", "actor_tenant_id"],
+            ["principals.principal_id", "principals.tenant_id"],
+            name="fk_query_logs_actor_principal_tenant",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["actor_credential_id", "actor_principal_id"],
+            ["api_credentials.credential_id", "api_credentials.principal_id"],
+            name="fk_query_logs_actor_credential_principal",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "actor_role IN ('tenant_admin', 'analyst', 'viewer')",
+            name="actor_role_known",
+        ),
+        CheckConstraint(
+            "actor_auth_mode IN "
+            "('disabled', 'shared_key', 'principal', 'legacy_unknown')",
+            name="actor_auth_mode_known",
+        ),
+        CheckConstraint(
+            "(actor_auth_mode = 'principal' AND actor_credential_id IS NOT NULL) OR "
+            "(actor_auth_mode IN ('disabled', 'shared_key', 'legacy_unknown') "
+            "AND actor_credential_id IS NULL)",
+            name="actor_credential_shape",
+        ),
+        CheckConstraint(
+            "actor_auth_mode = 'principal' OR "
+            f"(actor_tenant_id = '{LEGACY_TENANT_ID}' "
+            f"AND actor_principal_id = '{LEGACY_PRINCIPAL_ID}' "
+            "AND actor_role = 'tenant_admin')",
+            name="compatibility_actor_shape",
+        ),
+        Index(
+            "ix_query_logs_actor_created",
+            "actor_tenant_id",
+            "actor_principal_id",
+            "created_at",
+        ),
+    )
 
     query_id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    job_id: Mapped[str] = mapped_column(
-        ForeignKey("analysis_jobs.job_id", ondelete="CASCADE"), index=True, nullable=False
-    )
+    job_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
     image_id: Mapped[str | None] = mapped_column(
         ForeignKey("image_assets.image_id", ondelete="SET NULL")
     )
@@ -346,8 +592,299 @@ class QueryLog(Base):
     question: Mapped[str] = mapped_column(Text, nullable=False)
     request_json: Mapped[JsonObject] = mapped_column(JSON, default=dict, nullable=False)
     answer_json: Mapped[JsonObject] = mapped_column(JSON, nullable=False)
+    actor_tenant_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    actor_principal_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    actor_credential_id: Mapped[str | None] = mapped_column(String(36))
+    actor_role: Mapped[str] = mapped_column(String(32), nullable=False)
+    actor_auth_mode: Mapped[str] = mapped_column(String(24), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
     )
 
-    job: Mapped[AnalysisJob] = relationship(back_populates="queries")
+    job: Mapped[AnalysisJob] = relationship(
+        back_populates="queries",
+        foreign_keys=[job_id],
+    )
+
+
+class Tenant(TimestampMixin, Base):
+    """Tenant lifecycle state used by principal authentication and authorization."""
+
+    __tablename__ = "tenants"
+    __table_args__ = (
+        CheckConstraint("length(tenant_id) = 36", name="tenant_id_length"),
+        CheckConstraint(
+            f"tenant_id GLOB 'tnt_{_HEX_32_GLOB}'",
+            name="tenant_id_canonical",
+        ),
+        CheckConstraint("length(slug) BETWEEN 1 AND 63", name="slug_length"),
+        CheckConstraint("slug = lower(slug)", name="slug_lowercase"),
+        CheckConstraint(
+            "slug NOT GLOB '*[^a-z0-9-]*' "
+            "AND substr(slug, 1, 1) GLOB '[a-z0-9]' "
+            "AND substr(slug, -1, 1) GLOB '[a-z0-9]'",
+            name="slug_canonical",
+        ),
+        CheckConstraint(
+            "length(trim(display_name)) BETWEEN 1 AND 255",
+            name="display_name_length",
+        ),
+        CheckConstraint("enabled IN (0, 1)", name="enabled_boolean"),
+        CheckConstraint("version >= 1", name="version_positive"),
+        Index("ix_tenants_enabled", "enabled"),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    slug: Mapped[str] = mapped_column(String(63), unique=True, nullable=False)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+
+
+class Principal(TimestampMixin, Base):
+    """Human or service identity scoped to exactly one tenant."""
+
+    __tablename__ = "principals"
+    __table_args__ = (
+        CheckConstraint("length(principal_id) = 36", name="principal_id_length"),
+        CheckConstraint(
+            f"principal_id GLOB 'prn_{_HEX_32_GLOB}'",
+            name="principal_id_canonical",
+        ),
+        CheckConstraint("length(handle) BETWEEN 1 AND 64", name="handle_length"),
+        CheckConstraint("handle = lower(handle)", name="handle_lowercase"),
+        CheckConstraint(
+            "handle NOT GLOB '*[^a-z0-9._-]*' "
+            "AND substr(handle, 1, 1) GLOB '[a-z0-9]' "
+            "AND substr(handle, -1, 1) GLOB '[a-z0-9]'",
+            name="handle_canonical",
+        ),
+        CheckConstraint(
+            "length(trim(display_name)) BETWEEN 1 AND 255",
+            name="display_name_length",
+        ),
+        CheckConstraint("kind IN ('user', 'service')", name="kind_known"),
+        CheckConstraint(
+            "role IN ('tenant_admin', 'analyst', 'viewer')",
+            name="role_known",
+        ),
+        CheckConstraint("enabled IN (0, 1)", name="enabled_boolean"),
+        CheckConstraint("version >= 1", name="version_positive"),
+        UniqueConstraint("tenant_id", "handle", name="uq_principals_tenant_handle"),
+        UniqueConstraint(
+            "principal_id",
+            "tenant_id",
+            name="uq_principals_principal_tenant",
+        ),
+        Index("ix_principals_tenant_enabled", "tenant_id", "enabled"),
+    )
+
+    principal_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.tenant_id", ondelete="RESTRICT"), nullable=False
+    )
+    handle: Mapped[str] = mapped_column(String(64), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    role: Mapped[str] = mapped_column(String(32), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+
+
+class ApiCredential(TimestampMixin, Base):
+    """Revocable bearer credential metadata; raw credential tokens are never stored."""
+
+    __tablename__ = "api_credentials"
+    __table_args__ = (
+        CheckConstraint("length(credential_id) = 36", name="credential_id_length"),
+        CheckConstraint(
+            f"credential_id GLOB 'crd_{_HEX_32_GLOB}'",
+            name="credential_id_canonical",
+        ),
+        CheckConstraint("length(trim(label)) BETWEEN 1 AND 120", name="label_length"),
+        CheckConstraint("length(token_digest) = 32", name="token_digest_32_bytes"),
+        CheckConstraint("enabled IN (0, 1)", name="enabled_boolean"),
+        CheckConstraint("version >= 1", name="version_positive"),
+        UniqueConstraint("token_digest", name="uq_api_credentials_token_digest"),
+        UniqueConstraint(
+            "credential_id",
+            "principal_id",
+            name="uq_api_credentials_credential_principal",
+        ),
+        Index("ix_api_credentials_principal_enabled", "principal_id", "enabled"),
+    )
+
+    credential_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    principal_id: Mapped[str] = mapped_column(
+        ForeignKey("principals.principal_id", ondelete="RESTRICT"), nullable=False
+    )
+    label: Mapped[str] = mapped_column(String(120), nullable=False)
+    token_digest: Mapped[bytes] = mapped_column(LargeBinary(32), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+
+    def __repr__(self) -> str:
+        return (
+            f"{type(self).__name__}(credential_id={self.credential_id!r}, "
+            f"principal_id={self.principal_id!r}, token_digest=<redacted>)"
+        )
+
+
+class IdentityAuditEvent(Base):
+    """Append-only audit fact for identity lifecycle changes."""
+
+    __tablename__ = "identity_audit_events"
+    __table_args__ = (
+        CheckConstraint(
+            "event_type IN ("
+            "'tenant.created', 'tenant.enabled', 'tenant.disabled', "
+            "'principal.created', 'principal.enabled', 'principal.disabled', "
+            "'credential.issued', 'credential.enabled', 'credential.disabled', "
+            "'credential.revoked')",
+            name="event_type_known",
+        ),
+        CheckConstraint(
+            "actor_kind IN ('operator_cli', 'principal', 'migration', 'system')",
+            name="actor_kind_known",
+        ),
+        CheckConstraint(
+            "(actor_kind = 'principal' AND actor_principal_id IS NOT NULL) OR "
+            "(actor_kind <> 'principal' AND actor_principal_id IS NULL)",
+            name="actor_principal_shape",
+        ),
+        CheckConstraint(
+            "credential_id IS NULL OR principal_id IS NOT NULL",
+            name="credential_requires_principal",
+        ),
+        Index("ix_identity_audit_tenant_occurred", "tenant_id", "occurred_at"),
+        Index("ix_identity_audit_principal_occurred", "principal_id", "occurred_at"),
+        Index("ix_identity_audit_credential_occurred", "credential_id", "occurred_at"),
+    )
+
+    event_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.tenant_id", ondelete="RESTRICT"), nullable=False
+    )
+    principal_id: Mapped[str | None] = mapped_column(
+        ForeignKey("principals.principal_id", ondelete="RESTRICT")
+    )
+    credential_id: Mapped[str | None] = mapped_column(
+        ForeignKey("api_credentials.credential_id", ondelete="RESTRICT")
+    )
+    actor_principal_id: Mapped[str | None] = mapped_column(
+        ForeignKey("principals.principal_id", ondelete="RESTRICT")
+    )
+    actor_kind: Mapped[str] = mapped_column(String(24), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    metadata_json: Mapped[JsonObject] = mapped_column(JSON, default=dict, nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+
+# Alembic owns production schema changes and installs these triggers in their owning
+# revisions. The metadata listeners cover isolated/test databases built with
+# ``Base.metadata.create_all()`` so their direct-SQL integrity guarantees do not differ.
+event.listen(
+    FileArtifact.__table__,
+    "after_create",
+    DDL(  # type: ignore[no-untyped-call]
+        """
+        CREATE TRIGGER trg_file_artifacts_immutable_facts
+        BEFORE UPDATE ON file_artifacts
+        WHEN NEW.artifact_id IS NOT OLD.artifact_id
+          OR NEW.job_id IS NOT OLD.job_id
+          OR NEW.image_id IS NOT OLD.image_id
+          OR NEW.run_id IS NOT OLD.run_id
+          OR NEW.artifact_kind IS NOT OLD.artifact_kind
+          OR NEW.storage_path IS NOT OLD.storage_path
+          OR NEW.filename IS NOT OLD.filename
+          OR NEW.media_type IS NOT OLD.media_type
+          OR NEW.sha256 IS NOT OLD.sha256
+          OR NEW.size_bytes IS NOT OLD.size_bytes
+          OR NEW.created_at IS NOT OLD.created_at
+        BEGIN
+            SELECT RAISE(ABORT, 'file artifact facts are immutable');
+        END
+        """
+    ).execute_if(dialect="sqlite"),
+)
+event.listen(
+    FileArtifact.__table__,
+    "after_create",
+    DDL(  # type: ignore[no-untyped-call]
+        """
+        CREATE TRIGGER trg_file_artifacts_terminal_state
+        BEFORE UPDATE OF state, consumed_at, revoked_at ON file_artifacts
+        WHEN OLD.state IN ('consumed', 'revoked')
+          AND (NEW.state IS NOT OLD.state
+               OR NEW.consumed_at IS NOT OLD.consumed_at
+               OR NEW.revoked_at IS NOT OLD.revoked_at)
+        BEGIN
+            SELECT RAISE(ABORT, 'terminal file artifact state is immutable');
+        END
+        """
+    ).execute_if(dialect="sqlite"),
+)
+event.listen(
+    IdentityAuditEvent.__table__,
+    "after_create",
+    DDL(  # type: ignore[no-untyped-call]
+        """
+        CREATE TRIGGER trg_identity_audit_events_no_update
+        BEFORE UPDATE ON identity_audit_events
+        BEGIN
+            SELECT RAISE(ABORT, 'identity audit events are append-only');
+        END
+        """
+    ).execute_if(dialect="sqlite"),
+)
+
+# Production and demo databases must use Alembic, whose identity migration creates these rows and
+# records the matching audit facts. Isolated tests still build disposable SQLite schemas with
+# ``Base.metadata.create_all()``; seed only the fixed compatibility records there so callers can
+# explicitly create jobs for disabled/shared-key compatibility identities. Deliberately do not
+# synthesize audit events in test-only schemas because no migration occurred.
+event.listen(
+    Base.metadata,
+    "after_create",
+    DDL(  # type: ignore[no-untyped-call]
+        f"""
+        INSERT OR IGNORE INTO tenants
+            (tenant_id, slug, display_name, enabled, version, created_at, updated_at)
+        VALUES
+            ('{LEGACY_TENANT_ID}', 'legacy-local', 'Legacy local tenant', 1, 1,
+             CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        """
+    ).execute_if(dialect="sqlite"),
+)
+event.listen(
+    Base.metadata,
+    "after_create",
+    DDL(  # type: ignore[no-untyped-call]
+        f"""
+        INSERT OR IGNORE INTO principals
+            (principal_id, tenant_id, handle, display_name, kind, role, enabled, version,
+             created_at, updated_at)
+        VALUES
+            ('{LEGACY_PRINCIPAL_ID}', '{LEGACY_TENANT_ID}', 'legacy-local',
+             'Legacy local service', 'service', 'tenant_admin', 1, 1,
+             CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        """
+    ).execute_if(dialect="sqlite"),
+)
+event.listen(
+    IdentityAuditEvent.__table__,
+    "after_create",
+    DDL(  # type: ignore[no-untyped-call]
+        """
+        CREATE TRIGGER trg_identity_audit_events_no_delete
+        BEFORE DELETE ON identity_audit_events
+        BEGIN
+            SELECT RAISE(ABORT, 'identity audit events are append-only');
+        END
+        """
+    ).execute_if(dialect="sqlite"),
+)

@@ -25,12 +25,14 @@ from app.contracts.enums import (
     QueryType,
     RoiMode,
 )
+from app.contracts.identity import AuthMode, PrincipalContext, PrincipalKind, PrincipalRole
 from app.contracts.models import ModelMetadata
 
 __all__ = [
     "AnalysisJobDTO",
     "ApiErrorPayload",
     "ApiResponse",
+    "AuthMode",
     "BoxSetDTO",
     "CreateAnalysisMetadata",
     "CreateRunsRequest",
@@ -42,6 +44,9 @@ __all__ = [
     "ModelMetadata",
     "ModelStatus",
     "ModelVariant",
+    "PrincipalContext",
+    "PrincipalKind",
+    "PrincipalRole",
     "QualityStatus",
     "QualityTier",
     "QueryType",
