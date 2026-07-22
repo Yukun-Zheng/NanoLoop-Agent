@@ -394,3 +394,38 @@
   轮换建议已由 README、部署文档和 v4.0 覆盖，无需把旧 `MVP_BACKEND_HANDOFF.md` 升格为当前
   权威文档。仓库可确认默认 `AUTH_MODE=auto` 且无 Key 时关闭鉴权；实际环境是否配置 Key 仍需部署
   时检查，正式共享 Key 联调应显式使用 `AUTH_MODE=shared_key`。
+
+## 2026-07-23 02:57 +08:00 — 五人交付审计、冲突消解与完整协作基线合入
+
+- 后端 C：黄睿健旧基线 PR #7 由 [PR #11](https://github.com/Yukun-Zheng/NanoLoop-Agent/pull/11)
+  解冲突替代并以 `137bb050` 合入。整合保留当前 principal/tenant 鉴权、FileToken v2、pinned-path
+  安全和模型合同，同时纳入确定性联调 fixture、显式导出白名单及存储/备份可移植性。原生 Windows
+  运行、目标服务器、最终 HTTPS Base URL 和 Key 交付仍未验收。
+- A+B：郭境濠 [PR #10](https://github.com/Yukun-Zheng/NanoLoop-Agent/pull/10) 在集成审查中修复五处
+  P1：错误 adapter SHA、人工 GT 被模型最小面积过滤、零 IoU 假匹配、不可评估指标假通过及贪心
+  匹配漏配；另让 gate 失败返回非零退出码。最终以 `1bf96cb2` 合入，
+  [Actions run 29946240643](https://github.com/Yukun-Zheng/NanoLoop-Agent/actions/runs/29946240643)
+  四项全绿。旧 `a40...` evidence 不得改标签复用，必须基于当前 `6055...` adapter 与真实私有资产重跑。
+- RAG D：徐皓彬旧基线 PR #8 的完成度说法被纠正，由
+  [PR #12](https://github.com/Yukun-Zheng/NanoLoop-Agent/pull/12) 以 `51e861b7` 合入失败关闭的候选/验收
+  脚手架。当前事实是 17 个候选、0 个 `ACCEPT_FULLTEXT`、32 道草案题、无固定 embedding；runtime
+  文档身份/SHA/许可/状态、成功响应、health、重启映射和最终覆盖均纳入验收，真实全文、索引和观测
+  结果仍需受控外部资产。
+- 前端 E：杨雨宁旧基线 PR #9 由 [PR #13](https://github.com/Yukun-Zheng/NanoLoop-Agent/pull/13)
+  解冲突替代并以 `b2836ddd` 合入。除六页前端、错误/降级状态、RAG 展示、可访问性和联调脚本外，
+  最终审查还要求远程 API Key 流量使用 HTTPS、写请求/上传不得自动重放、真实 Key 只读环境变量，
+  并修复 Streamlit 1.45 兼容和无效重试按钮。
+- 组合态回归：#11 的安全导出白名单与 #10 的科学 artifact 要求合并后，`probability.npy` 未进入
+  snapshot-free export，导致 12 个 Large smoke 测试在 SHA 前置校验处失败。修复只把该 canonical
+  证据加入白名单并证明任意 worker residue 仍被排除，没有放宽 fail-closed 校验。最终本地完整
+  `make check` 为 1276 passed / 22 skipped（21 项缺 Playwright、1 项无 live backend），严格 Mypy
+  124 个源文件、六页 Streamlit 和 Alembic 往返/漂移全绿；
+  [Actions run 29948525202](https://github.com/Yukun-Zheng/NanoLoop-Agent/actions/runs/29948525202)
+  的 Ruff/Mypy/迁移、Python 3.11、Python 3.12 和 CPU 容器冒烟全部通过。
+- PR 收束：冲突的 #7、#8、#9 已分别注明由 #11、#12、#13 替代后关闭，贡献者共同作者署名保留；
+  fork 分支保留追溯，集成人临时分支在合入后删除。姚承志的 FunASR 仍为隔离 POC；可开始资产
+  台账、结构/hash/许可/dry-run，但完整模型/RAG 验收必须等待真实包。
+- 动态交接：新增
+  [五人集成状态与下一步](developer_handoffs/team-integration-status-2026-07-23.md)，明确每人的完成项、
+  未完成项、依赖顺序和可执行交付条件。当前仍为 M1 工程 MVP / 内部 Alpha，不因代码脚手架全绿而
+  宣称真实模型、RAG、部署或无降级 E2E 已完成。
