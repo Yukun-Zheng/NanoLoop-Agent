@@ -1,0 +1,25 @@
+schema_version: "2.0-fixture"
+models:
+  - metadata:
+      model_id: unet-deterministic-fixture-v1
+      family: unet
+      variant: general
+      quality_tier: balanced
+      version: "fixture-1"
+      status: ready
+      supports_box_prompt: false
+      default_threshold: 0.5
+      preprocess_profile: fixture-none-v1
+      postprocess_profile: semantic-mask-v1
+      applicable_materials: []
+      metrics: {}
+      metric_context:
+        engineering_fixture: true
+        scientific_validity: false
+      notes: Simulated deterministic output for engineering integration only.
+    adapter_path: app.inference.adapters.fixture:DeterministicFixtureAdapter
+    weight_path: weights/deterministic-fixture-v1.fixture
+    weight_sha256: f15820c9a460494855a462c11419f89285baa2b05ac102103f6e47084173c9ac
+    config_path: configs/deterministic-fixture-v1.yaml
+    model_card_path: model_cards/deterministic-fixture-v1.md
+    required_modules: []

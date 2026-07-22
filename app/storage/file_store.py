@@ -156,7 +156,7 @@ class LocalFileStore:
             with tempfile.NamedTemporaryFile(
                 mode="wb",
                 dir=destination.parent,
-                prefix=f".{destination.name}.",
+                prefix=".nl-",
                 suffix=".tmp",
                 delete=False,
             ) as temporary:
@@ -236,7 +236,7 @@ class LocalFileStore:
             with tempfile.NamedTemporaryFile(
                 mode="wb",
                 dir=destination.parent,
-                prefix=f".{destination.name}.",
+                prefix=".nl-",
                 suffix=".tmp",
                 delete=False,
             ) as temporary:
@@ -403,13 +403,14 @@ class LocalFileStore:
                 )
                 self._publish_no_replace(temporary_path, destination)
                 temporary_path.unlink()
+                self._publish_bytes_no_replace(manifest_path, manifest_bytes)
             else:
                 if destination is None:  # pragma: no cover - narrowed above
                     raise StorageError("导出路径生成失败")
                 manifest_path = self.paths.export_manifest(job_id)
                 os.replace(temporary_path, destination)
+                self.atomic_write_bytes(manifest_path, manifest_bytes)
             temporary_path = None
-            self.atomic_write_bytes(manifest_path, manifest_bytes)
         except (StoragePathError, FileTokenError):
             raise
         except (OSError, zipfile.BadZipFile) as error:
@@ -462,6 +463,35 @@ class LocalFileStore:
                         "observed_sha256": observed_sha256,
                     },
                 ) from None
+
+    def _publish_bytes_no_replace(self, destination: Path, data: bytes) -> None:
+        """Publish immutable bytes once without replacing a concurrently opened file.
+
+        Windows does not allow ``os.replace`` while another worker has the
+        destination open for hashing. Content-addressed manifests are immutable,
+        so a hard-link publish plus byte-for-byte verification is both portable
+        and stricter than replacing an existing file.
+        """
+
+        destination = self.paths.require_managed(destination)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="wb",
+                dir=destination.parent,
+                prefix=".nl-",
+                suffix=".tmp",
+                delete=False,
+            ) as temporary:
+                temporary_path = Path(temporary.name)
+                temporary.write(data)
+                temporary.flush()
+                os.fsync(temporary.fileno())
+            self._publish_no_replace(temporary_path, destination)
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
 
     def create_file_token(
         self,

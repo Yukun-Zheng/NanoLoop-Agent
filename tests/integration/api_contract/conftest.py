@@ -28,9 +28,11 @@ from app.contracts.enums import (
     QualityTier,
     RoiMode,
 )
+from app.contracts.execution import InferenceExecutionEvidence
 from app.contracts.identity import LEGACY_PRINCIPAL_ID, LEGACY_TENANT_ID
 from app.contracts.inference import SegmentationOutput, SegmentationRequest
 from app.contracts.models import (
+    ModelBundleReference,
     ModelCandidate,
     ModelHealth,
     ModelMetadata,
@@ -65,6 +67,7 @@ class FakeInferenceGateway:
             weight_sha256="a" * 64,
             config_sha256="b" * 64,
             model_card_sha256="c" * 64,
+            adapter_sha256="d" * 64,
         )
 
     def list_models(self, only_ready: bool = False) -> list[ModelMetadata]:
@@ -90,9 +93,40 @@ class FakeInferenceGateway:
             )
         ]
 
+    def freeze_model_bundle(
+        self,
+        model_id: str,
+        *,
+        expected_model_version: str | None = None,
+        expected_adapter_path: str | None = None,
+        expected_weight_sha256: str | None = None,
+        expected_config_sha256: str | None = None,
+        expected_model_card_sha256: str | None = None,
+        expected_adapter_sha256: str | None = None,
+    ) -> ModelBundleReference:
+        assert model_id == self.model.model_id
+        assert expected_model_version == self.model.version
+        assert expected_adapter_path == self.model.adapter_path
+        assert expected_weight_sha256 == self.model.weight_sha256
+        assert expected_config_sha256 == self.model.config_sha256
+        assert expected_model_card_sha256 == self.model.model_card_sha256
+        assert expected_adapter_sha256 == self.model.adapter_sha256
+        prefix = f"bundles/{model_id}"
+        assert self.model.weight_sha256 is not None
+        assert self.model.adapter_sha256 is not None
+        return ModelBundleReference(
+            bundle_id=self.model.weight_sha256,
+            manifest_ref=f"{prefix}/manifest.json",
+            weight_ref=f"{prefix}/weights.bin",
+            config_ref=f"{prefix}/config.yaml",
+            model_card_ref=f"{prefix}/model-card.md",
+            adapter_ref=f"{prefix}/adapter.py",
+            adapter_sha256=self.model.adapter_sha256,
+        )
+
     def predict(
         self,
-        _model_id: str,
+        model_id: str,
         request: SegmentationRequest,
         *,
         expected_model_version: str | None = None,
@@ -100,13 +134,24 @@ class FakeInferenceGateway:
         expected_weight_sha256: str | None = None,
         expected_config_sha256: str | None = None,
         expected_model_card_sha256: str | None = None,
+        expected_adapter_sha256: str | None = None,
+        model_bundle: ModelBundleReference | None = None,
     ) -> SegmentationOutput:
-        del (
-            expected_model_version,
-            expected_adapter_path,
-            expected_weight_sha256,
-            expected_config_sha256,
-            expected_model_card_sha256,
+        assert model_id == self.model.model_id
+        assert expected_model_version == self.model.version
+        assert expected_adapter_path == self.model.adapter_path
+        assert expected_weight_sha256 == self.model.weight_sha256
+        assert expected_config_sha256 == self.model.config_sha256
+        assert expected_model_card_sha256 == self.model.model_card_sha256
+        assert expected_adapter_sha256 == self.model.adapter_sha256
+        assert model_bundle == self.freeze_model_bundle(
+            model_id,
+            expected_model_version=expected_model_version,
+            expected_adapter_path=expected_adapter_path,
+            expected_weight_sha256=expected_weight_sha256,
+            expected_config_sha256=expected_config_sha256,
+            expected_model_card_sha256=expected_model_card_sha256,
+            expected_adapter_sha256=expected_adapter_sha256,
         )
         image_source = (
             BytesIO(request.image_bytes) if request.image_bytes is not None else request.image_path
@@ -128,6 +173,14 @@ class FakeInferenceGateway:
             binary_mask_path=mask_path,
             probability_path=probability_path,
             runtime_ms=3,
+            execution=InferenceExecutionEvidence(
+                actual_device="cpu",
+                python_random_seeded=True,
+                numpy_random_seeded=True,
+                torch_deterministic_algorithms=False,
+                global_inference_serialized=True,
+                backend="tests.fake:FakeAdapter",
+            ),
         )
 
 
