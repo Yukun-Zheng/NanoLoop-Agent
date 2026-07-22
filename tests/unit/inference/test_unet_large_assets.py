@@ -5,8 +5,10 @@ import shutil
 from copy import deepcopy
 from pathlib import Path
 
+import pytest
 import yaml
 
+import app.inference.registry as registry_module
 from app.contracts.enums import ModelStatus
 from app.inference.registry import ModelRegistryService
 
@@ -63,11 +65,11 @@ def test_large_unet_config_freezes_confirmed_inference_contract() -> None:
     }
 
 
-def test_large_registry_entry_remains_unavailable_with_180_px_invalid_bottom() -> None:
+def test_large_registry_entry_declares_ready_with_180_px_invalid_bottom() -> None:
     entry = _registry_models()["unet-large-optimized-v1"]
     metadata = entry["metadata"]
 
-    assert metadata["status"] == "unavailable"
+    assert metadata["status"] == "ready"
     assert metadata["inference_invalid_bottom_px"] == 180
     assert metadata["default_threshold"] == 0.50
     assert metadata["default_min_area_px"] == 512
@@ -99,10 +101,12 @@ def test_large_registry_entry_remains_unavailable_with_180_px_invalid_bottom() -
     assert entry["weight_sha256"] == _LARGE_TORCHSCRIPT_SHA256
     assert entry["config_path"] == "configs/unet-large-optimized-v1.yaml"
     assert entry["model_card_path"] == "model_cards/unet-large-optimized-v1.md"
+    assert "health_error" not in metadata
 
 
 def test_large_external_bundle_resolves_relative_assets_and_fails_closed(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source = _artifact_root()
     bundle = tmp_path / "external-model-artifacts"
@@ -123,8 +127,6 @@ def test_large_external_bundle_resolves_relative_assets_and_fails_closed(
 
     entry = deepcopy(_registry_models()["unet-large-optimized-v1"])
     entry["weight_sha256"] = hashlib.sha256(weight_bytes).hexdigest()
-    # This test verifies registry asset resolution, not third-party runtime discovery.
-    entry["required_modules"] = []
     registry_path = bundle / "registry.yaml"
     registry_path.write_text(
         yaml.safe_dump({"schema_version": "1", "models": [entry]}, sort_keys=False),
@@ -134,6 +136,12 @@ def test_large_external_bundle_resolves_relative_assets_and_fails_closed(
     def load_registry() -> ModelRegistryService:
         return ModelRegistryService(registry_path, snapshot_root=bundle / "snapshots")
 
+    original_find_spec = registry_module.importlib.util.find_spec
+    monkeypatch.setattr(
+        registry_module.importlib.util,
+        "find_spec",
+        lambda name: object() if name == "torch" else original_find_spec(name),
+    )
     verified = load_registry()
     registration = verified.get_registration("unet-large-optimized-v1")
     metadata = verified.get_metadata("unet-large-optimized-v1")
@@ -141,9 +149,23 @@ def test_large_external_bundle_resolves_relative_assets_and_fails_closed(
     assert registration.config_path == bundle / "configs" / "unet-large-optimized-v1.yaml"
     assert registration.model_card_path == bundle / "model_cards" / "unet-large-optimized-v1.md"
     assert registration.weight_sha256 == hashlib.sha256(weight_bytes).hexdigest()
-    assert metadata.status == ModelStatus.UNAVAILABLE
-    assert metadata.health_error == entry["metadata"]["health_error"]
+    assert metadata.status == ModelStatus.READY
+    assert metadata.health_error is None
 
+    monkeypatch.setattr(
+        registry_module.importlib.util,
+        "find_spec",
+        lambda name: None if name == "torch" else original_find_spec(name),
+    )
+    missing_torch = load_registry().get_metadata("unet-large-optimized-v1")
+    assert missing_torch.status == ModelStatus.UNAVAILABLE
+    assert "optional dependency is missing: torch" in (missing_torch.health_error or "")
+
+    monkeypatch.setattr(
+        registry_module.importlib.util,
+        "find_spec",
+        lambda name: object() if name == "torch" else original_find_spec(name),
+    )
     weight_path.unlink()
     missing = load_registry().get_metadata("unet-large-optimized-v1")
     assert missing.status == ModelStatus.UNAVAILABLE
