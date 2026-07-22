@@ -150,9 +150,9 @@ def test_canvas_change_is_strictly_shaped_and_preserves_box_identity() -> None:
 
 
 def test_component_height_reporting_cannot_grow_from_its_own_viewport() -> None:
-    source = (
-        Path(__file__).parents[3] / "frontend" / "roi_component" / "index.html"
-    ).read_text(encoding="utf-8")
+    source = (Path(__file__).parents[3] / "frontend" / "roi_component" / "index.html").read_text(
+        encoding="utf-8"
+    )
 
     assert "document.body.scrollHeight" in source
     assert "height === lastPostedHeight" in source

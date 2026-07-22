@@ -127,11 +127,156 @@ p, li, label { line-height: 1.5; }
 .stButton > button[kind="primary"]:hover, .stDownloadButton > button[kind="primary"]:hover {
   background: var(--nl-teal-dark); border-color: var(--nl-teal-dark);
 }
+
+/* 修复侧边栏按钮启用状态的文字颜色 —— 直接作用于按钮内的子元素 */
+[data-testid="stSidebar"] [data-testid="stFormSubmitButton"] button:enabled *,
+[data-testid="stSidebar"] .stButton > button:enabled *,
+[data-testid="stSidebar"] .stDownloadButton > button:enabled * {
+  color: #14232b !important;  /* 深色文字，与背景形成对比 */
+}
+
+/* 如果你希望 primary 按钮（品牌色背景）保持白字，保留这条，否则可以合并到上面 */
+[data-testid="stSidebar"] button:enabled[kind="primary"] * {
+  color: #ffffff !important;
+}
+
 [data-testid="stFileUploaderDropzone"] { background: #f9fbfb; border-color: #b9cacc; }
 
 @media (max-width: 760px) {
   .block-container { padding-left: 1rem; padding-right: 1rem; }
   .nl-hero { padding: .95rem 1rem; }
+}
+/* Screen-reader-only text (WCAG 1.3.1 / 4.1.3) */
+.nl-sr-only {
+  position: absolute; width: 1px; height: 1px;
+  padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+
+/* Skip link (WCAG 2.4.1) — visible only when focused */
+.nl-skip-link {
+  position: absolute; left: .5rem; top: -3rem;
+  background: var(--nl-teal); color: #ffffff;
+  padding: .55rem .9rem; border-radius: 6px;
+  font-weight: 700; text-decoration: none;
+  z-index: 999; transition: top .15s ease;
+}
+.nl-skip-link:focus, .nl-skip-link:focus-visible {
+  top: .5rem; outline: 3px solid var(--nl-teal-dark); outline-offset: 2px;
+}
+
+/* Universal focus ring (WCAG 2.4.7) — must remain visible on every
+   interactive element, including sidebar controls. */
+a:focus-visible, button:focus-visible, input:focus-visible,
+select:focus-visible, textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 3px solid var(--nl-teal-dark) !important;
+  outline-offset: 2px !important;
+  border-radius: 4px;
+}
+
+/* Status announcements (aria-live) */
+.nl-announcement {
+  border: 1px solid var(--nl-line); border-left-width: 4px;
+  border-radius: 10px; padding: .8rem 1rem; margin: .6rem 0;
+  background: var(--nl-surface);
+}
+.nl-announcement-title { font-weight: 720; margin-bottom: .25rem; }
+.nl-announcement-body { color: var(--nl-muted); font-size: .94rem; }
+.nl-announcement-actions { margin: .5rem 0 0; padding-left: 1.2rem; }
+.nl-announcement-action { margin: .15rem 0; }
+.nl-announcement-good  { border-left-color: var(--nl-good);  background: #f0f9f4; }
+.nl-announcement-warn  { border-left-color: var(--nl-warn);  background: #fff8ec; }
+.nl-announcement-bad   { border-left-color: var(--nl-bad);   background: #fff1ef; }
+.nl-announcement-live  { border-left-color: var(--nl-live);  background: #eef5fc; }
+
+/* Actionable error panels */
+.nl-error-panel {
+  border: 1px solid var(--nl-line); border-left-width: 5px;
+  border-radius: 10px; padding: .9rem 1.1rem; margin: .7rem 0;
+  background: var(--nl-surface);
+}
+.nl-error-panel-bad  { border-left-color: var(--nl-bad);  background: #fff6f5; }
+.nl-error-panel-warn { border-left-color: var(--nl-warn); background: #fffaf1; }
+.nl-error-title {
+  font-weight: 760; font-size: 1.02rem; margin-bottom: .3rem; color: var(--nl-ink);
+}
+.nl-error-message { color: var(--nl-ink); margin-bottom: .4rem; line-height: 1.55; }
+.nl-error-hint { color: var(--nl-muted); font-size: .92rem; margin: .3rem 0; }
+.nl-error-steps { margin: .4rem 0 .4rem 1.3rem; color: var(--nl-ink); }
+.nl-error-steps li { margin: .2rem 0; }
+.nl-error-meta {
+  margin-top: .55rem; padding-top: .55rem;
+  border-top: 1px dashed var(--nl-line);
+  font-size: .82rem; color: var(--nl-muted);
+  display: flex; gap: 1rem; flex-wrap: wrap;
+}
+.nl-error-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: #f3f6f7; padding: .1rem .4rem; border-radius: 4px;
+  color: var(--nl-bad); font-weight: 700;
+}
+.nl-error-request-id code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: #f3f6f7; padding: .1rem .35rem; border-radius: 4px;
+}
+.nl-error-recovery {
+  display: inline-block; margin-top: .55rem;
+  background: var(--nl-teal); color: #ffffff !important;
+  padding: .45rem .85rem; border-radius: 6px;
+  font-weight: 700; text-decoration: none;
+}
+.nl-error-recovery:hover { background: var(--nl-teal-dark); }
+
+/* Long-task / partial-failure panel */
+.nl-long-task {
+  border: 1px solid var(--nl-line); border-radius: 12px;
+  background: var(--nl-surface); padding: .95rem 1.1rem; margin: .7rem 0;
+}
+.nl-long-task-title { font-weight: 760; font-size: 1.02rem; margin-bottom: .35rem; }
+.nl-long-task-summary { color: var(--nl-muted); margin-bottom: .5rem; }
+.nl-long-task-partial {
+  background: #fff8ec; border: 1px solid #f4d9a6; border-radius: 8px;
+  padding: .5rem .75rem; margin: .45rem 0; color: var(--nl-warn); font-weight: 650;
+}
+.nl-stage-list { list-style: none; padding: 0; margin: .5rem 0 0; }
+.nl-stage {
+  display: flex; flex-direction: column; gap: .15rem;
+  padding: .45rem .6rem .45rem 1.1rem; margin: .25rem 0;
+  border-left: 3px solid var(--nl-line); border-radius: 4px;
+  background: #fafcfd;
+}
+.nl-stage-label { font-weight: 650; color: var(--nl-ink); }
+.nl-stage-detail { font-size: .87rem; color: var(--nl-muted); }
+.nl-stage-good  { border-left-color: var(--nl-good);  background: #f4faf6; }
+.nl-stage-warn  { border-left-color: var(--nl-warn);  background: #fffaf0; }
+.nl-stage-bad   { border-left-color: var(--nl-bad);   background: #fff5f4; }
+.nl-stage-live  { border-left-color: var(--nl-live);  background: #f2f7fc; }
+.nl-long-task-recover {
+  display: inline-block; margin-top: .65rem;
+  background: var(--nl-live); color: #ffffff !important;
+  padding: .45rem .85rem; border-radius: 6px;
+  font-weight: 700; text-decoration: none;
+}
+.nl-long-task-recover:hover { background: #163f6c; }
+
+/* Reduced-motion preference (WCAG 2.3.3 / 2.2.2) */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  /* Exception: our border-override animations are NOT motion — they are
+     static style enforcement.  They must keep running or BaseWeb re-adds
+     its borders.  Attribute selectors (0-2-0) outrank the universal
+     selector (0-0-0) so this wins the !important cascade. */
+  [data-testid="stSidebar"] [data-baseweb="input"],
+  [data-testid="stSidebar"] [data-baseweb="form-control"],
+  [data-testid="stSidebar"] [data-baseweb="input"]:focus-within {
+    animation-duration: 0.1s !important;
+    animation-iteration-count: infinite !important;
+  }
 }
 </style>
 """

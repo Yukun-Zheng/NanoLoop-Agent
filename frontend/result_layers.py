@@ -74,12 +74,17 @@ def prepare_result_layer_display(
         raise ValueError("结果图层文件为空")
     normalized_type = content_type.split(";", maxsplit=1)[0].strip().casefold()
     suffix = Path(filename or "").suffix.casefold()
-    if layer_key == "probability_url" and normalized_type not in {
-        "image/png",
-        "image/jpeg",
-        "image/tiff",
-        "image/webp",
-    } and suffix not in {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".webp"}:
+    if (
+        layer_key == "probability_url"
+        and normalized_type
+        not in {
+            "image/png",
+            "image/jpeg",
+            "image/tiff",
+            "image/webp",
+        }
+        and suffix not in {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".webp"}
+    ):
         return _probability_npy_display(content)
     return _validated_image_display(content)
 

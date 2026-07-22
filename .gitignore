@@ -45,3 +45,4 @@ rag-acceptance-v1/run-record/*
 # Frontend/runtime caches
 .streamlit/secrets.toml
 node_modules/
+data/.nanoloop-state.lock

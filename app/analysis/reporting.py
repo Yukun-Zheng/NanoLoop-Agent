@@ -84,6 +84,7 @@ class ReportWriter:
             "overlay.png",
             "particles.csv",
             "pred_mask.png",
+            "probability.npy",
             "quality_report.json",
             "run_config.json",
             "transform.json",

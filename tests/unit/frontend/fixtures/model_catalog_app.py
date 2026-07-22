@@ -64,9 +64,7 @@ class _FixtureClient:
         }
         st.session_state["fixture_model_filters"] = filters
         models = (
-            [UNAVAILABLE_MODEL]
-            if status == "unavailable"
-            else [READY_MODEL, UNAVAILABLE_MODEL]
+            [UNAVAILABLE_MODEL] if status == "unavailable" else [READY_MODEL, UNAVAILABLE_MODEL]
         )
         return {"models": models}
 

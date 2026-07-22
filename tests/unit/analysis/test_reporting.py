@@ -123,16 +123,37 @@ def test_write_reports_and_export_have_versioned_auditable_files(tmp_path: Path)
     assert particles_path.read_bytes().startswith(b"\xef\xbb\xbf")
     summary_path = file_store.paths.root / files.image_summary_path
     assert json.loads(summary_path.read_text())["schema_version"] == "1.0"
+    probability_path = file_store.paths.run_artifact(
+        "job_1",
+        "img_1",
+        "run_1",
+        "probability.npy",
+    )
+    file_store.atomic_write_bytes(probability_path, b"canonical probability bytes")
+    residue_path = file_store.paths.run_artifact(
+        "job_1",
+        "img_1",
+        "run_1",
+        "worker-residue.tmp",
+    )
+    file_store.atomic_write_bytes(residue_path, b"must not be exported")
 
     exported = writer.build_job_export("job_1")
     with zipfile.ZipFile(exported.path) as archive:
         names = set(archive.namelist())
         assert "export_manifest.json" in names
         assert "images/img_1/runs/run_1/particles.csv" in names
+        probability_member = "images/img_1/runs/run_1/probability.npy"
+        assert probability_member in names
+        assert "images/img_1/runs/run_1/worker-residue.tmp" not in names
         manifest = json.loads(archive.read("export_manifest.json"))
     assert manifest["schema_version"] == "1.0"
+    probability_record = next(
+        record for record in manifest["files"] if record["path"] == probability_member
+    )
+    assert probability_record["sha256"] == file_store.calculate_sha256(probability_path)
     assert "images/img_1/runs/run_1/execution_provenance.json" in names
-    assert len(manifest["files"]) == 6
+    assert len(manifest["files"]) == 7
 
     now = datetime.now(UTC)
     snapshot = JobExportSnapshot(
