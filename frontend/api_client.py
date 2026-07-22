@@ -6,9 +6,12 @@ import json
 import math
 import mimetypes
 import re
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from email.message import Message
+from email.utils import parsedate_to_datetime
 from typing import Any, BinaryIO, Generic, Literal, TypeAlias, TypeVar, cast
 from urllib.parse import SplitResult, quote, urljoin, urlsplit
 from uuid import uuid4
@@ -24,6 +27,7 @@ UploadContent: TypeAlias = bytes | BinaryIO
 T = TypeVar("T")
 
 _REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
+_MAX_RETRY_DELAY_SECONDS = 30.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +70,8 @@ class ApiClientError(RuntimeError):
         request_id: str,
         details: JsonObject | None = None,
         retryable: bool = False,
+        retry_after_seconds: float | None = None,
+        retry_after: str | float | None = None,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
@@ -74,6 +80,16 @@ class ApiClientError(RuntimeError):
         self.request_id = request_id
         self.details = details or {}
         self.retryable = retryable
+        self.retry_after_seconds: float | None
+        if retry_after_seconds is not None:
+            self.retry_after_seconds = retry_after_seconds
+        elif retry_after is not None:
+            try:
+                self.retry_after_seconds = float(retry_after)
+            except (ValueError, TypeError):
+                self.retry_after_seconds = None
+        else:
+            self.retry_after_seconds = None
 
     def __str__(self) -> str:
         return (
@@ -94,6 +110,8 @@ class NanoLoopApiClient:
         upload_timeout: float | httpx.Timeout | None = None,
         client: httpx.Client | None = None,
         request_id_factory: Callable[[], str] | None = None,
+        max_retries: int = 2,
+        default_retry_delay: float = 3.0,
     ) -> None:
         parsed = urlsplit(base_url)
         if (
@@ -112,11 +130,13 @@ class NanoLoopApiClient:
         self._api_key = _normalize_api_key(api_key)
         self._timeout = timeout or httpx.Timeout(30.0, connect=5.0, pool=5.0)
         self._upload_timeout = upload_timeout or httpx.Timeout(
-            120.0,
+            300.0,
             connect=5.0,
             pool=5.0,
         )
         self._request_id_factory = request_id_factory or (lambda: f"web_{uuid4().hex}")
+        self._max_retries = max(0, max_retries)
+        self._default_retry_delay = max(0.0, default_retry_delay)
         self._owns_client = client is None
         self._client = client or httpx.Client(follow_redirects=False)
 
@@ -164,6 +184,8 @@ class NanoLoopApiClient:
         self,
         files: Sequence[UploadPart],
         metadata: Mapping[str, Any],
+        *,
+        timeout: float | httpx.Timeout | None = None,
     ) -> ApiResult[JsonObject]:
         if not files:
             raise ValueError("create_analysis requires at least one upload")
@@ -180,7 +202,7 @@ class NanoLoopApiClient:
             "/analyses",
             files=multipart,
             form={"metadata_json": _encode_json(metadata)},
-            timeout=self._upload_timeout,
+            timeout=timeout or self._upload_timeout,
         )
 
     def get_analysis(self, job_id: str) -> ApiResult[JsonObject]:
@@ -358,42 +380,60 @@ class NanoLoopApiClient:
         form: Mapping[str, str] | None = None,
         timeout: float | httpx.Timeout | None = None,
     ) -> ApiResult[JsonObject]:
-        outbound_request_id = self._new_request_id()
-        response = self._send(
-            method,
-            self._api_url(path),
-            request_id=outbound_request_id,
-            params=params,
-            json_body=json_body,
-            files=files,
-            form=form,
-            timeout=timeout or self._timeout,
-        )
-        if not response.is_success:
-            self._raise_response_error(response, outbound_request_id)
-        payload = _decode_json_response(response, outbound_request_id)
-        request_id = _envelope_request_id(payload, response, outbound_request_id)
-        status = payload.get("status")
-        if status == "error":
-            self._raise_envelope_error(response.status_code, payload, request_id)
-        if status not in {"success", "accepted"}:
-            raise _protocol_error(
-                response.status_code,
-                request_id,
-                "response envelope has an invalid status",
+        resolved_timeout = timeout or self._timeout
+        retry_allowed = method.upper() == "GET" and files is None
+        for attempt in range(self._max_retries + 1):
+            outbound_request_id = self._new_request_id()
+            response = self._send(
+                method,
+                self._api_url(path),
+                request_id=outbound_request_id,
+                params=params,
+                json_body=json_body,
+                files=files,
+                form=form,
+                timeout=resolved_timeout,
             )
-        data = payload.get("data")
-        if not isinstance(data, dict):
-            raise _protocol_error(
-                response.status_code,
-                request_id,
-                "response envelope data must be an object",
+            retry_after_seconds = None
+            if response.status_code == 429:
+                retry_after_seconds = _parse_retry_after(
+                    response.headers.get("retry-after"),
+                    default=self._default_retry_delay,
+                )
+                if retry_allowed and attempt < self._max_retries:
+                    time.sleep(retry_after_seconds)
+                    continue
+            if not response.is_success:
+                self._raise_response_error(
+                    response,
+                    outbound_request_id,
+                    retry_after_seconds=retry_after_seconds,
+                )
+            payload = _decode_json_response(response, outbound_request_id)
+            request_id = _envelope_request_id(payload, response, outbound_request_id)
+            status = payload.get("status")
+            if status == "error":
+                self._raise_envelope_error(response.status_code, payload, request_id)
+            if status not in {"success", "accepted"}:
+                raise _protocol_error(
+                    response.status_code,
+                    request_id,
+                    "response envelope has an invalid status",
+                )
+            data = payload.get("data")
+            if not isinstance(data, dict):
+                raise _protocol_error(
+                    response.status_code,
+                    request_id,
+                    "response envelope data must be an object",
+                )
+            return ApiResult(
+                data=_json_object(data),
+                request_id=request_id,
+                status=cast(ApiStatus, status),
             )
-        return ApiResult(
-            data=_json_object(data),
-            request_id=request_id,
-            status=cast(ApiStatus, status),
-        )
+        # Unreachable: the final iteration always returns or raises.
+        raise RuntimeError("retry loop exhausted without resolution")  # pragma: no cover
 
     def _send(
         self,
@@ -456,6 +496,8 @@ class NanoLoopApiClient:
         self,
         response: httpx.Response,
         outbound_request_id: str,
+        *,
+        retry_after_seconds: float | None = None,
     ) -> None:
         try:
             payload = _decode_json_response(response, outbound_request_id)
@@ -467,15 +509,23 @@ class NanoLoopApiClient:
                 message="后端返回了非 JSON 错误响应",
                 request_id=request_id,
                 retryable=response.status_code == 429 or response.status_code >= 500,
+                retry_after_seconds=retry_after_seconds,
             ) from None
         request_id = _envelope_request_id(payload, response, outbound_request_id)
-        self._raise_envelope_error(response.status_code, payload, request_id)
+        self._raise_envelope_error(
+            response.status_code,
+            payload,
+            request_id,
+            retry_after_seconds=retry_after_seconds,
+        )
 
     @staticmethod
     def _raise_envelope_error(
         status_code: int,
         payload: JsonObject,
         request_id: str,
+        *,
+        retry_after_seconds: float | None = None,
     ) -> None:
         error = payload.get("error")
         if not isinstance(error, dict):
@@ -501,6 +551,7 @@ class NanoLoopApiClient:
             request_id=request_id,
             details=details if isinstance(details, dict) else {},
             retryable=retryable if isinstance(retryable, bool) else False,
+            retry_after_seconds=retry_after_seconds,
         )
 
     def _api_url(self, path: str) -> str:
@@ -533,6 +584,38 @@ def _normalize_api_key(value: str | None) -> str | None:
     if value != value.strip() or any(not 0x21 <= ord(character) <= 0x7E for character in value):
         raise ValueError("api_key must contain only visible ASCII characters without whitespace")
     return value
+
+
+def _parse_retry_after(
+    header_value: str | None,
+    *,
+    default: float,
+    now: datetime | None = None,
+    max_delay: float = _MAX_RETRY_DELAY_SECONDS,
+) -> float:
+    """Parse the ``Retry-After`` response header into a delay in seconds.
+
+    Both delta-seconds and HTTP-date values are accepted. Malformed values use
+    *default*. The result is clamped so an untrusted gateway cannot block the
+    synchronous Streamlit process indefinitely.
+    """
+    delay = default
+    if header_value is not None:
+        try:
+            delay = float(header_value)
+        except (ValueError, TypeError):
+            try:
+                retry_at = parsedate_to_datetime(header_value)
+                if retry_at.tzinfo is None:
+                    retry_at = retry_at.replace(tzinfo=UTC)
+                reference = now or datetime.now(UTC)
+                delay = (retry_at - reference).total_seconds()
+            except (TypeError, ValueError, OverflowError):
+                delay = default
+    if not math.isfinite(delay):
+        delay = default
+    bounded_max = max(0.0, max_delay)
+    return min(max(0.0, delay), bounded_max)
 
 
 def _validate_uploads(parts: Sequence[UploadPart]) -> None:
@@ -645,6 +728,7 @@ def _protocol_error(
     message: str,
     *,
     details: JsonObject | None = None,
+    retry_after_seconds: float | None = None,
 ) -> ApiClientError:
     return ApiClientError(
         status_code=status_code,
@@ -653,6 +737,7 @@ def _protocol_error(
         request_id=request_id,
         details=details,
         retryable=False,
+        retry_after_seconds=retry_after_seconds,
     )
 
 

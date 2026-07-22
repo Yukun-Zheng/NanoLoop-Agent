@@ -240,10 +240,16 @@ def render_run_summary(streamlit: Any, run: Mapping[str, Any]) -> None:
     quality = run.get("quality")
     streamlit.markdown("#### 质量判断")
     if isinstance(quality, Mapping):
+        quality_status = str(quality.get("status", "unknown"))
         streamlit.markdown(
-            f"质量门禁 {status_badge(str(quality.get('status', 'unknown')))}",
+            f"质量门禁 {status_badge(quality_status)}",
             unsafe_allow_html=True,
         )
+        if quality_status.upper() == "REVIEW_REQUIRED":
+            streamlit.warning(
+                "该运行结果需要人工复核。请在“复核子运行”页签提交修正参数或校正掩膜，"
+                "生成不可变复核子运行。复核不会修改当前运行。"
+            )
         reasons = quality.get("reasons")
         if isinstance(reasons, list) and reasons:
             for reason in reasons:
@@ -265,9 +271,7 @@ def render_run_summary(streamlit: Any, run: Mapping[str, Any]) -> None:
     streamlit.markdown("#### 数值汇总")
     summary = run.get("summary")
     if not isinstance(summary, Mapping):
-        streamlit.info(
-            "该运行尚无确定性汇总指标。界面不会自行推测或补造数值。"
-        )
+        streamlit.info("该运行尚无确定性汇总指标。界面不会自行推测或补造数值。")
     else:
         metric_columns = streamlit.columns(4)
         metric_columns[0].metric("颗粒数", _display(summary.get("particle_count")))
@@ -327,6 +331,13 @@ def render_artifact_links(
 def render_query_response(streamlit: Any, response: Mapping[str, Any]) -> None:
     outcome = str(response.get("outcome_code", "OK"))
     confidence = str(response.get("confidence", "low"))
+    query_type = str(response.get("query_type", "auto"))
+    needs_clarification = bool(response.get("needs_clarification", False))
+
+    # Routing summary — tells the user how the backend classified the question
+    route_badge = status_badge(query_type, label=display_enum(query_type))
+    streamlit.caption(f"后端路由方式：{route_badge}", unsafe_allow_html=True)
+
     if outcome == "INSUFFICIENT_EVIDENCE":
         streamlit.warning("现有实验数据或知识证据不足，无法形成有依据的回答。")
     streamlit.markdown(
@@ -335,25 +346,52 @@ def render_query_response(streamlit: Any, response: Mapping[str, Any]) -> None:
     )
     streamlit.write(response.get("answer") or "后端未返回回答正文。")
 
+    if needs_clarification:
+        streamlit.info(
+            "后端标记此回答需要进一步澄清。请补充更具体的图像、运行或材料上下文后重新提问。"
+        )
+
+    # Echo the material context the backend received/confirmed
+    material_context = response.get("material_context")
+    if isinstance(material_context, Mapping):
+        parts = []
+        formula = material_context.get("formula")
+        name = material_context.get("name")
+        aliases = material_context.get("aliases")
+        source = material_context.get("source")
+        if formula:
+            parts.append(f"化学式 {formula}")
+        if name:
+            parts.append(f"名称 {name}")
+        if isinstance(aliases, list) and aliases:
+            parts.append(f"别名 {', '.join(map(str, aliases))}")
+        if source:
+            parts.append(f"来源 {display_enum(source)}")
+        if parts:
+            streamlit.caption("材料上下文：" + " · ".join(parts))
+
     limitations = response.get("limitations")
     if isinstance(limitations, list) and limitations:
         with streamlit.expander("局限性", expanded=outcome == "INSUFFICIENT_EVIDENCE"):
             for limitation in limitations:
                 streamlit.write(f"• {limitation}")
 
+    # Citations are top-level UnifiedQueryResponse records. A null page means
+    # that the citation applies to the full document and must remain visible.
     citations = response.get("citations")
+    streamlit.markdown("#### 材料知识引用")
     if isinstance(citations, list) and citations:
-        streamlit.markdown("#### 文献引用")
         for citation in citations:
             if not isinstance(citation, Mapping):
                 continue
             page = citation.get("page")
             heading = (
-                f"{citation.get('citation_id', 'citation')} · "
-                f"{citation.get('title', '未命名文献')}"
+                f"{citation.get('citation_id', 'citation')} · {citation.get('title', '未命名文献')}"
             )
-            if page:
+            if page is not None:
                 heading += f" · 第 {page} 页"
+            else:
+                heading += " · 全文引用"
             with streamlit.expander(heading):
                 streamlit.write(citation.get("excerpt") or "未提供引用摘录。")
                 streamlit.caption(
@@ -362,14 +400,15 @@ def render_query_response(streamlit: Any, response: Mapping[str, Any]) -> None:
                 )
                 if citation.get("citation_text"):
                     streamlit.write(citation["citation_text"])
+    elif outcome == "INSUFFICIENT_EVIDENCE":
+        streamlit.info("未返回材料知识引用。")
     else:
-        streamlit.info(
-            "未返回文献引用；当前材料相关陈述不应视为已有来源支持。"
-        )
+        streamlit.info("未返回材料知识引用；当前回答中涉及材料背景的陈述不应视为已有文献来源支持。")
 
+    # --- 实验数据结论 区块 ---
     evidence = response.get("data_evidence")
+    streamlit.markdown("#### 实验数据结论")
     if isinstance(evidence, list) and evidence:
-        streamlit.markdown("#### 确定性工具证据")
         for item in evidence:
             if not isinstance(item, Mapping):
                 continue
@@ -389,6 +428,8 @@ def render_query_response(streamlit: Any, response: Mapping[str, Any]) -> None:
                     streamlit.dataframe(item["rows"], hide_index=True, width="stretch")
                 if item.get("units"):
                     streamlit.caption(f"单位：{item['units']}")
+    else:
+        streamlit.info("未返回实验数据结论；当前回答不包含来自确定性分析工具的数值证据。")
 
     calls = response.get("tool_calls")
     if isinstance(calls, list) and calls:
@@ -411,7 +452,11 @@ def render_exception(streamlit: Any, error: Exception, *, action: str) -> None:
     message = getattr(error, "message", str(error)) or "未返回错误详情。"
     request_id = getattr(error, "request_id", None)
     retryable = bool(getattr(error, "retryable", False))
+    status_code = getattr(error, "status_code", None)
     streamlit.error(f"{action}失败 · {code}：{message}")
+    guidance = _error_guidance(code, status_code)
+    if guidance:
+        streamlit.warning(guidance)
     details = getattr(error, "details", None)
     if details:
         with streamlit.expander("错误详情"):
@@ -419,8 +464,80 @@ def render_exception(streamlit: Any, error: Exception, *, action: str) -> None:
     caption = []
     if request_id:
         caption.append(f"request_id {request_id}")
+    if status_code:
+        caption.append(f"HTTP {status_code}")
     caption.append("可重试" if retryable else "未标记为可重试")
     streamlit.caption(" · ".join(caption))
+
+
+def _error_guidance(code: str, status_code: Any) -> str | None:
+    """Return a readable, state-specific prompt for known error codes.
+
+    The mapping covers every status the backend middleware and domain layer emit
+    (401, 429, 503, transport/timeout, REVIEW_REQUIRED, RAG index unavailable).
+    Unknown codes return ``None`` so the generic exception line stands alone.
+    """
+
+    normalized_code = str(code).strip().upper()
+    sc = int(status_code) if isinstance(status_code, (int, float)) else 0
+
+    # Authentication / authorization
+    if normalized_code == "UNAUTHORIZED" or sc == 401:
+        return "API Key 缺失或无效，请检查连接设置中的密钥配置，或联系管理员获取有效凭证。"
+    if normalized_code == "FORBIDDEN" or sc == 403:
+        return "当前身份无权执行此操作。请确认账户权限，或联系管理员调整角色。"
+
+    # Rate limiting
+    if normalized_code == "RATE_LIMITED" or sc == 429:
+        return "请求过于频繁，已被限流。请等待数秒后重试；如持续触发，请联系管理员调整限流策略。"
+
+    # Service unavailable / model not ready / RAG index not ready
+    if (
+        normalized_code in {"SERVICE_UNAVAILABLE", "MODEL_NOT_READY", "RAG_INDEX_NOT_READY"}
+        or sc == 503
+    ):
+        if normalized_code == "MODEL_NOT_READY":
+            return "模型当前不可用，可能仍在加载或权重缺失。请在模型注册表页面确认状态后重试。"
+        if normalized_code == "RAG_INDEX_NOT_READY":
+            return "知识检索索引尚未就绪。请先在知识库页面完成文档摄取与索引构建，再发起知识查询。"
+        return "后端依赖服务暂时不可用。请稍后重试；如问题持续，请检查连接页面的组件健康状态。"
+
+    # Transport-level failures (status_code == 0)
+    if normalized_code == "TRANSPORT_ERROR":
+        return "无法连接后端服务。请确认后端地址正确、服务已启动，且网络可达。"
+    if normalized_code == "REQUEST_TIMEOUT":
+        return "请求后端超时。可能是大文件上传或模型推理耗时较长，请增加超时设置后重试。"
+
+    # Quality gate: review required
+    if normalized_code == "REVIEW_REQUIRED":
+        return (
+            "质量门禁判定该结果需要人工复核。请在运行结果页面查看质量原因，"
+            "并在复核子运行中提交修正。"
+        )
+
+    # Resource conflicts
+    if normalized_code == "BOX_REVISION_CONFLICT":
+        return "ROI 框版本已更新。请重新加载 ROI revision，基于最新版本再保存。"
+    if normalized_code == "JOB_STATE_CONFLICT":
+        return "当前项目状态不允许此操作。请刷新项目详情，确认状态后再试。"
+    if normalized_code == "EXPORT_NOT_READY":
+        return "结果尚未达到可导出状态。请等待运行完成后再执行导出。"
+
+    # Not found
+    if normalized_code in {"RESOURCE_NOT_FOUND", "MODEL_NOT_FOUND"} or sc == 404:
+        return "请求的资源不存在。请确认 job_id、run_id 或 model_id 正确，且资源未被删除。"
+
+    # Payload / media type
+    if normalized_code == "PAYLOAD_TOO_LARGE" or sc == 413:
+        return "上传内容超过大小限制。请缩减文件数量或大小后重试。"
+    if normalized_code == "UNSUPPORTED_MEDIA_TYPE" or sc == 415:
+        return "不支持的文件类型。请确认上传文件格式符合接口要求。"
+
+    # Validation
+    if normalized_code == "VALIDATION_ERROR" or sc == 422:
+        return "请求参数校验失败。请检查表单输入，修正标记的字段后重新提交。"
+
+    return None
 
 
 def _nested(record: Mapping[str, Any], parent: str, child: str) -> Any:

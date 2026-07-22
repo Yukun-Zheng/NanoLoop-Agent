@@ -12,6 +12,10 @@ from datetime import UTC, datetime
 from functools import partial
 from typing import Any, TypeVar
 
+from frontend.a11y import (
+    render_skip_link,
+    render_status_announcement,
+)
 from frontend.components import (
     display_enum,
     render_artifact_links,
@@ -25,6 +29,14 @@ from frontend.components import (
     render_run_table,
     section_header,
     status_badge,
+)
+from frontend.feedback import (
+    LongTaskStage,
+    render_actionable_error,
+    render_auth_guidance,
+    render_long_task,
+    render_rate_limit,
+    render_service_unavailable,
 )
 from frontend.model_catalog import (
     model_availability,
@@ -95,12 +107,132 @@ ARTIFACT_LABELS = {
 }
 
 
+def _inject_menu_i18n(st: Any) -> None:
+    """Translate the Streamlit hamburger menu into Chinese.
+
+    The menu labels are hard-coded by Streamlit, so we inject a tiny script
+    via st.components.v1.html (an iframe) that reaches into the parent
+    document to replace text nodes once the menu portal is rendered.
+    Theme picker buttons are already hidden via CSS so users cannot switch
+    away from the configured Light theme.
+    """
+    try:
+        components = importlib.import_module("streamlit.components.v1")
+    except Exception:
+        return
+    components.html(
+        """
+        <script>
+        (function () {
+          var parentDoc = window.parent.document;
+          /* Set the document language to Chinese for screen readers (WCAG 3.1.1).
+             Streamlit defaults to lang="en" which causes Chinese text to be
+             mispronounced by assistive technology. */
+          if (parentDoc.documentElement) {
+            parentDoc.documentElement.lang = "zh-CN";
+          }
+          var i18n = {
+            "System": "跟随系统",
+            "Light": "浅色",
+            "Dark": "深色",
+            "Rerun": "重新运行",
+            "Auto rerun": "自动重新运行",
+            "Clear cache": "清除缓存",
+            "Print": "打印",
+            "Record screen": "录制屏幕",
+            "About": "关于",
+            "Made with Streamlit": "由 Streamlit 驱动"
+          };
+
+          function translateNode(node) {
+            if (node.nodeType !== Node.TEXT_NODE) return;
+            var text = node.textContent.trim();
+            if (i18n[text]) {
+              node.textContent = node.textContent.replace(text, i18n[text]);
+            }
+          }
+
+          function translateMenu(root) {
+            var walker = parentDoc.createTreeWalker(
+              root, NodeFilter.SHOW_TEXT, null, false
+            );
+            var nodes = [];
+            var n;
+            while ((n = walker.nextNode())) nodes.push(n);
+            nodes.forEach(translateNode);
+          }
+
+          /* Hide Streamlit's "Press Enter to submit" help caption that
+             appears under text inputs when focused.  CSS selectors are
+             fragile across Streamlit versions, so we match by text content. */
+          function hideHelpCaptions(root) {
+            var walker = parentDoc.createTreeWalker(
+              root, NodeFilter.SHOW_TEXT, null, false
+            );
+            var n;
+            while ((n = walker.nextNode())) {
+              var t = n.textContent.trim();
+              if (t.indexOf("Press Enter to submit") !== -1 ||
+                  t.indexOf("press enter to submit") !== -1) {
+                var el = n.parentElement;
+                if (el) el.style.display = "none";
+              }
+            }
+          }
+
+          /* Sidebar input borders are now handled entirely by CSS animation
+             override (see styles.py).  CSS active-animation priority outranks
+             inline styles, so BaseWeb's focus JS can no longer re-add its
+             border/shadow.  No JS intervention needed. */
+
+          /* NOTE: We intentionally do NOT enforce number_input min_value via
+             JS.  Streamlit's number_input is a React controlled input —
+             directly setting input.value is ignored by React (it resets the
+             DOM to its internal state on the next render), and setting the
+             HTML min attribute causes a visual "flash to min" when Streamlit
+             re-renders.  Instead, min_value enforcement is done reliably on
+             the Python side via max(10.0, ...) clamping + a visible
+             st.warning when the user submits a value below 10. */
+
+          var observer = new parentDoc.defaultView.MutationObserver(function (mutations) {
+            mutations.forEach(function (m) {
+              m.addedNodes.forEach(function (node) {
+                if (node.nodeType === Node.ELEMENT_NODE) {
+                  translateMenu(node);
+                  hideHelpCaptions(node);
+                }
+              });
+            });
+          });
+
+          observer.observe(parentDoc.body, { childList: true, subtree: true });
+          translateMenu(parentDoc.body);
+          hideHelpCaptions(parentDoc.body);
+          /* Re-run help-caption hiding after a short delay — Streamlit
+             re-renders widgets asynchronously, so the first pass may miss. */
+          setTimeout(function () { hideHelpCaptions(parentDoc.body); }, 500);
+          setTimeout(function () { hideHelpCaptions(parentDoc.body); }, 1500);
+        })();
+        </script>
+        """,
+        width=0,
+        height=0,
+    )
+
+
 def main() -> None:
     st = importlib.import_module("streamlit")
     st.set_page_config(**PAGE_CONFIG)
     apply_styles(st)
+    if os.getenv("NANOLOOP_EXPERIMENTAL_MENU_I18N", "").casefold() in {"1", "true", "yes"}:
+        _inject_menu_i18n(st)
     state = ensure_session_state(st.session_state)
     client = _sidebar(st, state)
+
+    # Global skip link (WCAG 2.4.1) appears on every page.
+    render_skip_link(st, target_id="nl-main-content", label="跳转到主内容")
+    # 主地标 (WCAG 1.3.1) — 给屏幕阅读器一个跳转目标。
+    st.markdown('<div id="nl-main-content" role="main"></div>', unsafe_allow_html=True)
 
     page = str(state["navigation"])
     if page == "Connection":
@@ -158,7 +290,7 @@ def _sidebar(st: Any, state: State) -> Any | None:
                     value=float(state["api_timeout_seconds"]),
                     step=1.0,
                 )
-                apply_connection = st.form_submit_button("保存连接设置", width="stretch")
+                apply_connection = st.form_submit_button("保存连接设置", use_container_width=True)
             if apply_connection:
                 try:
                     normalized = normalize_base_url(
@@ -179,7 +311,7 @@ def _sidebar(st: Any, state: State) -> Any | None:
                     st.error(_localized_error(error))
 
         client = _get_client(st, state)
-        refresh_health = st.button("检查连接", width="stretch")
+        refresh_health = st.button("检查连接", use_container_width=True)
         if refresh_health and client is not None:
             _refresh_health(st, state, client)
 
@@ -198,7 +330,7 @@ def _sidebar(st: Any, state: State) -> Any | None:
                 value=str(state.get("active_job_id") or ""),
                 placeholder="job_…",
             )
-            load = st.form_submit_button("加载项目", width="stretch")
+            load = st.form_submit_button("加载项目", use_container_width=True)
         if load and client is not None:
             if job_id.strip():
                 _load_job(st, state, client, job_id.strip())
@@ -227,6 +359,8 @@ def _connection_page(st: Any, state: State, client: Any | None) -> None:
             "且不会阻断无关的确定性分析流程。"
         ),
     )
+    if os.getenv("NANOLOOP_SHOW_E_P1_SHOWCASE", "").casefold() in {"1", "true", "yes"}:
+        _render_ep1_showcase(st)
     health = _mapping_or_none(state.get("health"))
     if not health:
         render_empty(
@@ -255,6 +389,106 @@ def _connection_page(st: Any, state: State, client: Any | None) -> None:
     )
     if client is None:
         st.error("无法创建 REST 客户端，请检查连接设置。")
+
+
+def _render_ep1_showcase(st: Any) -> None:
+    """Render the opt-in E-P1 feedback and accessibility showcase."""
+    st.divider()
+    st.markdown("## E-P1 反馈与可访问性样本")
+    st.caption(
+        "以下样本展示了三类 E-P1 改进：键盘可达性 / 结构化错误恢复 / 长任务反馈。"
+        "它们已经接到 _api_action 的错误分支，真实出现 401/429 时会自动启用。"
+    )
+
+    sample_tabs = st.tabs(("401 运维指引", "429 限流反馈", "长任务 / 部分失败", "键盘与屏幕阅读器"))
+
+    with sample_tabs[0]:
+        st.markdown("#### 共享 API Key 失效时的运维指引")
+        st.caption(
+            "替代当前仅显示一行 `401 AUTHENTICATION_REQUIRED` 的做法——"
+            "明确告知运维该改哪两个环境变量、需要重启进程，并避免泄露 Key 本身。"
+        )
+        render_auth_guidance(
+            st,
+            contact_hint="若多次轮换 Key 仍失败，请联系后端运维核对限流桶与可信主机配置。",
+        )
+
+    with sample_tabs[1]:
+        st.markdown("#### 限流响应的差异化处理")
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.markdown("**读取操作（可安全重试）**")
+            render_rate_limit(
+                st,
+                retry_after_seconds=7.0,
+                is_read_request=True,
+                request_id="web_demo_read",
+            )
+        with col_b:
+            st.markdown("**写入操作（绝不自动重放）**")
+            render_rate_limit(
+                st,
+                retry_after_seconds=None,
+                is_read_request=False,
+                request_id="web_demo_write",
+            )
+        st.caption(
+            "根据 `_is_read_action` 启发式判断：动作名包含“加载/刷新/检查/查看/获取/"
+            "列出/推荐/预览/下载”"
+            "的视为读取；其余视为写入。读取仅提示倒计时，不自动重放。"
+        )
+
+    with sample_tabs[2]:
+        st.markdown("#### 长任务分阶段反馈 + 部分失败保留现场")
+        render_long_task(
+            st,
+            title="运行 run_demo_7（U-Net @ v1）",
+            summary="3 张图像 · 2 张已完成，1 张后处理失败",
+            partial_failure_count=1,
+            stages=[
+                LongTaskStage(label="图像校验与上传", status="completed", detail="3/3 通过"),
+                LongTaskStage(
+                    label="ROI 解析与模型加载",
+                    status="completed",
+                    detail="revision 12 · U-Net 就绪",
+                ),
+                LongTaskStage(label="语义分割推理", status="completed", detail="3/3 完成"),
+                LongTaskStage(
+                    label="后处理与形貌统计",
+                    status="failed",
+                    detail="image img_003 连通域异常；其余 2 张已写入 canonical 实例。",
+                ),
+                LongTaskStage(label="报告生成", status="pending", detail="等待失败图像处理决策"),
+            ],
+            recoverable_action_label="仅重试失败图像",
+            recoverable_action_anchor="nl-recover-demo",
+        )
+        st.caption(
+            "关键设计：失败的图像被单独标记，其余结果仍可查看 / 下载 / 对比；"
+            "用户不会被强迫重新创建整个 run。"
+        )
+
+    with sample_tabs[3]:
+        st.markdown("#### 键盘可达性与屏幕阅读器支持")
+        render_status_announcement(
+            st,
+            role="status",
+            tone="live",
+            title="aria-live 区域示例",
+            body=(
+                "此面板会被屏幕阅读器自动朗读，无需用户手动查找。"
+                "页面顶部还有“跳转到主内容”链接，按 Tab 即可看到。"
+            ),
+        )
+        st.markdown(
+            """
+- **跳转链接**：页面顶部隐藏链接，键盘 Tab 第一次聚焦时显示（WCAG 2.4.1）。
+- **焦点环**：所有交互元素都有 3px 高对比度 focus-visible 环；侧栏使用亮黄色以适配深底。
+- **屏幕阅读器专用文本**：`.nl-sr-only` 类隐藏视觉但保留朗读。
+- **aria-live 区域**：状态变化通过 `role="status"` / `role="alert"` 自动播报。
+- **减少动画**：尊重 `prefers-reduced-motion`，所有过渡均降级。
+            """.strip()
+        )
 
 
 def _project_page(st: Any, state: State, client: Any | None) -> None:
@@ -287,7 +521,7 @@ def _project_page(st: Any, state: State, client: Any | None) -> None:
                     for image in images
                 ],
                 hide_index=True,
-                width="stretch",
+                use_container_width=True,
             )
         if st.button("刷新当前项目") and client is not None:
             _load_job(st, state, client, str(state["active_job_id"]))
@@ -361,7 +595,7 @@ def _project_page(st: Any, state: State, client: Any | None) -> None:
                     "scale_value": scale_value,
                     "conditions_text": conditions_text,
                 }
-        create = st.form_submit_button("创建分析项目", type="primary", width="stretch")
+        create = st.form_submit_button("创建分析项目", type="primary", use_container_width=True)
 
     if not create:
         return
@@ -396,8 +630,7 @@ def _roi_models_page(st: Any, state: State, client: Any | None) -> None:
         eyebrow="02 · 分析配置",
         title="ROI、模型就绪状态与运行提交",
         description=(
-            "在原图画布上拖拽 ROI，并用数值表格精调半开区间像素坐标；"
-            "每次保存都明确保留框选版本。"
+            "在原图画布上拖拽 ROI，并用数值表格精调半开区间像素坐标；每次保存都明确保留框选版本。"
         ),
     )
     detail = _require_job(st, state)
@@ -432,7 +665,7 @@ def _roi_models_page(st: Any, state: State, client: Any | None) -> None:
     valid_rect = _mapping_or_none(analysis_roi.get("valid_rect"))
     invalid_rects = _list_of_mappings(analysis_roi.get("invalid_rects"))
     load_column, context_column = st.columns([1, 3])
-    if load_column.button("加载 / 刷新 ROI revision", width="stretch"):
+    if load_column.button("加载 / 刷新 ROI revision", use_container_width=True):
         if client is None:
             st.error("请先连接后端，再加载 ROI 框。")
         else:
@@ -485,7 +718,7 @@ def _roi_models_page(st: Any, state: State, client: Any | None) -> None:
                 rows,
                 num_rows="dynamic",
                 hide_index=True,
-                width="stretch",
+                use_container_width=True,
                 key=(
                     f"roi_editor_{active_image_id}_{box_set.get('revision', 0)}_"
                     f"{draft.get('editor_generation', 0)}"
@@ -591,7 +824,7 @@ def _roi_models_page(st: Any, state: State, client: Any | None) -> None:
                         for region in invalid_rects
                     ],
                     hide_index=True,
-                    width="stretch",
+                    use_container_width=True,
                 )
         else:
             st.caption("没有 invalid_rects。")
@@ -608,9 +841,7 @@ def _model_configuration(
     selected_images: Sequence[str],
 ) -> None:
     st.markdown("## 模型注册表")
-    st.caption(
-        "筛选条件由后端 GET /models 执行；材料名称为不区分大小写的精确匹配。"
-    )
+    st.caption("筛选条件由后端 GET /models 执行；材料名称为不区分大小写的精确匹配。")
     with st.form("model_registry_filters"):
         filters = st.columns(5)
         family = filters[0].selectbox(
@@ -650,7 +881,7 @@ def _model_configuration(
             max_chars=255,
             key="model_filter_material",
         )
-        refresh_models = st.form_submit_button("应用筛选 / 刷新模型", width="stretch")
+        refresh_models = st.form_submit_button("应用筛选 / 刷新模型", use_container_width=True)
 
     query = model_filter_query(
         family=family,
@@ -679,9 +910,7 @@ def _model_configuration(
             for key, value in (_mapping_or_none(state.get("model_catalog_filters")) or {}).items()
             if value
         }
-        filter_summary = " · ".join(
-            f"{key}={value}" for key, value in active_filters.items()
-        )
+        filter_summary = " · ".join(f"{key}={value}" for key, value in active_filters.items())
         st.caption(
             f"后端返回 {len(models)} 个模型"
             + (f" · {filter_summary}" if filter_summary else " · 未限定筛选")
@@ -705,7 +934,7 @@ def _model_configuration(
                 for model in models
             ],
             hide_index=True,
-            width="stretch",
+            use_container_width=True,
         )
         _render_model_detail(st, state, models)
     else:
@@ -741,7 +970,7 @@ def _model_configuration(
         device = columns[3].selectbox(
             "设备", ("auto", "cpu", "cuda", "mps"), format_func=display_enum
         )
-        if st.button("推荐模型", width="stretch") and client is not None:
+        if st.button("推荐模型", use_container_width=True) and client is not None:
             recommendation = _api_action(
                 st,
                 state,
@@ -773,7 +1002,7 @@ def _model_configuration(
                     for item in recommendations
                 ],
                 hide_index=True,
-                width="stretch",
+                use_container_width=True,
             )
 
     ready_models = {
@@ -813,9 +1042,13 @@ def _model_configuration(
     run_device = options[2].selectbox(
         "推理设备", ("auto", "cpu", "cuda", "mps"), format_func=display_enum
     )
-    if st.button("创建运行", type="primary", width="stretch"):
+    if st.button("创建运行", type="primary", use_container_width=True):
         if client is None:
             st.error("请先连接后端，再创建运行。")
+            return
+        # Reject a duplicate run request while the prior request is still active.
+        if state.get("_creating_runs"):
+            st.warning("上一次创建运行的请求仍在处理中，请等待完成后再试。")
             return
         try:
             payload = build_run_payload(
@@ -832,26 +1065,32 @@ def _model_configuration(
         except ValueError as error:
             st.error(_localized_error(error))
             return
-        created = _api_action(
-            st,
-            state,
-            "创建运行",
-            lambda: client.create_runs(str(state["active_job_id"]), payload),
-        )
+        state["_creating_runs"] = True
+        try:
+            created = _api_action(
+                st,
+                state,
+                "创建运行",
+                lambda: client.create_runs(str(state["active_job_id"]), payload),
+            )
+        finally:
+            state["_creating_runs"] = False
         if created is not None:
             run_ids = [str(run_id) for run_id in created.get("run_ids") or []]
-            state["run_ids"] = list(dict.fromkeys([*state.get("run_ids", []), *run_ids]))
-            st.success(f"已提交 {len(run_ids)} 个运行，请前往“运行与结果”监控进度。")
+            # Preserve order while de-duplicating run IDs returned by the backend.
+            existing = set(state.get("run_ids", []))
+            new_ids = [rid for rid in run_ids if rid not in existing]
+            state["run_ids"] = list(dict.fromkeys([*state.get("run_ids", []), *new_ids]))
+            if new_ids:
+                st.success(f"已提交 {len(new_ids)} 个新运行，请前往“运行与结果”监控进度。")
+            else:
+                st.info("这些运行已存在，未重复创建。")
 
 
 def _render_model_detail(st: Any, state: State, models: Sequence[Mapping[str, Any]]) -> None:
     """Render every scientific and operational field for one selected registry model."""
 
-    model_by_id = {
-        str(model["model_id"]): dict(model)
-        for model in models
-        if model.get("model_id")
-    }
+    model_by_id = {str(model["model_id"]): dict(model) for model in models if model.get("model_id")}
     if not model_by_id:
         return
     selected_id = str(state.get("model_catalog_selected_id") or "")
@@ -905,7 +1144,7 @@ def _render_model_detail(st: Any, state: State, models: Sequence[Mapping[str, An
         st.dataframe(
             [{"指标": str(name), "值": value} for name, value in metrics.items()],
             hide_index=True,
-            width="stretch",
+            use_container_width=True,
         )
     else:
         st.caption("未报告验证指标。")
@@ -959,7 +1198,7 @@ def _runs_page(st: Any, state: State, client: Any | None) -> None:
     poll_seconds = controls[1].selectbox(
         "轮询间隔", (2, 5, 10, 20), index=1, format_func=lambda value: f"{value} 秒"
     )
-    manual_refresh = controls[2].button("立即刷新全部", width="stretch")
+    manual_refresh = controls[2].button("立即刷新全部", use_container_width=True)
     if manual_refresh and client is not None:
         _poll_runs(st, state, client, run_ids)
 
@@ -1080,7 +1319,7 @@ def _single_run_layer_panel(
         st.image(
             preview["display_content"],
             caption=source.label,
-            width="stretch",
+            use_container_width=True,
         )
     note = preview.get("note")
     if note:
@@ -1283,7 +1522,7 @@ def _render_comparison_run(
         st.image(
             preview["content"],
             caption=ARTIFACT_LABELS.get(str(preview.get("artifact_key")), "结果预览"),
-            width="stretch",
+            use_container_width=True,
         )
         st.download_button(
             "下载当前预览",
@@ -1291,7 +1530,7 @@ def _render_comparison_run(
             file_name=str(preview["filename"]),
             mime=str(preview["content_type"]),
             key=f"comparison_preview_download_{_widget_key(run_id)}",
-            width="stretch",
+            use_container_width=True,
         )
     elif preferred_preview_artifact(run) is None:
         st.info("该运行未发布叠加图、颗粒标注图或掩膜预览。")
@@ -1305,11 +1544,17 @@ def _render_comparison_run(
     if quality is None:
         st.info("后端未返回质量门禁报告；下方数值不能替代质量判断。")
     else:
+        quality_status = str(quality.get("status", "unknown"))
         st.markdown(
-            status_badge(str(quality.get("status", "unknown"))),
+            status_badge(quality_status),
             unsafe_allow_html=True,
         )
         st.caption(f"耗时：{run.get('runtime_ms') or '—'} ms")
+        if quality_status.upper() == "REVIEW_REQUIRED":
+            st.warning(
+                "该运行结果需要人工复核。请切换到单运行详情页，在“复核子运行”页签"
+                "提交修正参数或校正掩膜。"
+            )
         reasons = quality.get("reasons")
         if isinstance(reasons, list) and reasons:
             for reason in reasons[:3]:
@@ -1380,7 +1625,7 @@ def _comparison_artifact_downloads(
     if st.button(
         "获取所选制品",
         key=f"comparison_artifact_fetch_{_widget_key(run_id)}",
-        width="stretch",
+        use_container_width=True,
     ):
         if client is None:
             st.error("请先连接后端，再下载制品。")
@@ -1414,7 +1659,7 @@ def _comparison_artifact_downloads(
             mime=str(prepared["content_type"]),
             key=f"comparison_artifact_download_{_widget_key(run_id + selected_key)}",
             type="primary",
-            width="stretch",
+            use_container_width=True,
         )
 
 
@@ -1836,7 +2081,7 @@ def _knowledge_page(st: Any, state: State, client: Any | None) -> None:
                     for item in documents
                 ],
                 hide_index=True,
-                width="stretch",
+                use_container_width=True,
             )
             st.markdown("#### 文档启用状态")
             st.caption("禁用文档会立即从后续知识检索中排除；重新启用后恢复检索资格。")
@@ -1856,7 +2101,7 @@ def _knowledge_page(st: Any, state: State, client: Any | None) -> None:
                 clicked = columns[2].button(
                     transition.button_label,
                     key=f"knowledge_toggle_{doc_id}_{transition.enabled}",
-                    width="stretch",
+                    use_container_width=True,
                     disabled=client is None or not doc_id,
                 )
                 if clicked and client is not None:
@@ -1934,9 +2179,7 @@ def _get_client(st: Any, state: State) -> Any | None:
                 os.getenv("NANOLOOP_API_BASE_URL", DEFAULT_API_BASE_URL)
             )
             if requested_base_url != trusted_base_url:
-                raise ValueError(
-                    "配置共享 API Key 时，后端服务地址必须使用运维锁定值"
-                )
+                raise ValueError("配置共享 API Key 时，后端服务地址必须使用运维锁定值")
     except (KeyError, TypeError, ValueError) as error:
         _drop_client(state)
         render_exception(st, error, action="创建 REST 客户端")
@@ -2138,7 +2381,21 @@ def _poll_runs(
             result = as_dict(client.get_run(run_id))
             state["runs"][run_id] = result
         except Exception as error:
-            if not quiet:
+            if quiet:
+                continue
+            code = str(getattr(error, "code", type(error).__name__))
+            status_code = getattr(error, "status_code", None)
+            retry_after = getattr(error, "retry_after_seconds", None)
+            if status_code == 429 or code == "RATE_LIMITED":
+                render_rate_limit(
+                    st,
+                    retry_after_seconds=retry_after,
+                    is_read_request=True,
+                    request_id=getattr(error, "request_id", None),
+                )
+            elif status_code == 401 or code == "AUTHENTICATION_REQUIRED":
+                render_auth_guidance(st)
+            else:
                 render_exception(st, error, action=f"刷新运行 {run_id}")
 
 
@@ -2158,6 +2415,29 @@ def _ordered_runs(state: Mapping[str, Any], run_ids: Sequence[str]) -> list[dict
     return [dict(runs[run_id]) for run_id in run_ids if isinstance(runs.get(run_id), Mapping)]
 
 
+_READ_ACTION_KEYWORDS = (
+    "加载",
+    "刷新",
+    "检查",
+    "查看",
+    "获取",
+    "列出",
+    "推荐",
+    "预览",
+    "下载",
+)
+
+
+def _is_read_action(action: str) -> bool:
+    """Heuristic: an action is "safe to retry" iff it does not mutate state.
+
+    Intentionally conservative — anything not matching a known read verb is
+    treated as a mutation, so we never silently replay a write.
+    """
+
+    return any(keyword in action for keyword in _READ_ACTION_KEYWORDS)
+
+
 def _api_action(
     st: Any,
     state: State,
@@ -2170,13 +2450,63 @@ def _api_action(
         state["last_error"] = None
         return result
     except Exception as error:
+        code = str(getattr(error, "code", type(error).__name__))
+        message = str(getattr(error, "message", str(error)))
+        request_id = getattr(error, "request_id", None)
+        status_code = getattr(error, "status_code", None)
+        retry_after = getattr(error, "retry_after_seconds", None)
         state["last_error"] = {
             "action": action,
-            "code": getattr(error, "code", type(error).__name__),
-            "message": getattr(error, "message", str(error)),
-            "request_id": getattr(error, "request_id", None),
+            "code": code,
+            "message": message,
+            "request_id": request_id,
         }
-        render_exception(st, error, action=action)
+        is_service_unavailable = (
+            code.startswith("HTTP_5")
+            or (status_code is not None and 500 <= status_code < 600)
+            or code in {"SERVICE_UNAVAILABLE", "BAD_GATEWAY", "GATEWAY_TIMEOUT"}
+        )
+        if status_code == 401 or code == "AUTHENTICATION_REQUIRED":
+            render_auth_guidance(st)
+        elif status_code == 429 or code == "RATE_LIMITED":
+            render_rate_limit(
+                st,
+                retry_after_seconds=retry_after,
+                is_read_request=_is_read_action(action),
+                request_id=request_id,
+            )
+            if _is_read_action(action) and st.button(
+                "重试", key=f"retry_{action}_{code}", use_container_width=True
+            ):
+                st.rerun()
+        elif is_service_unavailable:
+            base_url = None
+            try:
+                base_url = str(state.get("api_base_url") or "") or None
+            except Exception:
+                base_url = None
+            render_service_unavailable(st, code=code, base_url=base_url)
+            if st.button("重试连接", key=f"retry_{action}_{code}", use_container_width=True):
+                st.rerun()
+        elif getattr(error, "retryable", False):
+            render_actionable_error(
+                st,
+                title=f"{action}失败（可重试）",
+                code=code,
+                message=message,
+                tone="warn",
+                request_id=request_id,
+                hint=(
+                    "后端将此错误标记为可重试。为安全起见，界面不会自动重放"
+                    "——请确认后端状态后，再手动重新发起该操作。"
+                ),
+            )
+            if _is_read_action(action) and st.button(
+                "重试", key=f"retry_{action}_{code}", use_container_width=True
+            ):
+                st.rerun()
+        else:
+            render_exception(st, error, action=action)
         return None
 
 
