@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
+from app.contracts.analyses import ROIBox
 from app.contracts.enums import ModelFamily, ModelStatus, ModelVariant, QualityTier, RoiMode
 from app.contracts.inference import SegmentationRequest
 from app.contracts.models import ModelMetadata
@@ -132,12 +133,19 @@ def test_small_unet_crops_bottom_bar_and_uses_strict_threshold(tmp_path: Path) -
         default_threshold=0.30,
         preprocess_profile="sem-gray-unit-crop-bottom-130-v1",
         postprocess_profile="semantic-mask-v1",
+        inference_invalid_bottom_px=130,
+        expected_input_width=5,
+        expected_input_height=132,
     )
     adapter = UNetAdapter(
         metadata=metadata,
         weight_path=tmp_path / "external.pt",
         weight_bytes=b"test-only",
-        config={"bottom_crop_px": 130, "threshold_comparison": "gt"},
+        config={
+            "bottom_crop_px": 130,
+            "expected_image_size": [132, 5],
+            "threshold_comparison": "gt",
+        },
     )
     adapter._loaded = True
 
@@ -165,7 +173,7 @@ def test_small_unet_crops_bottom_bar_and_uses_strict_threshold(tmp_path: Path) -
     assert not observed[0].any()
     assert observed[1].all()
     assert not observed[2:].any()
-    assert output.warnings == ["model_bottom_information_bar_excluded"]
+    assert output.warnings == []
 
 
 def test_agglomerated_percentile_preprocess_uses_full_image_p1_p99() -> None:
@@ -274,15 +282,23 @@ def test_agglomerated_crops_130_bottom_rows_and_uses_gte_threshold(
         version="1",
         status=ModelStatus.READY,
         supports_box_prompt=False,
-        default_threshold=None,
+        default_threshold=0.25,
+        default_min_area_px=1024,
         preprocess_profile="sem-gray-p1-p99-crop-bottom-130-v1",
         postprocess_profile="semantic-agglomerate-mask-v1",
+        inference_invalid_bottom_px=130,
+        expected_input_width=5,
+        expected_input_height=132,
     )
     adapter = UNetAdapter(
         metadata=metadata,
         weight_path=tmp_path / "external.pt",
         weight_bytes=b"test-only",
-        config={"bottom_crop_px": 130, "threshold_comparison": "gte"},
+        config={
+            "bottom_crop_px": 130,
+            "expected_image_size": [132, 5],
+            "threshold_comparison": "gte",
+        },
     )
     adapter._loaded = True
 
@@ -313,7 +329,275 @@ def test_agglomerated_crops_130_bottom_rows_and_uses_gte_threshold(
     assert probability[0] == pytest.approx(0.50)
     assert probability[1] == pytest.approx(0.49)
     assert not probability[2:].any()
-    assert output.warnings == ["model_bottom_information_bar_excluded"]
+    assert output.warnings == []
+
+
+def test_gte_zero_threshold_keeps_box_exterior_and_invalid_bottom_zero(
+    tmp_path: Path,
+) -> None:
+    metadata = ModelMetadata(
+        model_id="unet-agglomerated-specialized-v1",
+        family=ModelFamily.UNET,
+        variant=ModelVariant.DENSE_PARTICLE,
+        quality_tier=QualityTier.BALANCED,
+        version="1",
+        status=ModelStatus.READY,
+        supports_box_prompt=False,
+        default_threshold=0.25,
+        preprocess_profile="fixture",
+        postprocess_profile="fixture",
+        inference_invalid_bottom_px=2,
+        expected_input_width=5,
+        expected_input_height=4,
+    )
+    adapter = UNetAdapter(
+        metadata=metadata,
+        weight_path=tmp_path / "external.pt",
+        weight_bytes=b"test-only",
+        config={
+            "bottom_crop_px": 2,
+            "expected_image_size": [4, 5],
+            "threshold_comparison": "gte",
+        },
+    )
+    adapter._loaded = True
+    adapter._predict_probability = lambda image: np.zeros(
+        image.shape[:2], dtype=np.float32
+    )
+    image_bytes = BytesIO()
+    Image.new("L", (5, 4), color=1).save(image_bytes, format="PNG")
+
+    output = adapter.predict(
+        SegmentationRequest(
+            image_id="image-1",
+            image_path=tmp_path / "pinned-image-bytes",
+            image_bytes=image_bytes.getvalue(),
+            run_dir=tmp_path / "run-boxes",
+            roi_mode=RoiMode.BOXES,
+            boxes=[ROIBox(x1=1, y1=0, x2=3, y2=2)],
+            threshold=0.0,
+        )
+    )
+
+    with Image.open(output.binary_mask_path) as mask:
+        observed = np.asarray(mask) > 0
+    expected = np.zeros((4, 5), dtype=bool)
+    expected[0:2, 1:3] = True
+    assert np.array_equal(observed, expected)
+
+
+def test_unet_rejects_metadata_and_config_bottom_crop_drift(tmp_path: Path) -> None:
+    metadata = ModelMetadata(
+        model_id="unet-drift",
+        family=ModelFamily.UNET,
+        variant=ModelVariant.GENERAL,
+        quality_tier=QualityTier.BALANCED,
+        version="1",
+        status=ModelStatus.READY,
+        supports_box_prompt=False,
+        default_threshold=0.0,
+        preprocess_profile="fixture",
+        postprocess_profile="fixture",
+        inference_invalid_bottom_px=10,
+        expected_input_width=20,
+        expected_input_height=20,
+    )
+    adapter = UNetAdapter(
+        metadata=metadata,
+        weight_path=tmp_path / "external.pt",
+        weight_bytes=b"test-only",
+        config={"bottom_crop_px": 9, "expected_image_size": [20, 20]},
+    )
+    adapter._loaded = True
+    image_bytes = BytesIO()
+    Image.new("L", (20, 20), color=0).save(image_bytes, format="PNG")
+
+    with pytest.raises(ValueError, match="must match registry"):
+        adapter.predict(
+            SegmentationRequest(
+                image_id="image-1",
+                image_path=tmp_path / "pinned-image-bytes",
+                image_bytes=image_bytes.getvalue(),
+                run_dir=tmp_path / "run",
+                roi_mode=RoiMode.FULL_IMAGE,
+            )
+        )
+
+
+def test_unet_rejects_input_dimensions_outside_frozen_crop_contract(
+    tmp_path: Path,
+) -> None:
+    metadata = ModelMetadata(
+        model_id="unet-size-contract",
+        family=ModelFamily.UNET,
+        variant=ModelVariant.GENERAL,
+        quality_tier=QualityTier.BALANCED,
+        version="1",
+        status=ModelStatus.READY,
+        supports_box_prompt=False,
+        default_threshold=0.5,
+        preprocess_profile="fixture",
+        postprocess_profile="fixture",
+        inference_invalid_bottom_px=10,
+        expected_input_width=20,
+        expected_input_height=20,
+    )
+    adapter = UNetAdapter(
+        metadata=metadata,
+        weight_path=tmp_path / "external.pt",
+        weight_bytes=b"test-only",
+        config={"bottom_crop_px": 10, "expected_image_size": [20, 20]},
+    )
+    adapter._loaded = True
+    image_bytes = BytesIO()
+    Image.new("L", (20, 21), color=0).save(image_bytes, format="PNG")
+
+    with pytest.raises(ValueError, match="expected 20x20, observed 20x21"):
+        adapter.predict(
+            SegmentationRequest(
+                image_id="image-1",
+                image_path=tmp_path / "pinned-image-bytes",
+                image_bytes=image_bytes.getvalue(),
+                run_dir=tmp_path / "run",
+                roi_mode=RoiMode.FULL_IMAGE,
+            )
+        )
+
+
+def test_unet_requires_expected_image_size_before_fixed_bottom_crop(
+    tmp_path: Path,
+) -> None:
+    metadata = ModelMetadata(
+        model_id="unet-missing-size-contract",
+        family=ModelFamily.UNET,
+        variant=ModelVariant.GENERAL,
+        quality_tier=QualityTier.BALANCED,
+        version="1",
+        status=ModelStatus.READY,
+        supports_box_prompt=False,
+        default_threshold=0.5,
+        preprocess_profile="fixture",
+        postprocess_profile="fixture",
+        inference_invalid_bottom_px=10,
+    )
+    adapter = UNetAdapter(
+        metadata=metadata,
+        weight_path=tmp_path / "external.pt",
+        weight_bytes=b"test-only",
+        config={"bottom_crop_px": 10},
+    )
+    adapter._loaded = True
+    image_bytes = BytesIO()
+    Image.new("L", (20, 20), color=0).save(image_bytes, format="PNG")
+
+    with pytest.raises(ValueError, match="expected_image_size is required"):
+        adapter.predict(
+            SegmentationRequest(
+                image_id="image-1",
+                image_path=tmp_path / "pinned-image-bytes",
+                image_bytes=image_bytes.getvalue(),
+                run_dir=tmp_path / "run",
+                roi_mode=RoiMode.FULL_IMAGE,
+            )
+        )
+
+
+def test_unet_rejects_too_small_cropped_extent_for_reflect_padding(
+    tmp_path: Path,
+) -> None:
+    metadata = ModelMetadata(
+        model_id="unet-reflect-contract",
+        family=ModelFamily.UNET,
+        variant=ModelVariant.GENERAL,
+        quality_tier=QualityTier.BALANCED,
+        version="1",
+        status=ModelStatus.READY,
+        supports_box_prompt=False,
+        default_threshold=0.5,
+        preprocess_profile="fixture",
+        postprocess_profile="fixture",
+        inference_invalid_bottom_px=2,
+        expected_input_width=4,
+        expected_input_height=3,
+    )
+    adapter = UNetAdapter(
+        metadata=metadata,
+        weight_path=tmp_path / "external.pt",
+        weight_bytes=b"test-only",
+        config={
+            "bottom_crop_px": 2,
+            "expected_image_size": [3, 4],
+            "patch_size": [4, 4],
+            "stride": [2, 2],
+            "tiling_padding": "reflect",
+        },
+    )
+    adapter._loaded = True
+    image_bytes = BytesIO()
+    Image.new("L", (4, 3), color=0).save(image_bytes, format="PNG")
+
+    with pytest.raises(ValueError, match="at least two pixels"):
+        adapter.predict(
+            SegmentationRequest(
+                image_id="image-1",
+                image_path=tmp_path / "pinned-image-bytes",
+                image_bytes=image_bytes.getvalue(),
+                run_dir=tmp_path / "run",
+                roi_mode=RoiMode.FULL_IMAGE,
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    ("default_threshold", "expected_foreground", "error"),
+    [(0.0, True, None), (None, False, "requires a frozen threshold")],
+)
+def test_unet_default_threshold_is_exact_and_missing_default_fails_closed(
+    tmp_path: Path,
+    default_threshold: float | None,
+    expected_foreground: bool,
+    error: str | None,
+) -> None:
+    metadata = ModelMetadata(
+        model_id="unet-threshold-contract",
+        family=ModelFamily.UNET,
+        variant=ModelVariant.GENERAL,
+        quality_tier=QualityTier.BALANCED,
+        version="1",
+        status=ModelStatus.READY,
+        supports_box_prompt=False,
+        default_threshold=default_threshold,
+        preprocess_profile="fixture",
+        postprocess_profile="fixture",
+    )
+    adapter = UNetAdapter(
+        metadata=metadata,
+        weight_path=tmp_path / "external.pt",
+        weight_bytes=b"test-only",
+        config={"bottom_crop_px": 0, "threshold_comparison": "gte"},
+    )
+    adapter._loaded = True
+    adapter._predict_probability = lambda image: np.full(
+        image.shape[:2], 0.25, dtype=np.float32
+    )
+    image_bytes = BytesIO()
+    Image.new("L", (2, 2), color=0).save(image_bytes, format="PNG")
+    request = SegmentationRequest(
+        image_id="image-1",
+        image_path=tmp_path / "pinned-image-bytes",
+        image_bytes=image_bytes.getvalue(),
+        run_dir=tmp_path / "run",
+        roi_mode=RoiMode.FULL_IMAGE,
+    )
+
+    if error is not None:
+        with pytest.raises(ValueError, match=error):
+            adapter.predict(request)
+        return
+
+    output = adapter.predict(request)
+    with Image.open(output.binary_mask_path) as mask:
+        assert bool((np.asarray(mask) > 0).all()) is expected_foreground
 
 
 @pytest.mark.parametrize(

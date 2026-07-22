@@ -1,4 +1,8 @@
-"""Run one full-image small U-Net analysis through the public application services."""
+"""Run a provisional small U-Net diagnostic through the public application services.
+
+The Small handoff has no delivered size, split, license, or scientific evidence package. This
+script exercises the engineering chain only and must not be used to promote a model to ready.
+"""
 
 from __future__ import annotations
 
@@ -82,7 +86,8 @@ def _nonnegative_int(value: str) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Run one real full-image small U-Net analysis and print an acceptance JSON summary."
+            "Run one real full-image small U-Net engineering diagnostic. The result is not "
+            "readiness or scientific-acceptance evidence."
         )
     )
     parser.add_argument("--image", required=True, type=Path)
@@ -262,6 +267,13 @@ def execute_analysis(
     if not bottom_evidence["matching_model_bottom_region_present"]:
         raise RuntimeError("run configuration did not freeze the expected bottom 130 px exclusion")
     return {
+        "evidence_class": "engineering_diagnostic_only",
+        "readiness_eligible": False,
+        "limitations": [
+            "No delivered Small source-image dimension or split/permission evidence.",
+            "Operator-supplied threshold, min_area_px, scale, and sample are not a frozen "
+            "scientific acceptance contract.",
+        ],
         "job_id": completed.job_id,
         "image_id": completed.image_id,
         "run_id": completed.run_id,

@@ -26,6 +26,7 @@ def test_large_unet_config_freezes_confirmed_inference_contract() -> None:
         "loader": "torchscript",
         "input_channels": 1,
         "input_size": [512, 512],
+        "expected_image_size": [1536, 2048],
         "patch_size": [512, 512],
         "stride": [256, 256],
         "tiling_padding": "reflect",
@@ -61,8 +62,15 @@ def test_large_registry_entry_remains_unavailable_with_180_px_invalid_bottom() -
     assert metadata["status"] == "unavailable"
     assert metadata["inference_invalid_bottom_px"] == 180
     assert metadata["default_threshold"] == 0.50
-    assert metadata["metrics"]["min_area_gt_retention"] == 1.0
+    assert metadata["default_min_area_px"] == 512
+    assert metadata["expected_input_width"] == 2048
+    assert metadata["expected_input_height"] == 1536
+    assert metadata["metrics"]["developer_reported_min_area_gt_retention"] == 1.0
     assert metadata["metric_context"] == {
+        "evidence_status": "developer_reported_not_independently_verified",
+        "evidence_bundle_delivered": False,
+        "asset_ledger_delivered": False,
+        "training_split_verification": "unknown",
         "validation_scope": "field_of_view",
         "validation_image_count": 6,
         "threshold_comparison": "gt",
@@ -113,6 +121,8 @@ def test_small_unet_asset_contract_is_unchanged() -> None:
     assert entry["metadata"]["status"] == "unavailable"
     assert entry["metadata"]["default_threshold"] == 0.30
     assert entry["metadata"]["inference_invalid_bottom_px"] == 130
+    assert "expected_input_width" not in entry["metadata"]
+    assert "expected_input_height" not in entry["metadata"]
 
 
 def test_large_model_card_records_export_and_scientific_readiness_limits() -> None:
@@ -152,6 +162,15 @@ def test_large_model_card_records_export_and_scientific_readiness_limits() -> No
     assert "`perimeter_neighborhood=8`" in card
     assert "not sample-level independent" in card
     assert "cannot be described as scientifically ready" in card
+    assert "developer-reported" in card
+    assert "not acceptance evidence" in card
+    assert "`expected_image_size=[1536, 2048]`" in card
+
+    small_card = (
+        _artifact_root() / "model_cards" / "unet-small-balanced-v1.md"
+    ).read_text(encoding="utf-8")
+    assert "no delivered source-image dimension evidence" in small_card
+    assert "must fail" in small_card
 
 
 def test_large_model_card_records_frozen_independent_test_evidence() -> None:

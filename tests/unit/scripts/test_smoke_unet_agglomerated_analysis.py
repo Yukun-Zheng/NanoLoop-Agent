@@ -15,6 +15,7 @@ from app.contracts.enums import (
     ModelVariant,
     QualityTier,
 )
+from app.contracts.execution import InferenceExecutionEvidence
 from app.contracts.inference import SegmentationOutput, SegmentationRequest
 from app.contracts.models import ModelBundleReference, ModelHealth, ModelMetadata
 from app.core.config import Settings
@@ -27,7 +28,9 @@ from scripts.models.smoke_unet_agglomerated_analysis import (
     MODEL_ID,
     TEST_FILENAMES,
     TORCHSCRIPT_SHA256,
+    PromotionEvidence,
     SmokeParameters,
+    _load_promotion_evidence,
     _mask_bottom_evidence,
     _ready_smoke_registry_entry,
     _validate_output_root,
@@ -60,8 +63,6 @@ def _config() -> dict[str, Any]:
 
 
 class FakeGateway:
-    freeze_model_bundle: Any = None
-
     def __init__(self) -> None:
         self.requests: list[SegmentationRequest] = []
         self.model = ModelMetadata(
@@ -76,12 +77,26 @@ class FakeGateway:
             preprocess_profile="sem-gray-p1-p99-crop-bottom-130-v1",
             postprocess_profile="semantic-agglomerate-mask-v1",
             inference_invalid_bottom_px=130,
+            expected_input_width=80,
+            expected_input_height=240,
             adapter_path="tests.fake:FakeAdapter",
             weight_sha256=TORCHSCRIPT_SHA256,
             config_sha256="b" * 64,
             model_card_sha256="c" * 64,
             adapter_sha256="d" * 64,
         )
+        self.bundle = ModelBundleReference(
+            bundle_id="e" * 64,
+            manifest_ref=f"bundles/{'e' * 64}/manifest.json",
+            weight_ref=f"{TORCHSCRIPT_SHA256}/weights.pt",
+            config_ref=f"{'b' * 64}/config.yaml",
+            model_card_ref=f"{'c' * 64}/model-card.md",
+            adapter_ref=f"{'d' * 64}/adapter.py",
+            adapter_sha256="d" * 64,
+        )
+
+    def freeze_model_bundle(self, _model_id: str, **_expected: Any) -> ModelBundleReference:
+        return self.bundle
 
     def list_models(self, only_ready: bool = False) -> list[ModelMetadata]:
         assert not only_ready or self.model.status == ModelStatus.READY
@@ -119,19 +134,30 @@ class FakeGateway:
         assert expected_weight_sha256 == self.model.weight_sha256
         assert expected_config_sha256 == self.model.config_sha256
         assert expected_model_card_sha256 == self.model.model_card_sha256
-        assert expected_adapter_sha256 is None
-        assert model_bundle is None
+        assert expected_adapter_sha256 == "d" * 64
+        assert model_bundle == self.bundle
         mask = np.zeros((240, 80), dtype=np.uint8)
         # A 40x40 component is above the frozen 1024 px minimum and remains
         # strictly inside the 80x110 effective ROI after the 130 px bottom crop.
         mask[10:50, 10:50] = 255
         mask_path = request.run_dir / "fake-mask.png"
         Image.fromarray(mask).save(mask_path)
+        probability_path = request.run_dir / "probability.npy"
+        np.save(probability_path, mask.astype(np.float32) / 255.0, allow_pickle=False)
         return SegmentationOutput(
             width=80,
             height=240,
             binary_mask_path=mask_path,
+            probability_path=probability_path,
             runtime_ms=1,
+            execution=InferenceExecutionEvidence(
+                actual_device="cpu",
+                python_random_seeded=True,
+                numpy_random_seeded=True,
+                torch_deterministic_algorithms=True,
+                global_inference_serialized=True,
+                backend="app.inference.adapters.unet.UNetAdapter",
+            ),
         )
 
 
@@ -207,7 +233,15 @@ def test_full_image_run_freezes_config_and_excludes_bottom_roi(tmp_path: Path) -
         )
     try:
         result = execute_analyses(
-            SmokeParameters(image_dir, registry_path, output_root),
+            SmokeParameters(
+                image_dir,
+                registry_path,
+                output_root,
+                tmp_path / "threshold-calibration.json",
+                "a" * 64,
+                tmp_path / "min-area-calibration.json",
+                "b" * 64,
+            ),
             load_calibrated_analysis(_config(), gateway.model),
             database=database,
             file_store=LocalFileStore(
@@ -268,8 +302,22 @@ def test_full_image_run_freezes_config_and_excludes_bottom_roi(tmp_path: Path) -
             "labeled_particles",
             "report",
             "execution_evidence",
+            "probability",
         ):
             assert run["artifacts"][artifact] is not None
+        assert set(run["canonical_artifact_identities"]) == {
+            "pred_mask_path",
+            "probability_path",
+            "instances_path",
+            "particles_csv_path",
+            "overlay_path",
+            "labeled_particles_path",
+            "image_summary_path",
+            "quality_report_path",
+            "execution_provenance_path",
+            "run_config_path",
+            "transform_path",
+        }
 
 
 @pytest.mark.parametrize("kind", ["existing", "repository"])
@@ -292,6 +340,10 @@ def test_cli_has_no_test_mask_input(tmp_path: Path) -> None:
     output_root = tmp_path / "output"
     _write_test_images(image_dir, size=EXPECTED_IMAGE_SIZE)
     registry.write_text("models: []\n", encoding="utf-8")
+    threshold_evidence = tmp_path / "threshold-calibration.json"
+    min_area_evidence = tmp_path / "min-area-calibration.json"
+    threshold_evidence.write_text("{}", encoding="utf-8")
+    min_area_evidence.write_text("{}", encoding="utf-8")
     parser = build_parser()
     assert all(
         "mask" not in option
@@ -302,6 +354,10 @@ def test_cli_has_no_test_mask_input(tmp_path: Path) -> None:
         image_dir=image_dir,
         registry=registry,
         output_root=output_root,
+        threshold_evidence=threshold_evidence,
+        threshold_evidence_sha256="a" * 64,
+        min_area_evidence=min_area_evidence,
+        min_area_evidence_sha256="b" * 64,
         model_id=MODEL_ID,
     )
 
@@ -315,10 +371,18 @@ def test_cli_rejects_public_registry_and_test_directory(tmp_path: Path) -> None:
     registry = tmp_path / "private-registry.yaml"
     _write_test_images(image_dir, size=EXPECTED_IMAGE_SIZE)
     registry.write_text("models: []\n", encoding="utf-8")
+    threshold_evidence = tmp_path / "threshold-calibration.json"
+    min_area_evidence = tmp_path / "min-area-calibration.json"
+    threshold_evidence.write_text("{}", encoding="utf-8")
+    min_area_evidence.write_text("{}", encoding="utf-8")
     namespace = argparse.Namespace(
         image_dir=image_dir,
         registry=registry,
         output_root=tmp_path / "output",
+        threshold_evidence=threshold_evidence,
+        threshold_evidence_sha256="a" * 64,
+        min_area_evidence=min_area_evidence,
+        min_area_evidence_sha256="b" * 64,
         model_id=MODEL_ID,
     )
     with pytest.raises(ValueError, match="independent test directory"):
@@ -354,4 +418,33 @@ def test_preflight_private_registry_must_not_be_ready(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="remain unavailable before the smoke"):
-        _ready_smoke_registry_entry(registry)
+        _ready_smoke_registry_entry(
+            registry,
+            PromotionEvidence(
+                tmp_path / "threshold-calibration.json",
+                "a" * 64,
+                {},
+                tmp_path / "min-area-calibration.json",
+                "b" * 64,
+                {},
+            ),
+        )
+
+
+def test_promotion_evidence_digest_is_mandatory(tmp_path: Path) -> None:
+    threshold = tmp_path / "threshold-calibration.json"
+    min_area = tmp_path / "min-area-calibration.json"
+    threshold.write_text("{}", encoding="utf-8")
+    min_area.write_text("{}", encoding="utf-8")
+    parameters = SmokeParameters(
+        tmp_path,
+        tmp_path / "private.yaml",
+        tmp_path / "output",
+        threshold,
+        "0" * 64,
+        min_area,
+        "1" * 64,
+    )
+
+    with pytest.raises(ValueError, match="SHA-256 mismatch"):
+        _load_promotion_evidence(parameters)

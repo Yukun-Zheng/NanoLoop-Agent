@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -7,10 +8,16 @@ import numpy as np
 import pytest
 from PIL import Image
 
+from scripts.models import calibrate_unet_large_min_area as min_area_module
 from scripts.models.calibrate_unet_large_min_area import (
+    ADAPTER_PATH,
+    ADAPTER_SHA256,
     BOTTOM_CROP_PX,
     CANDIDATE_MIN_AREAS,
+    CONFIG_SHA256,
+    MODEL_CARD_SHA256,
     MODEL_ID,
+    MODEL_VERSION,
     SCALE_NM_PER_PIXEL,
     THRESHOLD,
     TORCHSCRIPT_SHA256,
@@ -21,6 +28,10 @@ from scripts.models.calibrate_unet_large_min_area import (
     run,
     select_min_area,
 )
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _arrays() -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
@@ -101,9 +112,7 @@ def test_selection_rule_uses_composite_then_dice_then_smaller_area() -> None:
 
     assert select_min_area(results)["min_area_px"] == 64
 
-    results.append(
-        {"min_area_px": 64, "macro": {"composite_mape": 0.1, "dice": 0.8}}
-    )
+    results.append({"min_area_px": 64, "macro": {"composite_mape": 0.1, "dice": 0.8}})
     with pytest.raises(ValueError, match="did not resolve the tie"):
         select_min_area(results)
 
@@ -122,7 +131,12 @@ def test_output_root_protection(tmp_path: Path, kind: str) -> None:
         _validate_output_root(output_root)
 
 
-def test_run_reads_existing_probability_cache_without_model(tmp_path: Path) -> None:
+def test_run_reads_existing_probability_cache_without_model(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(min_area_module, "IMAGE_WIDTH", 200)
+    monkeypatch.setattr(min_area_module, "IMAGE_HEIGHT", 300)
     threshold_root = tmp_path / "threshold-calibration-v1"
     image_dir = tmp_path / "train_images" / "images"
     mask_dir = tmp_path / "train_masks" / "masks"
@@ -131,22 +145,105 @@ def test_run_reads_existing_probability_cache_without_model(tmp_path: Path) -> N
     image_dir.mkdir(parents=True)
     mask_dir.mkdir(parents=True)
     probabilities, targets = _arrays()
-    probability_paths: dict[str, str] = {}
+    probability_paths: dict[str, dict[str, str]] = {}
+    input_evidence: dict[str, dict[str, object]] = {}
+    execution_evidence: dict[str, dict[str, object]] = {}
+    bundle_id = "e" * 64
+    model_bundle = {
+        "schema_version": 1,
+        "bundle_id": bundle_id,
+        "manifest_ref": f"bundles/{bundle_id}/manifest.json",
+        "weight_ref": f"{TORCHSCRIPT_SHA256}/weights.pt",
+        "config_ref": f"{CONFIG_SHA256}/config.yaml",
+        "model_card_ref": f"{MODEL_CARD_SHA256}/model-card.md",
+        "adapter_ref": f"{ADAPTER_SHA256}/adapter.py",
+        "adapter_sha256": ADAPTER_SHA256,
+    }
     for filename in VALIDATION_FILENAMES:
         stem_dir = threshold_root / "probability-cache" / Path(filename).stem
         stem_dir.mkdir(parents=True)
         probability_path = stem_dir / "probability.npy"
         np.save(probability_path, probabilities[filename], allow_pickle=False)
-        probability_paths[filename] = str(probability_path)
         Image.fromarray((targets[filename] * 255).astype(np.uint8)).save(mask_dir / filename)
         Image.fromarray(np.zeros((300, 200), dtype=np.uint8)).save(image_dir / filename)
+        relative_probability = str(probability_path.relative_to(threshold_root))
+        probability_record = {
+            "path": relative_probability,
+            "sha256": _sha256(probability_path),
+            "shape": [300, 200],
+            "dtype": "float32",
+            "minimum": float(probabilities[filename].min()),
+            "maximum": float(probabilities[filename].max()),
+            "finite": True,
+            "range": [0.0, 1.0],
+        }
+        probability_paths[filename] = {
+            "path": relative_probability,
+            "sha256": _sha256(probability_path),
+        }
+        image_record = {
+            "path": str((image_dir / filename).resolve()),
+            "sha256": _sha256(image_dir / filename),
+            "width": 200,
+            "height": 300,
+        }
+        truth_record = {
+            "path": str((mask_dir / filename).resolve()),
+            "sha256": _sha256(mask_dir / filename),
+            "width": 200,
+            "height": 300,
+        }
+        input_evidence[filename] = {
+            "sample_id": Path(filename).stem,
+            "input_image": image_record,
+            "ground_truth": truth_record,
+            "probability_cache": probability_record,
+        }
+        execution_evidence[filename] = {
+            "sample_id": Path(filename).stem,
+            "input_image": image_record,
+            "request": {
+                "roi_mode": "full_image",
+                "threshold": THRESHOLD,
+                "min_area_px": 0,
+                "device": "cpu",
+                "seed": 2026,
+            },
+            "model": {
+                "model_id": MODEL_ID,
+                "model_version": MODEL_VERSION,
+                "adapter_path": ADAPTER_PATH,
+                "weight_sha256": TORCHSCRIPT_SHA256,
+                "config_sha256": CONFIG_SHA256,
+                "model_card_sha256": MODEL_CARD_SHA256,
+                "adapter_sha256": ADAPTER_SHA256,
+                "model_bundle": model_bundle,
+            },
+            "probability_cache": probability_record,
+            "execution": {
+                "actual_device": "cpu",
+                "python_random_seeded": True,
+                "numpy_random_seeded": True,
+                "torch_deterministic_algorithms": True,
+                "global_inference_serialized": True,
+                "backend": "app.inference.adapters.unet.UNetAdapter",
+            },
+        }
     evidence = {
+        "evidence_schema_version": 2,
         "model_id": MODEL_ID,
+        "model_version": MODEL_VERSION,
         "torchscript_sha256": TORCHSCRIPT_SHA256,
+        "config_sha256": CONFIG_SHA256,
+        "model_card_sha256": MODEL_CARD_SHA256,
+        "adapter_sha256": ADAPTER_SHA256,
+        "model_bundle": model_bundle,
         "validation_images": list(VALIDATION_FILENAMES),
         "bottom_crop_px": BOTTOM_CROP_PX,
         "comparison_rule": "probability > threshold",
         "selected": {"threshold": THRESHOLD},
+        "input_evidence": input_evidence,
+        "execution_evidence": execution_evidence,
         "artifacts": {"probabilities": probability_paths},
     }
     (threshold_root / "threshold-calibration.json").write_text(
@@ -158,6 +255,9 @@ def test_run_reads_existing_probability_cache_without_model(tmp_path: Path) -> N
 
     assert payload["probability_source"].endswith("no repeated inference")
     assert payload["selected"]["min_area_px"] == 0
+    assert payload["upstream_threshold_evidence"]["sha256"] == _sha256(
+        threshold_root / "threshold-calibration.json"
+    )
     assert (output_root / "min-area-calibration.json").is_file()
     assert (output_root / "min-area-calibration.csv").is_file()
     for filename in VALIDATION_FILENAMES:

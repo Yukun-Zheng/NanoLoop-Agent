@@ -67,7 +67,10 @@ def test_exporter_scripts_reloads_and_compares_384_outputs() -> None:
     assert "model.load_state_dict(checkpoint_state, strict=True)" in source
     assert "model.eval()" in source
     assert "torch.jit.script(model)" in source
-    assert 'torch.jit.load(str(output), map_location="cpu")' in source
+    assert 'torch.jit.load(str(temporary_output), map_location="cpu")' in source
+    assert "MAX_ABS_ERROR = 1e-6" in source
+    assert "_publish_verified_export(temporary_output, output)" in source
+    assert "temporary_output.unlink(missing_ok=True)" in source
     assert "steps=PATCH_SIZE * PATCH_SIZE" in source
     assert "reshape(1, 1, PATCH_SIZE, PATCH_SIZE)" in source
     assert "eager_logits" in source and "scripted_logits" in source

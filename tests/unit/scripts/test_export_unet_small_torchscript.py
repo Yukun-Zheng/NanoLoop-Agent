@@ -28,12 +28,17 @@ def test_small_unet_export_script_has_external_artifact_and_torchscript_guards()
     assert 'model.load_state_dict(_load_state_dict(checkpoint), strict=True)' in source
     assert "model.eval()" in source
     assert "torch.jit.script(model)" in source
-    assert 'torch.jit.load(str(output), map_location="cpu")' in source
+    assert 'torch.jit.load(str(temporary_output), map_location="cpu")' in source
+    assert "MAX_ABS_ERROR = 1e-6" in source
+    assert "_publish_verified_export(temporary_output, output)" in source
+    assert "temporary_output.unlink(missing_ok=True)" in source
     assert 'torch.linspace(' in source
     assert "reshape(1, 1, profile.patch_size, profile.patch_size)" in source
     assert "output path must be outside the NanoLoop-Agent repository" in source
     assert 'C:\\' not in source
     assert 'D:\\' not in source
+    assert '"checkpoint_sha256": checkpoint_sha256' in source
+    assert '"export_sha256": _sha256(temporary_output)' in source
 
 
 def test_small_profile_preserves_batchnorm_and_128_key_contract() -> None:
@@ -73,6 +78,10 @@ def test_large_profile_matches_confirmed_groupnorm_architecture() -> None:
     assert "LargeUp(512, 128), LargeUp(256, 64)" in unet
     assert "LargeUp(128, 32), LargeUp(64, 32)" in unet
     assert "self.outc = nn.Conv2d(32, 1, 1)" in unet
+    assert '"--expected-checkpoint-sha256"' in source
+    assert "profile.name == LARGE_GROUPNORM_OPTIMIZED" in source
+    assert "large profile requires --expected-checkpoint-sha256" in source
+    assert "checkpoint SHA-256 does not match the explicit expected digest" in source
 
 
 def test_profile_selection_rejects_unknown_names_and_drives_example_shape() -> None:

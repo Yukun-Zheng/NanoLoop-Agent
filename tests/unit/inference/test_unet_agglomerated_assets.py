@@ -26,6 +26,7 @@ def test_agglomerated_config_freezes_validation_calibrated_analysis_contract() -
         "loader": "torchscript",
         "input_channels": 1,
         "input_size": [384, 384],
+        "expected_image_size": [1536, 2048],
         "patch_size": [384, 384],
         "stride": [288, 288],
         "tiling_padding": "reflect",
@@ -64,15 +65,23 @@ def test_public_registry_keeps_agglomerated_placeholder_unavailable() -> None:
     metadata = entry["metadata"]
 
     assert metadata["status"] == "unavailable"
-    assert metadata["default_threshold"] is None
+    assert metadata["default_threshold"] == 0.25
+    assert metadata["default_min_area_px"] == 1024
     assert metadata["inference_invalid_bottom_px"] == 130
+    assert metadata["expected_input_width"] == 2048
+    assert metadata["expected_input_height"] == 1536
     assert metadata["metrics"] == {}
     assert metadata["metric_context"] == {
-        "calibration_status": "pending",
+        "calibration_status": "developer_reported_not_independently_verified",
         "validation_scope": "field_of_view",
         "validation_image_count": 4,
         "independent_test_image_count": 3,
         "target_definition": "whole_agglomerate",
+        "calibrated_threshold": 0.25,
+        "calibrated_min_area_px": 1024,
+        "evidence_bundle_delivered": False,
+        "asset_ledger_delivered": False,
+        "training_split_verification": "unknown",
     }
     assert entry["adapter_path"] == "app.inference.adapters.unet:UNetAdapter"
     assert entry["weight_path"] == "weights/unet-agglomerated-specialized-v1.pt"
@@ -143,7 +152,9 @@ def test_model_card_records_asset_identity_science_definition_and_data_boundary(
     assert "perimeter-density Macro MAPE was `16.8649123230%`" in card
     assert "`YCu-2` has substantial missed small targets" in card
     assert "must **not** be claimed as a high-precision tool" in card
-    assert "public `default_threshold`" in card
+    assert "developer-reported" in card
+    assert "training/test independence cannot be" in card
+    assert "`expected_image_size=[1536, 2048]`" in card
 
 
 def test_existing_small_and_large_configs_do_not_enable_agglomerated_behavior() -> None:

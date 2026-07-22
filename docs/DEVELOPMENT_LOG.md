@@ -322,3 +322,54 @@
   PR 清单和可直接交给编程 AI 的分轮提示词。
 - 保留边界：本批不修改前端，不接收模型权重/训练数据，不启用尚无证据的 ready 状态，也不纳入工作区
   中由其他来源改动的 v3/RAG DOCX 与 v3 Markdown。
+
+## 2026-07-22 00:03 +08:00 — 郭境濠 A+B 交付整合与阶段一工程 MVP 收束
+
+- 分支与来源：本批仅面向 `yukun`，不合入 `main`、不修改前端。接收的 `NanoLoop-Agent.zip`
+  SHA-256 为 `f445079109a71e26cfa3c6c93a9375c1aa2588baa10a7efd9e780c6cd9efb3f0`，ZIP 内
+  `feat/ab-unet-v1@b65042cd8b51af1f5c74a8e6169274c1bc78906f` 与接收时 `origin/yukun`
+  基线一致，开发改动尚未提交。整合时只重建明确的 A+B 源码、配置、卡片、脚本和测试；排除 `.venv`、
+  嵌套 `.git`、缓存、输出、权重、数据及含本机绝对路径的临时交接文档。
+- U-Net 接缝：统一 Adapter 已具备确定性灰度/百分位预处理、reflect padding、滑窗融合、阈值比较和
+  BOX union；模型专属默认阈值/最小面积进入冻结运行配置。Large 与 Agglomerated 冻结
+  `2048 × 1536` 输入和底部无效区，尺寸、config/metadata/卡片校准参数漂移均失败关闭；Small 因缺少
+  输入尺寸证据继续不可用。建 run 前会验证 BOX 与图像及模型完整有效 ROI 的交集，不创建注定空 ROI
+  的运行。
+- 输入与统计边界：上传继续严格要求扩展名、MIME 和真实内容一致，不接受 JPEG 字节伪装成 TIFF。
+  新增仓库外、无覆盖的 SEM TIFF 标准化工具，同一份源字节用于解码、源 SHA/大小取证，输出真实
+  无损 TIFF 并复核 decoded-pixel SHA。密度、粒径、周长密度等仍由统一 Analysis/B 后处理基于
+  canonical instances 计算，不复制到模型 Adapter。
+- 验收工具：纳入 Large/Agglomerated 的 TorchScript 导出、阈值/最小面积校准、Gateway→Analysis
+  smoke 与独立测试工具；冻结输入/GT/概率缓存、checkpoint/export、config/card/Adapter、执行环境和
+  上游证据哈希，输出 no-overwrite、schema-v3、canonical artifact 与终态校验均失败关闭。Small smoke
+  明确降级为 `engineering_diagnostic_only`，不得用于 ready 晋级。
+- 状态诚实性：公开 registry 现有五个占位模型均保持 `unavailable`。开发者报告的 Dice/IoU 和形貌误差
+  没有被改写成独立复现结果；因本次没有权重、授权/许可台账、源图/样品级固定 split、机器可读校准与
+  真实 smoke 证据，未执行真实 checkpoint/TorchScript 推理，也没有生成私有 ready bundle。
+- 审查与门禁：两轮独立只读复审均无 P0/P1；额外消除源文件并发变化导致标准化 manifest 漂移及
+  image-level invalid ROI 延迟失败两个 P2。最终 `make check` 全绿：Ruff、严格 Mypy 121 个源文件、
+  1098 项 Pytest、OpenAPI、六页 Streamlit AppTest、Alembic upgrade/downgrade/upgrade 与 ORM drift
+  均通过；`docker compose config --quiet` 和 `git diff --check` 通过。
+- MVP 结论：仓库达到“阶段一工程 MVP / 内部 alpha 候选”的协作基线；在至少一个外部私有模型完成
+  资产授权、固定独立集及真实 `upload -> Gateway -> Analysis -> report/export` 闭环前，不宣称为可演示
+  的纳米颗粒分析 MVP 或科学测量 MVP。后续补交格式与验收步骤见
+  `docs/developer_handoffs/guo-jinghao-ab-delivery-audit-2026-07-21.md`。
+
+## 2026-07-22 01:46 +08:00 — v4.0 协作交接与 GitHub 文档入口更新
+
+- 事实基线：v4.0 冻结在 `yukun@16456a30d63e42eda0e1d4b09ac0e7c223b3fd82`；
+  [GitHub Actions run 29848825904](https://github.com/Yukun-Zheng/NanoLoop-Agent/actions/runs/29848825904)
+  全绿，覆盖 Ruff、严格 Mypy、OpenAPI/Alembic、Python 3.11/3.12 的 1098 项 Pytest、六页
+  Streamlit、API/frontend 双容器构建与非 root 启动，以及备份恢复链路。
+- 文档发布：新增 v4.0 Markdown、DOCX、可重复构建脚本和文档索引；README、开发指南、需求追踪、
+  模型/RAG 交接、部署与生产就绪说明统一指向 v4.0。`make handoff-doc` 改为生成当前 v4.0，
+  `make handoff-doc-v3` 仅用于历史文档。
+- 阶段结论：当前仍为 M1 工程 MVP / 内部 Alpha。FR 汇总保持 `implemented 10 / partial 3 /
+  external-blocked 1`；五个登记模型均为 `unavailable`，正式 RAG 语料、固定 embedding、真实向量
+  重启验收和无降级 E2E 尚未完成。
+- 当前分工：郭境濠 A+B；黄睿健 C；徐皓彬 D；杨雨宁 E；姚承志 F-学习岗；郑煜坤负责契约、
+  集成、科学签字与发布。新增 PR 模板，要求交付者记录基线、单一行为切片、合同影响、外部资产、
+  实际测试、未验证项、风险、回滚和下一责任人。
+- v4.0 主线：先完成至少一个真实模型、固定独立 SEM/GT、合法语料、固定 embedding、真实引用和
+  无降级闭环；ASR、SAM2 深化、本地生成式 LLM、爬虫和前端重写暂缓。v3.0、RAG v1.0 中的旧
+  时间表和旧人员分工仅保留为历史记录。

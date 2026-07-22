@@ -1524,6 +1524,7 @@
           },
           "min_area_px": {
             "default": 8,
+            "description": "Minimum component area. Omit to use the selected model default when declared; explicit values, including 0 and 8, are preserved.",
             "minimum": 0.0,
             "title": "Min Area Px",
             "type": "integer"
@@ -2009,6 +2010,18 @@
             ],
             "title": "Config Sha256"
           },
+          "default_min_area_px": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Min Area Px"
+          },
           "default_threshold": {
             "anyOf": [
               {
@@ -2021,6 +2034,32 @@
               }
             ],
             "title": "Default Threshold"
+          },
+          "expected_input_height": {
+            "anyOf": [
+              {
+                "maximum": 50000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Input Height"
+          },
+          "expected_input_width": {
+            "anyOf": [
+              {
+                "maximum": 50000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Input Width"
           },
           "family": {
             "$ref": "#/components/schemas/ModelFamily"
@@ -2038,8 +2077,8 @@
           },
           "inference_invalid_bottom_px": {
             "default": 0,
-            "maximum": 4096,
-            "minimum": 0,
+            "maximum": 4096.0,
+            "minimum": 0.0,
             "title": "Inference Invalid Bottom Px",
             "type": "integer"
           },

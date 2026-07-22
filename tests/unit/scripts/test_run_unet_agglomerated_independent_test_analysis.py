@@ -15,6 +15,7 @@ from app.contracts.enums import (
     ModelVariant,
     QualityTier,
 )
+from app.contracts.execution import InferenceExecutionEvidence
 from app.contracts.inference import SegmentationOutput, SegmentationRequest
 from app.contracts.models import ModelBundleReference, ModelHealth, ModelMetadata
 from app.core.config import Settings
@@ -28,6 +29,7 @@ from scripts.models.run_unet_agglomerated_independent_test_analysis import (
     TORCHSCRIPT_SHA256,
     IndependentTestParameters,
     _validate_inputs,
+    _validate_promotion_manifest,
     _validated_parameters,
     build_parser,
     execute_analyses,
@@ -57,8 +59,6 @@ def _config() -> dict[str, Any]:
 
 
 class FakeGateway:
-    freeze_model_bundle: Any = None
-
     def __init__(self) -> None:
         self.requests: list[SegmentationRequest] = []
         self.model = ModelMetadata(
@@ -73,12 +73,26 @@ class FakeGateway:
             preprocess_profile="sem-gray-p1-p99-crop-bottom-130-v1",
             postprocess_profile="semantic-agglomerate-mask-v1",
             inference_invalid_bottom_px=130,
+            expected_input_width=80,
+            expected_input_height=240,
             adapter_path="tests.fake:FakeAdapter",
             weight_sha256=TORCHSCRIPT_SHA256,
             config_sha256="b" * 64,
             model_card_sha256="c" * 64,
             adapter_sha256="d" * 64,
         )
+        self.bundle = ModelBundleReference(
+            bundle_id="e" * 64,
+            manifest_ref=f"bundles/{'e' * 64}/manifest.json",
+            weight_ref=f"{TORCHSCRIPT_SHA256}/weights.pt",
+            config_ref=f"{'b' * 64}/config.yaml",
+            model_card_ref=f"{'c' * 64}/model-card.md",
+            adapter_ref=f"{'d' * 64}/adapter.py",
+            adapter_sha256="d" * 64,
+        )
+
+    def freeze_model_bundle(self, _model_id: str, **_expected: Any) -> ModelBundleReference:
+        return self.bundle
 
     def list_models(self, only_ready: bool = False) -> list[ModelMetadata]:
         assert not only_ready or self.model.status == ModelStatus.READY
@@ -114,13 +128,29 @@ class FakeGateway:
         assert expected_weight_sha256 == TORCHSCRIPT_SHA256
         assert expected_config_sha256 == "b" * 64
         assert expected_model_card_sha256 == "c" * 64
-        assert expected_adapter_sha256 is None
-        assert model_bundle is None
+        assert expected_adapter_sha256 == "d" * 64
+        assert model_bundle == self.bundle
         mask = np.zeros((240, 80), dtype=np.uint8)
         mask[10:50, 10:50] = 255
         path = request.run_dir / "fake-mask.png"
         Image.fromarray(mask).save(path)
-        return SegmentationOutput(width=80, height=240, binary_mask_path=path, runtime_ms=1)
+        probability_path = request.run_dir / "probability.npy"
+        np.save(probability_path, mask.astype(np.float32) / 255.0, allow_pickle=False)
+        return SegmentationOutput(
+            width=80,
+            height=240,
+            binary_mask_path=path,
+            probability_path=probability_path,
+            runtime_ms=1,
+            execution=InferenceExecutionEvidence(
+                actual_device="cpu",
+                python_random_seeded=True,
+                numpy_random_seeded=True,
+                torch_deterministic_algorithms=True,
+                global_inference_serialized=True,
+                backend="app.inference.adapters.unet.UNetAdapter",
+            ),
+        )
 
 
 def _write_images(
@@ -189,6 +219,8 @@ def test_three_ycu_full_image_runs_are_created_and_mapped_without_evaluation_rea
         assert Path(run["image_metadata"]).is_file()
         assert Path(run["pred_mask"]).is_file()
         assert Path(run["run_config"]).is_file()
+        assert Path(run["execution_provenance"]).is_file()
+        assert len(run["canonical_artifact_identities"]) == 11
         assert run["prediction_bottom_check"] == {
             "bottom_rows_checked": 130,
             "bottom_nonzero_pixels": 0,
@@ -223,7 +255,7 @@ def test_input_set_requires_only_the_three_top_level_ycu_targets(tmp_path: Path)
         _validate_inputs(image_dir)
 
 
-def test_cli_has_no_ground_truth_or_metric_inputs_and_requires_fixed_external_output(
+def test_cli_has_no_ground_truth_or_metric_inputs_and_requires_fresh_external_output(
     tmp_path: Path,
 ) -> None:
     image_dir, registry, output_root = (
@@ -239,8 +271,7 @@ def test_cli_has_no_ground_truth_or_metric_inputs_and_requires_fixed_external_ou
     validated = _validated_parameters(
         argparse.Namespace(
             image_dir=image_dir, registry=registry, output_root=output_root, model_id=MODEL_ID
-        ),
-        expected_output_root=output_root,
+        )
     )
     assert validated.output_root == output_root.resolve()
     output_root.mkdir()
@@ -251,16 +282,19 @@ def test_cli_has_no_ground_truth_or_metric_inputs_and_requires_fixed_external_ou
                 registry=registry,
                 output_root=output_root,
                 model_id=MODEL_ID,
-            ),
-            expected_output_root=output_root,
+            )
         )
-    with pytest.raises(ValueError, match="fixed independent-test root"):
-        _validated_parameters(
-            argparse.Namespace(
-                image_dir=image_dir,
-                registry=registry,
-                output_root=tmp_path / "wrong",
-                model_id=MODEL_ID,
-            ),
-            expected_output_root=output_root,
-        )
+
+
+def test_ready_manifest_without_promotion_evidence_is_rejected(tmp_path: Path) -> None:
+    registry = tmp_path / "private-ready.yaml"
+    registry.write_text(
+        "models:\n"
+        "  - metadata:\n"
+        f"      model_id: {MODEL_ID}\n"
+        "      status: ready\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="promotion evidence"):
+        _validate_promotion_manifest(registry, registration=object())

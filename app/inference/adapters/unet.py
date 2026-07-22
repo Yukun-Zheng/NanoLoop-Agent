@@ -15,6 +15,7 @@ from app.contracts.analyses import ROIBox
 from app.contracts.enums import RoiMode
 from app.contracts.inference import SegmentationOutput, SegmentationRequest
 from app.inference.adapters._utils import (
+    apply_box_roi,
     iter_box_crops,
     open_rgb,
     output_dir,
@@ -55,14 +56,20 @@ class UNetAdapter(BaseSegmentationAdapter):
         started = time.perf_counter()
         image = open_rgb(request.image_bytes or request.image_path)
         height, width = image.shape[:2]
+        self._validate_expected_input_shape(height=height, width=width)
         inference_height = self._inference_height(height)
+        self._validate_reflect_padding_extent(height=inference_height, width=width)
         inference_image = self._prepare_inference_image(image[:inference_height])
         probability = np.zeros((height, width), dtype=np.float32)
+        effective_boxes: list[ROIBox] = []
         if request.roi_mode == RoiMode.BOXES:
             top_probability = np.zeros((inference_height, width), dtype=np.float32)
+            effective_boxes = self._clip_boxes_to_inference_height(
+                request.boxes, inference_height
+            )
             for crop in iter_box_crops(
                 inference_image,
-                self._clip_boxes_to_inference_height(request.boxes, inference_height),
+                effective_boxes,
                 context_px=request.roi_context_px,
             ):
                 paste_box_probability(
@@ -75,9 +82,17 @@ class UNetAdapter(BaseSegmentationAdapter):
         probability[:inference_height] = top_probability
         threshold = request.threshold
         if threshold is None:
-            threshold = self.metadata.default_threshold or 0.5
+            threshold = self.metadata.default_threshold
+        if threshold is None:
+            raise ValueError("U-Net inference requires a frozen threshold")
+        thresholded = self._threshold_probability(probability, threshold)
+        thresholded[inference_height:] = False
+        if request.roi_mode == RoiMode.BOXES:
+            thresholded = np.asarray(
+                apply_box_roi(thresholded, effective_boxes), dtype=bool
+            )
         binary = remove_small_components(
-            self._threshold_probability(probability, threshold), request.min_area_px
+            thresholded, request.min_area_px
         )
 
         destination = output_dir(request.run_dir, self.metadata.model_id)
@@ -92,11 +107,7 @@ class UNetAdapter(BaseSegmentationAdapter):
             probability_path=probability_path,
             binary_mask_path=binary_path,
             model_scores={"foreground_probability_mean": float(probability.mean())},
-            warnings=(
-                ["model_bottom_information_bar_excluded"]
-                if inference_height != height
-                else []
-            ),
+            warnings=[],
             runtime_ms=elapsed_ms,
         )
 
@@ -206,10 +217,62 @@ class UNetAdapter(BaseSegmentationAdapter):
             raise ValueError("bottom_crop_px must be a non-negative integer")
         if bottom_crop_px < 0:
             raise ValueError("bottom_crop_px must be a non-negative integer")
+        if bottom_crop_px != self.metadata.inference_invalid_bottom_px:
+            raise ValueError(
+                "bottom_crop_px must match registry inference_invalid_bottom_px"
+            )
         inference_height = image_height - bottom_crop_px
         if inference_height <= 0:
             raise ValueError("bottom_crop_px must leave at least one image row for inference")
         return inference_height
+
+    def _validate_expected_input_shape(self, *, height: int, width: int) -> None:
+        expected = self.config.get("expected_image_size")
+        bottom_crop_px = self.config.get("bottom_crop_px", 0)
+        if expected is None:
+            if bottom_crop_px:
+                raise ValueError(
+                    "expected_image_size is required when bottom_crop_px is non-zero"
+                )
+            return
+        if (
+            not isinstance(expected, list | tuple)
+            or len(expected) != 2
+            or any(
+                isinstance(item, bool) or not isinstance(item, int) or item <= 0
+                for item in expected
+            )
+        ):
+            raise ValueError("expected_image_size must be [height, width] positive integers")
+        expected_height, expected_width = expected
+        metadata_size = (
+            self.metadata.expected_input_height,
+            self.metadata.expected_input_width,
+        )
+        if any(item is not None for item in metadata_size) and metadata_size != (
+            expected_height,
+            expected_width,
+        ):
+            raise ValueError("expected_image_size must match registry metadata")
+        if (height, width) != (expected_height, expected_width):
+            raise ValueError(
+                "input dimensions do not match frozen expected_image_size: "
+                f"expected {expected_width}x{expected_height}, observed {width}x{height}"
+            )
+
+    def _validate_reflect_padding_extent(self, *, height: int, width: int) -> None:
+        if self.config.get("tiling_padding", "none") != "reflect":
+            return
+        tiling = self._tiling_configuration()
+        if tiling is None:
+            return
+        patch_height, patch_width, _, _ = tiling
+        if (height < patch_height and height < 2) or (
+            width < patch_width and width < 2
+        ):
+            raise ValueError(
+                "cropped image must have at least two pixels on each reflect-padded axis"
+            )
 
     @staticmethod
     def _clip_boxes_to_inference_height(

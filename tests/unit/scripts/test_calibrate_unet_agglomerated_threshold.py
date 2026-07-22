@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 from pathlib import Path
 
 import numpy as np
@@ -221,6 +222,7 @@ def test_four_image_run_writes_traceable_summary_and_review_artifacts(tmp_path: 
     assert "new traceable validation calibration evidence" in payload["evidence_statement"]
     assert any("YCu-1.tif" in limitation for limitation in payload["limitations"])
     assert any("min_area_px remains uncalibrated" in item for item in payload["limitations"])
+    assert str(tmp_path) not in json.dumps(payload, ensure_ascii=False)
     assert (paths.output_root / "threshold-calibration.json").is_file()
     with (paths.output_root / "threshold-calibration.csv").open(
         encoding="utf-8", newline=""

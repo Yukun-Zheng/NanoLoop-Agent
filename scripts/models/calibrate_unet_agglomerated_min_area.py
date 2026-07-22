@@ -7,12 +7,13 @@ import csv
 import hashlib
 import json
 import math
+import re
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 from PIL import Image
@@ -28,7 +29,7 @@ from app.analysis.postprocessing import (
 MODEL_ID = "unet-agglomerated-specialized-v1"
 TORCHSCRIPT_SHA256 = "d36cf627dc6d1eea83b769743b657e6bb3d9a1af39ddc6a00ae95acc3b20ffc9"
 CHECKPOINT_SHA256 = "e2be19c6fe1e843856fb339d13de8baed8d748f88558ba7bd3eaaa20b90ede21"
-THRESHOLD_EVIDENCE_SHA256 = (
+DEVELOPER_REPORTED_THRESHOLD_EVIDENCE_SHA256 = (
     "9c76289a61ab870b59cda079eb732222a1267d3ecf47636244967872c4130a02"
 )
 THRESHOLD = 0.25
@@ -46,13 +47,16 @@ POSTPROCESS_FIXED = {
     "exclude_border": True,
     "connectivity": 2,
 }
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 @dataclass(frozen=True, slots=True)
 class CalibrationPaths:
     threshold_calibration_root: Path
+    image_dir: Path
     mask_dir: Path
     output_root: Path
+    threshold_evidence_sha256: str
 
 
 def _repository_root() -> Path:
@@ -65,6 +69,13 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _sha256_argument(value: str) -> str:
+    normalized = value.strip().lower()
+    if _SHA256_RE.fullmatch(normalized) is None:
+        raise argparse.ArgumentTypeError("expected a lowercase SHA-256 digest")
+    return normalized
 
 
 def _validate_output_root(output_root: Path, *, repository: Path | None = None) -> Path:
@@ -87,32 +98,50 @@ def _reject_test_path(path: Path, *, field: str) -> None:
 
 def _validated_paths(namespace: argparse.Namespace) -> CalibrationPaths:
     threshold_root = namespace.threshold_calibration_root.expanduser().resolve(strict=True)
+    image_dir = namespace.image_dir.expanduser().resolve(strict=True)
     mask_dir = namespace.mask_dir.expanduser().resolve(strict=True)
     output_root = _validate_output_root(namespace.output_root)
     if not threshold_root.is_dir():
         raise ValueError(f"threshold-calibration-root is not a directory: {threshold_root}")
+    if not image_dir.is_dir():
+        raise ValueError(f"image-dir is not a directory: {image_dir}")
     if not mask_dir.is_dir():
         raise ValueError(f"mask-dir is not a directory: {mask_dir}")
     _reject_test_path(threshold_root, field="threshold-calibration-root")
+    _reject_test_path(image_dir, field="image-dir")
     _reject_test_path(mask_dir, field="mask-dir")
     for filename in VALIDATION_FILENAMES:
+        if not (image_dir / filename).is_file():
+            raise ValueError(f"validation image is missing: {filename}")
         if not (mask_dir / filename).is_file():
             raise ValueError(f"validation mask is missing: {filename}")
-    return CalibrationPaths(threshold_root, mask_dir, output_root)
+    return CalibrationPaths(
+        threshold_root,
+        image_dir,
+        mask_dir,
+        output_root,
+        namespace.threshold_evidence_sha256,
+    )
 
 
 def _load_threshold_evidence(
     root: Path,
     *,
-    expected_sha256: str | None = THRESHOLD_EVIDENCE_SHA256,
+    expected_sha256: str,
+    image_dir: Path | None = None,
+    mask_dir: Path | None = None,
 ) -> dict[str, Any]:
     path = root / "threshold-calibration.json"
-    if expected_sha256 is not None and _sha256(path) != expected_sha256:
+    if _SHA256_RE.fullmatch(expected_sha256) is None:
+        raise ValueError("threshold calibration evidence SHA-256 is invalid")
+    if _sha256(path) != expected_sha256:
         raise ValueError("threshold calibration evidence SHA-256 mismatch")
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise ValueError(f"invalid threshold calibration evidence: {path}") from error
+    if not isinstance(payload, dict):
+        raise ValueError("threshold calibration evidence must be a JSON object")
     fixed = payload.get("fixed_inference_contract")
     selected = payload.get("selected")
     expected = {
@@ -154,6 +183,45 @@ def _load_threshold_evidence(
             "threshold evidence does not match the frozen agglomerated contract: "
             + json.dumps(mismatches, ensure_ascii=False, sort_keys=True)
         )
+    inference_config = payload.get("inference_config")
+    if (
+        not isinstance(inference_config, Mapping)
+        or _SHA256_RE.fullmatch(str(inference_config.get("sha256", ""))) is None
+    ):
+        raise ValueError("threshold evidence is missing the inference config identity")
+    validation_inputs = payload.get("validation_inputs")
+    if not isinstance(validation_inputs, Mapping):
+        raise ValueError("threshold evidence is missing validation input identities")
+    execution_evidence = payload.get("execution_evidence")
+    if not isinstance(execution_evidence, Mapping):
+        raise ValueError("threshold evidence is missing execution identities")
+    for filename in VALIDATION_FILENAMES:
+        identity = validation_inputs.get(filename)
+        if not isinstance(identity, Mapping):
+            raise ValueError(f"threshold evidence is missing validation identity: {filename}")
+        for field in ("image_sha256", "mask_sha256"):
+            if _SHA256_RE.fullmatch(str(identity.get(field, ""))) is None:
+                raise ValueError(f"invalid {field} in threshold evidence: {filename}")
+        if image_dir is not None and identity["image_sha256"] != _sha256(image_dir / filename):
+            raise ValueError(f"validation image identity mismatch: {filename}")
+        if mask_dir is not None and identity["mask_sha256"] != _sha256(mask_dir / filename):
+            raise ValueError(f"validation mask identity mismatch: {filename}")
+        execution = execution_evidence.get(filename)
+        if not isinstance(execution, Mapping):
+            raise ValueError(f"threshold evidence is missing execution identity: {filename}")
+        if execution.get("actual_device") != "cpu":
+            raise ValueError(f"threshold execution device is not cpu: {filename}")
+        for field in (
+            "python_random_seeded",
+            "numpy_random_seeded",
+            "torch_deterministic_algorithms",
+            "global_inference_serialized",
+        ):
+            if execution.get(field) is not True:
+                raise ValueError(f"threshold execution {field} is not true: {filename}")
+        backend = execution.get("backend")
+        if not isinstance(backend, str) or not backend.endswith(".UNetAdapter"):
+            raise ValueError(f"threshold execution backend is not UNetAdapter: {filename}")
     return payload
 
 
@@ -190,10 +258,12 @@ def _load_arrays(
     paths: CalibrationPaths,
     *,
     expected_size: tuple[int, int] = (IMAGE_WIDTH, IMAGE_HEIGHT),
-    expected_evidence_sha256: str | None = THRESHOLD_EVIDENCE_SHA256,
 ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray], dict[str, Any]]:
     evidence = _load_threshold_evidence(
-        paths.threshold_calibration_root, expected_sha256=expected_evidence_sha256
+        paths.threshold_calibration_root,
+        expected_sha256=paths.threshold_evidence_sha256,
+        image_dir=paths.image_dir,
+        mask_dir=paths.mask_dir,
     )
     probability_paths = _probability_paths(paths.threshold_calibration_root, evidence)
     validation_inputs = evidence.get("validation_inputs")
@@ -387,7 +457,9 @@ def evaluate_min_areas(
                 }
             )
         macro = {
-            metric: float(np.mean([float(item[metric]) for item in images]))
+            metric: float(
+                np.mean([float(cast(int | float, item[metric])) for item in images])
+            )
             for metric in (
                 "count_mape",
                 "mean_diameter_mape",
@@ -433,8 +505,10 @@ def select_min_area(results: Sequence[Mapping[str, object]]) -> Mapping[str, obj
         for item in winners
         if math.isclose(_macro_metric(item, "dice"), best_dice, abs_tol=1e-12)
     ]
-    smallest = min(int(item["min_area_px"]) for item in winners)
-    winners = [item for item in winners if int(item["min_area_px"]) == smallest]
+    smallest = min(int(cast(int, item["min_area_px"])) for item in winners)
+    winners = [
+        item for item in winners if int(cast(int, item["min_area_px"])) == smallest
+    ]
     if len(winners) != 1:
         raise ValueError("the prespecified min_area selection rule did not resolve the tie")
     return winners[0]
@@ -517,13 +591,11 @@ def run(
     *,
     expected_size: tuple[int, int] = (IMAGE_WIDTH, IMAGE_HEIGHT),
     bottom_crop_px: int = BOTTOM_CROP_PX,
-    expected_evidence_sha256: str | None = THRESHOLD_EVIDENCE_SHA256,
 ) -> dict[str, object]:
     output_root = _validate_output_root(paths.output_root)
     probabilities, targets, threshold_evidence = _load_arrays(
         paths,
         expected_size=expected_size,
-        expected_evidence_sha256=expected_evidence_sha256,
     )
     results = evaluate_min_areas(probabilities, targets, bottom_crop_px=bottom_crop_px)
     selected = select_min_area(results)
@@ -534,7 +606,7 @@ def run(
         output_root,
         probabilities,
         targets,
-        int(selected["min_area_px"]),
+        int(cast(int, selected["min_area_px"])),
         bottom_crop_px=bottom_crop_px,
     )
     _write_csv(csv_path, results)
@@ -545,9 +617,9 @@ def run(
         "torchscript_sha256": TORCHSCRIPT_SHA256,
         "checkpoint_sha256": CHECKPOINT_SHA256,
         "threshold_calibration_evidence": {
-            "path": str(paths.threshold_calibration_root / "threshold-calibration.json"),
             "sha256": _sha256(paths.threshold_calibration_root / "threshold-calibration.json"),
             "selected_threshold": threshold_evidence["selected_threshold"],
+            "reviewed_sha256_supplied_explicitly": True,
         },
         "probability_source": (
             "threshold calibration cached .npy arrays; no model loading or inference"
@@ -599,6 +671,11 @@ def run(
             ),
             "Threshold 0.25 was frozen before this min_area_px scan and was not reselected.",
             "This evidence selects min_area_px only and does not establish registry readiness.",
+            (
+                "The previously reported threshold evidence digest "
+                f"{DEVELOPER_REPORTED_THRESHOLD_EVIDENCE_SHA256} is historical only; "
+                "every run must supply the digest of the manually reviewed evidence file."
+            ),
         ],
     }
     json_path.write_text(
@@ -610,6 +687,8 @@ def run(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--threshold-calibration-root", required=True, type=Path)
+    parser.add_argument("--threshold-evidence-sha256", required=True, type=_sha256_argument)
+    parser.add_argument("--image-dir", required=True, type=Path)
     parser.add_argument("--mask-dir", required=True, type=Path)
     parser.add_argument("--output-root", required=True, type=Path)
     return parser

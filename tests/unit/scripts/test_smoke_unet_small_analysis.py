@@ -45,6 +45,8 @@ class FakeGateway:
             preprocess_profile="unet_small_gray_v1",
             postprocess_profile="unet_small_components_v1",
             inference_invalid_bottom_px=130,
+            expected_input_width=40,
+            expected_input_height=200,
             adapter_path="tests.fake:FakeAdapter",
             weight_sha256="a" * 64,
             config_sha256="b" * 64,
@@ -156,6 +158,9 @@ def test_execute_analysis_freezes_calibration_and_excludes_bottom_bar(
             ),
             gateway=gateway,
         )
+        assert result["evidence_class"] == "engineering_diagnostic_only"
+        assert result["readiness_eligible"] is False
+        assert result["limitations"]
     finally:
         database.dispose()
 

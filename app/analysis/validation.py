@@ -11,11 +11,8 @@ from app.core.errors import InvalidImageError
 
 ALLOWED_IMAGE_FORMATS = frozenset({"TIFF", "PNG", "JPEG"})
 _SUFFIX_ALLOWED_FORMATS = {
-    # Some SEM acquisition exports contain JPEG bytes but retain the .tif
-    # filename supplied by the instrument.  The filename is an allow-list
-    # boundary, while Pillow's decoded content remains authoritative.
-    ".tif": frozenset({"TIFF", "JPEG"}),
-    ".tiff": frozenset({"TIFF", "JPEG"}),
+    ".tif": frozenset({"TIFF"}),
+    ".tiff": frozenset({"TIFF"}),
     ".png": frozenset({"PNG"}),
     ".jpg": frozenset({"JPEG"}),
     ".jpeg": frozenset({"JPEG"}),

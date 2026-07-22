@@ -15,6 +15,7 @@ from app.contracts.enums import (
     ModelVariant,
     QualityTier,
 )
+from app.contracts.execution import InferenceExecutionEvidence
 from app.contracts.inference import SegmentationOutput, SegmentationRequest
 from app.contracts.models import ModelBundleReference, ModelHealth, ModelMetadata
 from app.core.config import Settings
@@ -22,7 +23,12 @@ from app.db.base import Base
 from app.db.models import ModelRegistryRecord
 from app.db.session import Database
 from app.storage import LocalFileStore, StoragePaths
+from scripts.models import smoke_unet_large_analysis as smoke_module
 from scripts.models.smoke_unet_large_analysis import (
+    ADAPTER_PATH,
+    ADAPTER_SHA256,
+    CONFIG_SHA256,
+    MODEL_CARD_SHA256,
     MODEL_ID,
     TEST_FILENAMES,
     TORCHSCRIPT_SHA256,
@@ -35,9 +41,10 @@ from scripts.models.smoke_unet_large_analysis import (
 )
 
 
-def _config() -> dict[str, Any]:
+def _config(*, width: int = 2048, height: int = 1536) -> dict[str, Any]:
     return {
         "bottom_crop_px": 180,
+        "expected_image_size": [height, width],
         "threshold_comparison": "gt",
         "calibrated_analysis": {
             "threshold": 0.50,
@@ -57,9 +64,7 @@ def _config() -> dict[str, Any]:
 
 
 class FakeGateway:
-    freeze_model_bundle: Any = None
-
-    def __init__(self) -> None:
+    def __init__(self, *, width: int = 2048, height: int = 1536) -> None:
         self.requests: list[SegmentationRequest] = []
         self.model = ModelMetadata(
             model_id=MODEL_ID,
@@ -70,15 +75,30 @@ class FakeGateway:
             status=ModelStatus.READY,
             supports_box_prompt=False,
             default_threshold=0.50,
+            default_min_area_px=512,
             preprocess_profile="sem-gray-unit-crop-bottom-180-v1",
             postprocess_profile="semantic-mask-v1",
             inference_invalid_bottom_px=180,
-            adapter_path="tests.fake:FakeAdapter",
+            expected_input_width=width,
+            expected_input_height=height,
+            adapter_path=ADAPTER_PATH,
             weight_sha256=TORCHSCRIPT_SHA256,
-            config_sha256="b" * 64,
-            model_card_sha256="c" * 64,
-            adapter_sha256="d" * 64,
+            config_sha256=CONFIG_SHA256,
+            model_card_sha256=MODEL_CARD_SHA256,
+            adapter_sha256=ADAPTER_SHA256,
         )
+        self.bundle = ModelBundleReference(
+            bundle_id="e" * 64,
+            manifest_ref=f"bundles/{'e' * 64}/manifest.json",
+            weight_ref=f"{TORCHSCRIPT_SHA256}/weights.pt",
+            config_ref=f"{CONFIG_SHA256}/config.yaml",
+            model_card_ref=f"{MODEL_CARD_SHA256}/model-card.md",
+            adapter_ref=f"{ADAPTER_SHA256}/adapter.py",
+            adapter_sha256=ADAPTER_SHA256,
+        )
+
+    def freeze_model_bundle(self, _model_id: str, **_kwargs: Any) -> ModelBundleReference:
+        return self.bundle
 
     def list_models(self, only_ready: bool = False) -> list[ModelMetadata]:
         assert not only_ready or self.model.status == ModelStatus.READY
@@ -116,18 +136,29 @@ class FakeGateway:
         assert expected_weight_sha256 == self.model.weight_sha256
         assert expected_config_sha256 == self.model.config_sha256
         assert expected_model_card_sha256 == self.model.model_card_sha256
-        assert expected_adapter_sha256 is None
-        assert model_bundle is None
+        assert expected_adapter_sha256 == self.model.adapter_sha256
+        assert model_bundle == self.bundle
         mask = np.zeros((240, 80), dtype=np.uint8)
         mask[10:40, 10:40] = 255
         mask[100:230, 50:70] = 255
         mask_path = request.run_dir / "fake-mask.png"
         Image.fromarray(mask).save(mask_path)
+        probability_path = request.run_dir / "probability.npy"
+        np.save(probability_path, mask.astype(np.float32) / 255.0, allow_pickle=False)
         return SegmentationOutput(
             width=80,
             height=240,
             binary_mask_path=mask_path,
+            probability_path=probability_path,
             runtime_ms=1,
+            execution=InferenceExecutionEvidence(
+                actual_device="cpu",
+                python_random_seeded=True,
+                numpy_random_seeded=True,
+                torch_deterministic_algorithms=True,
+                global_inference_serialized=True,
+                backend="app.inference.adapters.unet.UNetAdapter",
+            ),
         )
 
 
@@ -183,7 +214,12 @@ def test_rejects_internally_inconsistent_calibrated_config() -> None:
         load_calibrated_analysis(config, gateway.model)
 
 
-def test_three_full_image_runs_freeze_config_and_exclude_bottom_roi(tmp_path: Path) -> None:
+def test_three_full_image_runs_freeze_config_and_exclude_bottom_roi(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(smoke_module, "IMAGE_WIDTH", 80)
+    monkeypatch.setattr(smoke_module, "IMAGE_HEIGHT", 240)
     image_dir = tmp_path / "test-images"
     output_root = tmp_path / "smoke-output"
     registry_path = tmp_path / "private-registry.yaml"
@@ -191,7 +227,7 @@ def test_three_full_image_runs_freeze_config_and_exclude_bottom_roi(tmp_path: Pa
     registry_path.write_text("models: []\n", encoding="utf-8")
     _write_test_images(image_dir)
     database = _database(output_root)
-    gateway = FakeGateway()
+    gateway = FakeGateway(width=80, height=240)
     with database.session() as session:
         session.add(
             ModelRegistryRecord(
@@ -200,14 +236,14 @@ def test_three_full_image_runs_freeze_config_and_exclude_bottom_roi(tmp_path: Pa
                 variant=gateway.model.variant.value,
                 quality_tier=gateway.model.quality_tier.value,
                 version=gateway.model.version,
-                adapter=gateway.model.adapter_path or "tests.fake:FakeAdapter",
+                adapter=gateway.model.adapter_path or ADAPTER_PATH,
                 status=ModelStatus.READY.value,
             )
         )
     try:
         result = execute_analyses(
             SmokeParameters(image_dir, registry_path, output_root),
-            load_calibrated_analysis(_config(), gateway.model),
+            load_calibrated_analysis(_config(width=80, height=240), gateway.model),
             database=database,
             file_store=LocalFileStore(
                 StoragePaths(output_root / "artifacts"),
@@ -254,13 +290,17 @@ def test_three_full_image_runs_freeze_config_and_exclude_bottom_roi(tmp_path: Pa
         assert density["perimeter_density_uses_effective_roi"] is True
         assert run["scientific_results"]["particle_count"] == 1
         for artifact in (
-            "mask",
-            "instances",
-            "particles_csv",
-            "overlay",
-            "labeled_particles",
-            "report",
-            "execution_evidence",
+            "pred_mask_path",
+            "instances_path",
+            "particles_csv_path",
+            "overlay_path",
+            "labeled_particles_path",
+            "image_summary_path",
+            "execution_provenance_path",
+            "run_config_path",
+            "transform_path",
+            "quality_report_path",
+            "probability_path",
         ):
             assert run["artifacts"][artifact] is not None
 
@@ -287,15 +327,12 @@ def test_cli_has_no_test_mask_input(tmp_path: Path) -> None:
     registry.write_text("models: []\n", encoding="utf-8")
     parser = build_parser()
     assert all(
-        "mask" not in option
-        for action in parser._actions
-        for option in action.option_strings
+        "mask" not in option for action in parser._actions for option in action.option_strings
     )
     namespace = argparse.Namespace(
         image_dir=image_dir,
         registry=registry,
         output_root=output_root,
-        model_id=MODEL_ID,
     )
 
     validated = _validated_parameters(namespace)

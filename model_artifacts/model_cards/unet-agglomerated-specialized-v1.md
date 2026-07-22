@@ -5,6 +5,16 @@ Status: **unavailable**. The TorchScript identity and validation-only parameters
 private registry must not mark this model ready before the frozen configuration completes a full
 Analysis smoke run.
 
+## Delivery audit boundary
+
+The 2026-07-21 handoff ZIP did **not** include the TorchScript/checkpoint, machine-readable
+calibration or independent-test JSON, a source/sample-level split manifest, or a license and
+custody ledger for the images, masks, and model assets. Therefore every numerical result below is
+recorded as a developer-reported result, not as a result independently reproduced from this Git
+repository. The missing original training metadata also means training/test independence cannot be
+verified. These gaps block readiness and scientific-MVP acceptance even though the code seam and
+synthetic tests can be reviewed.
+
 ## Scientific target definition
 
 The GT foreground represents each whole agglomerate, not the individual primary particles inside
@@ -56,8 +66,9 @@ The fixed production seam is:
 - Restore a full-size output with the bottom 130 px probability and mask fixed to zero.
 
 The bottom 130 px must also be excluded from the Analysis ROI, morphometry, density denominators,
-and all later validation/test metrics. The fixed scale is `100/184 nm_per_pixel`
-(`0.5434782608695652 nm_per_pixel`).
+and all later validation/test metrics. `100/184 nm_per_pixel`
+(`0.5434782608695652 nm_per_pixel`) is developer-reported for the evaluated fields; physical-unit
+outputs are valid only when each uploaded image independently carries the confirmed scale.
 
 ## Validation and independent-test boundary
 
@@ -121,14 +132,17 @@ reserved YCu independent test.
 Current readiness limits are:
 
 - `default_threshold=0.25` is frozen from the new four-field validation evidence.
+- `expected_image_size=[1536, 2048]` (`height, width`) is frozen from the 21-field training pool;
+  other dimensions are out of scope and must fail closed before the fixed bottom crop is applied.
 - `min_area_px=1024` is frozen from the read-only four-field validation evidence.
 - The YCu independent test was read only after both parameters were frozen; its results must never
   be used to retune either parameter.
 - No statement of scientific readiness, cross-material stability, or sample-level independence is
   supported.
 
-The public registry status must remain `unavailable`. The YCu independent-test evidence does not
-authorize public readiness or a public default threshold.
+The public registry status must remain `unavailable`. Recording the frozen default threshold is
+scientific metadata, not authorization to run the model; the missing asset and evidence package
+still blocks public or private readiness.
 
 ## Full Analysis smoke acceptance gate
 
@@ -169,8 +183,9 @@ Macro MAPE was `3.7712858326%`; agglomerate-count Macro MAPE was `51.2323232323%
 diameter Macro MAPE was `82.3173359269%`; number-density Macro MAPE was `51.2323232323%`; and
 perimeter-density Macro MAPE was `16.8649123230%`.
 
-`YCu-2` has substantial missed small targets. This model is supported for coverage estimation and
-semantic-mask use under the frozen contract; it must **not** be claimed as a high-precision tool
+`YCu-2` has substantial missed small targets. The developer-reported results suggest possible
+coverage/semantic-mask use under the frozen contract, but that use is not repository-verified. It
+must **not** be claimed as a high-precision tool
 for agglomerate count, number density, or equivalent-diameter statistics. These three FOV results
 do not establish independent-material performance. The public registry remains `unavailable`; this
-evidence does not authorize public readiness or a public `default_threshold`.
+evidence does not authorize public readiness.

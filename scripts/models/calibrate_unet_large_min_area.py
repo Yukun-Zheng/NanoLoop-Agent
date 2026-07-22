@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import math
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 from PIL import Image
@@ -25,7 +26,14 @@ from app.analysis.postprocessing import (
 from app.analysis.visualization import write_review_visualizations
 
 MODEL_ID = "unet-large-optimized-v1"
+MODEL_VERSION = "1"
+ADAPTER_PATH = "app.inference.adapters.unet:UNetAdapter"
 TORCHSCRIPT_SHA256 = "007d9a16bf31e5f960160c52eefa938b83feeac2e6c0d7dec9c8670a38626e05"
+CONFIG_SHA256 = "4e48c75d960faaa17868f0318da5526a6ba72211396ec106c2e57ce7eecc8856"
+MODEL_CARD_SHA256 = "bac2eacbc3569cc24e76aa90edf4a00ed1cfd7149180bf07113a4e905e2d7bfc"
+ADAPTER_SHA256 = "536ba2ef6f32c97b34b21cfefdfcd7b09f3680c93c63def78180f10dd021091c"
+IMAGE_WIDTH = 2048
+IMAGE_HEIGHT = 1536
 THRESHOLD = 0.50
 BOTTOM_CROP_PX = 180
 SCALE_NM_PER_PIXEL = 100.0 / 184.0
@@ -56,6 +64,43 @@ class CalibrationPaths:
     output_root: Path
 
 
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _validate_exact_dataset_layout(directory: Path, *, label: str) -> None:
+    expected = set(VALIDATION_FILENAMES)
+    observed_files = {path.name for path in directory.iterdir() if path.is_file()}
+    observed_directories = sorted(path.name for path in directory.iterdir() if path.is_dir())
+    if observed_files != expected or observed_directories:
+        raise ValueError(
+            f"{label} must contain exactly the six fixed validation files at its root: "
+            f"missing={sorted(expected - observed_files)}, "
+            f"unexpected={sorted(observed_files - expected)}, "
+            f"directories={observed_directories}"
+        )
+
+
+def _image_identity(path: Path, *, label: str) -> dict[str, object]:
+    try:
+        with Image.open(path) as image:
+            if image.size != (IMAGE_WIDTH, IMAGE_HEIGHT):
+                raise ValueError(
+                    f"{label} dimensions are not {IMAGE_WIDTH}x{IMAGE_HEIGHT}: {path.name}"
+                )
+    except OSError as error:
+        raise ValueError(f"cannot read {label}: {path}") from error
+    return {
+        "sha256": _sha256(path),
+        "width": IMAGE_WIDTH,
+        "height": IMAGE_HEIGHT,
+    }
+
+
 def _repository_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
@@ -82,6 +127,8 @@ def _validated_paths(namespace: argparse.Namespace) -> CalibrationPaths:
     ):
         if not directory.is_dir():
             raise ValueError(f"{label} is not a directory: {directory}")
+    _validate_exact_dataset_layout(image_dir, label="image-dir")
+    _validate_exact_dataset_layout(mask_dir, label="mask-dir")
     for filename in VALIDATION_FILENAMES:
         if not (image_dir / filename).is_file():
             raise ValueError(f"validation image is missing: {filename}")
@@ -97,8 +144,13 @@ def _load_threshold_evidence(root: Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError) as error:
         raise ValueError(f"invalid threshold calibration evidence: {evidence_path}") from error
     expected = {
+        "evidence_schema_version": 2,
         "model_id": MODEL_ID,
+        "model_version": MODEL_VERSION,
         "torchscript_sha256": TORCHSCRIPT_SHA256,
+        "config_sha256": CONFIG_SHA256,
+        "model_card_sha256": MODEL_CARD_SHA256,
+        "adapter_sha256": ADAPTER_SHA256,
         "validation_images": list(VALIDATION_FILENAMES),
         "bottom_crop_px": BOTTOM_CROP_PX,
         "comparison_rule": "probability > threshold",
@@ -115,12 +167,58 @@ def _load_threshold_evidence(root: Path) -> dict[str, Any]:
             "expected": THRESHOLD,
             "observed": selected_threshold,
         }
+    model_bundle = payload.get("model_bundle")
+    if not isinstance(model_bundle, Mapping):
+        mismatches["model_bundle"] = {"expected": "complete", "observed": model_bundle}
+    else:
+        bundle_id = model_bundle.get("bundle_id")
+        expected_bundle = {
+            "schema_version": 1,
+            "manifest_ref": f"bundles/{bundle_id}/manifest.json",
+            "weight_ref": f"{TORCHSCRIPT_SHA256}/weights.pt",
+            "config_ref": f"{CONFIG_SHA256}/config.yaml",
+            "model_card_ref": f"{MODEL_CARD_SHA256}/model-card.md",
+            "adapter_ref": f"{ADAPTER_SHA256}/adapter.py",
+            "adapter_sha256": ADAPTER_SHA256,
+        }
+        for name, value in expected_bundle.items():
+            if model_bundle.get(name) != value:
+                mismatches[f"model_bundle.{name}"] = {
+                    "expected": value,
+                    "observed": model_bundle.get(name),
+                }
+        if (
+            not isinstance(bundle_id, str)
+            or len(bundle_id) != 64
+            or any(character not in "0123456789abcdef" for character in bundle_id)
+        ):
+            mismatches["model_bundle.bundle_id"] = {
+                "expected": "64 lowercase hex characters",
+                "observed": bundle_id,
+            }
+    input_evidence = payload.get("input_evidence")
+    execution_evidence = payload.get("execution_evidence")
+    if not isinstance(input_evidence, Mapping) or tuple(input_evidence) != VALIDATION_FILENAMES:
+        mismatches["input_evidence"] = {
+            "expected": list(VALIDATION_FILENAMES),
+            "observed": list(input_evidence) if isinstance(input_evidence, Mapping) else None,
+        }
+    if (
+        not isinstance(execution_evidence, Mapping)
+        or tuple(execution_evidence) != VALIDATION_FILENAMES
+    ):
+        mismatches["execution_evidence"] = {
+            "expected": list(VALIDATION_FILENAMES),
+            "observed": (
+                list(execution_evidence) if isinstance(execution_evidence, Mapping) else None
+            ),
+        }
     if mismatches:
         raise ValueError(
             "threshold calibration evidence does not match the frozen large contract: "
             + json.dumps(mismatches, ensure_ascii=False, sort_keys=True)
         )
-    return payload
+    return cast(dict[str, Any], payload)
 
 
 def _probability_paths(root: Path, evidence: Mapping[str, Any]) -> dict[str, Path]:
@@ -131,9 +229,13 @@ def _probability_paths(root: Path, evidence: Mapping[str, Any]) -> dict[str, Pat
     resolved_root = root.resolve(strict=True)
     result: dict[str, Path] = {}
     for filename in VALIDATION_FILENAMES:
-        raw_path = declared.get(filename)
-        if not isinstance(raw_path, str):
+        artifact = declared.get(filename)
+        if not isinstance(artifact, Mapping):
             raise ValueError(f"threshold evidence is missing cached probability: {filename}")
+        raw_path = artifact.get("path")
+        expected_sha256 = artifact.get("sha256")
+        if not isinstance(raw_path, str) or not isinstance(expected_sha256, str):
+            raise ValueError(f"threshold probability identity is incomplete: {filename}")
         path = Path(raw_path).expanduser()
         if not path.is_absolute():
             path = resolved_root / path
@@ -144,28 +246,111 @@ def _probability_paths(root: Path, evidence: Mapping[str, Any]) -> dict[str, Pat
             raise ValueError(f"cached probability is outside threshold root: {filename}") from error
         if path.suffix.lower() != ".npy":
             raise ValueError(f"cached probability is not .npy: {filename}")
+        if _sha256(path) != expected_sha256:
+            raise ValueError(f"cached probability SHA-256 mismatch: {filename}")
         result[filename] = path
     return result
 
 
-def _load_arrays(paths: CalibrationPaths) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
+def _load_arrays(
+    paths: CalibrationPaths,
+) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray], dict[str, Any], str]:
     evidence = _load_threshold_evidence(paths.threshold_calibration_root)
     probability_paths = _probability_paths(paths.threshold_calibration_root, evidence)
+    input_evidence = evidence["input_evidence"]
+    execution_evidence = evidence["execution_evidence"]
     probabilities: dict[str, np.ndarray] = {}
     targets: dict[str, np.ndarray] = {}
     for filename in VALIDATION_FILENAMES:
         probability = np.load(probability_paths[filename], allow_pickle=False)
+        image_identity = _image_identity(
+            paths.image_dir / filename,
+            label="validation image",
+        )
+        target_identity = _image_identity(
+            paths.mask_dir / filename,
+            label="validation ground truth",
+        )
+        recorded = input_evidence[filename]
+        execution = execution_evidence[filename]
+        if not isinstance(recorded, Mapping) or not isinstance(execution, Mapping):
+            raise ValueError(f"threshold sample evidence is invalid: {filename}")
+        for field, actual in (
+            ("input_image", image_identity),
+            ("ground_truth", target_identity),
+        ):
+            identity = recorded.get(field)
+            if not isinstance(identity, Mapping) or any(
+                identity.get(key) != value for key, value in actual.items()
+            ):
+                raise ValueError(f"threshold evidence {field} identity mismatch: {filename}")
+        if recorded.get("sample_id") != Path(filename).stem:
+            raise ValueError(f"threshold sample identity mismatch: {filename}")
+        recorded_probability = recorded.get("probability_cache")
+        execution_probability = execution.get("probability_cache")
+        expected_probability = {
+            "sha256": _sha256(probability_paths[filename]),
+            "shape": [IMAGE_HEIGHT, IMAGE_WIDTH],
+            "dtype": "float32",
+            "finite": True,
+            "range": [0.0, 1.0],
+        }
+        for probability_record in (recorded_probability, execution_probability):
+            if not isinstance(probability_record, Mapping) or any(
+                probability_record.get(key) != value for key, value in expected_probability.items()
+            ):
+                raise ValueError(f"threshold probability evidence mismatch: {filename}")
+        request = execution.get("request")
+        if not isinstance(request, Mapping) or dict(request) != {
+            "roi_mode": "full_image",
+            "threshold": THRESHOLD,
+            "min_area_px": 0,
+            "device": "cpu",
+            "seed": SEED,
+        }:
+            raise ValueError(f"threshold inference request mismatch: {filename}")
+        execution_model = execution.get("model")
+        expected_model = {
+            "model_id": MODEL_ID,
+            "model_version": MODEL_VERSION,
+            "adapter_path": ADAPTER_PATH,
+            "weight_sha256": TORCHSCRIPT_SHA256,
+            "config_sha256": CONFIG_SHA256,
+            "model_card_sha256": MODEL_CARD_SHA256,
+            "adapter_sha256": ADAPTER_SHA256,
+            "model_bundle": evidence["model_bundle"],
+        }
+        if not isinstance(execution_model, Mapping) or dict(execution_model) != expected_model:
+            raise ValueError(f"threshold frozen model evidence mismatch: {filename}")
+        controls = execution.get("execution")
+        if not isinstance(controls, Mapping) or any(
+            controls.get(name) is not True
+            for name in (
+                "python_random_seeded",
+                "numpy_random_seeded",
+                "torch_deterministic_algorithms",
+                "global_inference_serialized",
+            )
+        ):
+            raise ValueError(f"threshold execution controls are incomplete: {filename}")
+        if controls.get("actual_device") != "cpu" or not str(controls.get("backend", "")).endswith(
+            ".UNetAdapter"
+        ):
+            raise ValueError(f"threshold execution provenance mismatch: {filename}")
         with Image.open(paths.mask_dir / filename) as image:
             target = np.asarray(image.convert("L")) > 0
         if probability.shape != target.shape:
             raise ValueError(f"probability/GT shape mismatch for {filename}")
-        if probability.ndim != 2 or probability.shape[0] <= BOTTOM_CROP_PX:
+        if probability.shape != (IMAGE_HEIGHT, IMAGE_WIDTH):
             raise ValueError(f"invalid full-image shape for {filename}: {probability.shape}")
         if not np.isfinite(probability).all():
             raise ValueError(f"probability contains non-finite values for {filename}")
+        if np.any(probability < 0.0) or np.any(probability > 1.0):
+            raise ValueError(f"probability is outside [0, 1] for {filename}")
         probabilities[filename] = np.asarray(probability, dtype=np.float32)
         targets[filename] = np.asarray(target, dtype=np.bool_)
-    return probabilities, targets
+    evidence_path = paths.threshold_calibration_root / "threshold-calibration.json"
+    return probabilities, targets, evidence, _sha256(evidence_path)
 
 
 def _profile(min_area_px: int) -> PostprocessProfile:
@@ -203,6 +388,18 @@ def _mape(observed: float | int | None, baseline: float | int | None, *, name: s
     if float(baseline) == 0.0:
         raise ValueError(f"{name} baseline is zero; MAPE is undefined")
     return abs(float(observed) - float(baseline)) / abs(float(baseline))
+
+
+def _result_float(value: object, *, field: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{field} must be numeric")
+    return float(value)
+
+
+def _result_int(value: object, *, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{field} must be an integer")
+    return value
 
 
 def _summarize(
@@ -331,7 +528,9 @@ def evaluate_min_areas(
                 }
             )
         macro = {
-            metric: float(np.mean([float(item[metric]) for item in image_results]))
+            metric: float(
+                np.mean([_result_float(item[metric], field=metric) for item in image_results])
+            )
             for metric in (
                 "count_mape",
                 "mean_diameter_mape",
@@ -369,16 +568,18 @@ def select_min_area(results: Sequence[Mapping[str, object]]) -> Mapping[str, obj
         raise ValueError("min_area results are empty")
     best_composite = min(_macro_metric(item, "composite_mape") for item in results)
     composite_winners = [
-        item
-        for item in results
-        if _macro_metric(item, "composite_mape") == best_composite
+        item for item in results if _macro_metric(item, "composite_mape") == best_composite
     ]
     best_dice = max(_macro_metric(item, "dice") for item in composite_winners)
-    dice_winners = [
-        item for item in composite_winners if _macro_metric(item, "dice") == best_dice
+    dice_winners = [item for item in composite_winners if _macro_metric(item, "dice") == best_dice]
+    smallest_area = min(
+        _result_int(item.get("min_area_px"), field="min_area_px") for item in dice_winners
+    )
+    winners = [
+        item
+        for item in dice_winners
+        if _result_int(item.get("min_area_px"), field="min_area_px") == smallest_area
     ]
-    smallest_area = min(int(item["min_area_px"]) for item in dice_winners)
-    winners = [item for item in dice_winners if int(item["min_area_px"]) == smallest_area]
     if len(winners) != 1:
         raise ValueError("the prespecified min_area selection rule did not resolve the tie")
     return winners[0]
@@ -424,9 +625,7 @@ def _write_csv(path: Path, results: Sequence[Mapping[str, object]]) -> None:
                 gt_retained_count=result["gt_retained_count"],
                 gt_retention=result["gt_retention"],
             )
-            writer.writerow(
-                macro_row
-            )
+            writer.writerow(macro_row)
 
 
 def _write_selected_visualizations(
@@ -458,8 +657,10 @@ def _write_selected_visualizations(
 
 
 def run(paths: CalibrationPaths) -> dict[str, object]:
+    _validate_exact_dataset_layout(paths.image_dir, label="image-dir")
+    _validate_exact_dataset_layout(paths.mask_dir, label="mask-dir")
     output_root = _validate_output_root(paths.output_root)
-    probabilities, targets = _load_arrays(paths)
+    probabilities, targets, threshold_evidence, threshold_evidence_sha256 = _load_arrays(paths)
     results = evaluate_min_areas(probabilities, targets)
     selected = select_min_area(results)
     output_root.mkdir(parents=True, exist_ok=False)
@@ -472,15 +673,35 @@ def run(paths: CalibrationPaths) -> dict[str, object]:
     visualizations = _write_selected_visualizations(
         paths=paths,
         probabilities=probabilities,
-        selected_min_area=int(selected["min_area_px"]),
+        selected_min_area=_result_int(
+            selected.get("min_area_px"),
+            field="selected.min_area_px",
+        ),
     )
     csv_path = output_root / "min-area-calibration.csv"
     json_path = output_root / "min-area-calibration.json"
     _write_csv(csv_path, results)
     payload: dict[str, object] = {
+        "evidence_schema_version": 2,
+        "evidence_status": (
+            "future rerun contract; this file is evidence only after a successful execution"
+        ),
         "model_id": MODEL_ID,
+        "model_version": MODEL_VERSION,
         "torchscript_sha256": TORCHSCRIPT_SHA256,
+        "config_sha256": CONFIG_SHA256,
+        "model_card_sha256": MODEL_CARD_SHA256,
+        "adapter_sha256": ADAPTER_SHA256,
         "probability_source": "threshold-calibration-v1 cached .npy; no repeated inference",
+        "upstream_threshold_evidence": {
+            "path": str(
+                (paths.threshold_calibration_root / "threshold-calibration.json").resolve()
+            ),
+            "sha256": threshold_evidence_sha256,
+            "evidence_schema_version": threshold_evidence["evidence_schema_version"],
+            "model_bundle": threshold_evidence["model_bundle"],
+        },
+        "input_evidence": threshold_evidence["input_evidence"],
         "validation_images": list(VALIDATION_FILENAMES),
         "validation_scope": "field-of-view validation; not sample-level independent",
         "known_domain_biases": [
@@ -499,9 +720,7 @@ def run(paths: CalibrationPaths) -> dict[str, object]:
         "candidate_min_area_px": list(CANDIDATE_MIN_AREAS),
         "unit_conversion": {
             "area_nm2": "min_area_px * scale_nm_per_pixel^2",
-            "equivalent_diameter_nm": (
-                "2 * sqrt(min_area_px / pi) * scale_nm_per_pixel"
-            ),
+            "equivalent_diameter_nm": ("2 * sqrt(min_area_px / pi) * scale_nm_per_pixel"),
         },
         "gt_policy": (
             "GT metrics use min_area_px=0; candidate-filtered GT is diagnostic retention only"

@@ -1,13 +1,15 @@
 # 模型与 RAG 后续接入交接
 
-本文面向后续模型、语料与 RAG 开发者。公共 DTO、REST 路径和持久化约束以当前
-`app/contracts`、OpenAPI 与 ADR 为准；本交接不授权通过伪造 ready 状态、测试输出或引用来绕过验收。
+本文是 v4.0 的模型/RAG 专项合同，事实基线为 `yukun@16456a3`；人员任务、依赖顺序和里程碑以
+[v4.0 协同开发文档](NanoLoop_Agent_协同开发规格与接口总文档_v4.0.md) 为准。公共 DTO、REST 路径和
+持久化约束以当前 `app/contracts`、OpenAPI 与 ADR 为准；本交接不授权通过伪造 ready 状态、测试输出
+或引用来绕过验收。
 
 ## 1. 当前真实状态
 
 | 子系统 | 已有接缝 | 尚未交付 |
 | --- | --- | --- |
-| 模型 | `InferenceGateway`、三类 Adapter、`AdapterCache.lease()` 并发保护、注册表健康校验、不可变运行、统一后处理、canonical `pred_mask.png`/`instances.json` 和过滤前边界诊断已接通。正常运行的 schema v3 冻结原图/尺度、resolved 科学设置及权重/配置/模型卡/Adapter 源码完整 bundle；执行时核对 build identity 并单独保存实际设备/seed/后端证据。U-Net 已有 overlap tiling；每次状态转换写入事件时间线。 | `model_artifacts/weights` 无真实 checkpoint；U-Net、YOLO-Seg、SAM2 三项均为 `unavailable`，没有真实 fixture 推理、模型评测或冷启动结果。 |
+| 模型 | `InferenceGateway`、三类 Adapter、`AdapterCache.lease()` 并发保护、注册表健康校验、不可变运行、统一后处理、canonical `pred_mask.png`/`instances.json` 和过滤前边界诊断已接通。正常运行的 schema v3 冻结原图/尺度、resolved 科学设置及权重/配置/模型卡/Adapter 源码完整 bundle；执行时核对 build identity 并单独保存实际设备/seed/后端证据。U-Net 已有灰度/百分位预处理、底部无效区和 overlap tiling；Large/Agglomerated 另有校准、独立评测和真实 Analysis smoke 工具，每次状态转换写入事件时间线。 | `model_artifacts/weights` 无真实 checkpoint；Small/Large/Agglomerated U-Net、YOLO-Seg、SAM2 五项均为 `unavailable`。郭境濠 ZIP 未交付完整私有 bundle、资产/许可台账、无泄漏 split manifest 或机器可读运行证据；卡片中的开发者报告指标尚不能归因到当前整合源码，也没有真实 fixture 推理或冷启动结果。 |
 | RAG | 文档摄取/切块、SQLite FTS5、RRF、严格材料标签、多材料澄清、摘录/OpenAI-compatible 提供器、引用 provenance 与文档启停已实现。页数/字符/chunk/别名/向量语料有界，embedding 分批。可选向量 runtime 已接通 local-files-only SentenceTransformers、不可变 FAISS generation、原子 manifest、数据库映射校验和失败降级。 | 当前环境没有固定真实 embedding 模型及经许可并覆盖演示材料的正式语料包；fake backend 门禁不能替代真实资产的重启/检索冒烟，因此不得宣称生产向量 RAG 已交付。 |
 
 关键入口：
@@ -29,8 +31,10 @@
   `/app/data/model-snapshots`。它是按权重 SHA-256 寻址的运行时派生存储，不应提交 Git；备份、
   容量与清理策略需要与原始模型资产一起纳入运维设计。
 - API 健康检查会核对 `alembic_version` 与仓库 migration head；接入部署不能用“数据库可连接”
-  覆盖 stale/missing revision。当前 Compose 配置可解析，但本轮 Docker image build 因拉取
-  Docker Hub 基础镜像超时未完成，不得将镜像构建写为已验收。
+  覆盖 stale/missing revision。本机曾因 Docker Hub 拉取超时而未得到等价构建证据；但
+  `yukun@16456a3` 的 [GitHub Actions run 29848825904](https://github.com/Yukun-Zheng/NanoLoop-Agent/actions/runs/29848825904)
+  已完成 API/frontend 镜像构建、非 root 启动和备份恢复 smoke。目标 GPU、真实模型与 RAG 资产仍须
+  独立验收。
 
 ## 2. 模型接入合同
 

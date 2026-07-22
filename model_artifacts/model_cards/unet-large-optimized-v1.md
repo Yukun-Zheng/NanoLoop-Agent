@@ -3,6 +3,14 @@
 Status: **unavailable**. The external model artifact is not distributed with this repository, and
 the available evidence is not sufficient to claim scientific readiness.
 
+## Delivery audit boundary
+
+The 2026-07-21 handoff ZIP did **not** contain the checkpoint/TorchScript, the calibration and
+independent-test JSON/CSV named below, a source/sample-level split manifest, or a license and
+custody ledger for the images, masks, and model assets. The numerical values in this card are thus
+developer-reported and have not been independently reproduced from the repository. They are useful
+handoff context, but they are not acceptance evidence and cannot activate the registry entry.
+
 This is the optimized, single-channel large-particle U-Net. Each `DoubleConv` uses two
 `Conv2d(bias=False) + GroupNorm(8) + ReLU` blocks. Decoder upsampling is bilinear with
 `align_corners=False`, followed by skip concatenation and padded spatial alignment. The final
@@ -131,11 +139,13 @@ not replace or modify global analysis defaults:
 - `connectivity=2`
 - `perimeter_neighborhood=8`
 - `bottom_crop_px=180`
+- `expected_image_size=[1536, 2048]` (`height, width`); other dimensions are out of scope and
+  must fail closed before the fixed bottom crop is applied.
 - `scale_nm_per_pixel=100/184` (`0.5434782608695652`)
 
 ## Frozen independent test-set evidence
 
-The formal full Analysis workflow completed for the three fixed test fields `SrZr-3.tif`,
+The developer reports that the formal full Analysis workflow completed for the three fixed test fields `SrZr-3.tif`,
 `BaCu-2.tif`, and `PrCu-3.tif`. Independent evaluation then read only each completed Analysis
 `pred_mask.png` and the corresponding human `test_mask_human`; it did not repeat inference, read
 training or validation masks, or use any test result to change a parameter.

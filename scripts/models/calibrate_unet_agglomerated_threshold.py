@@ -8,6 +8,7 @@ import hashlib
 import json
 import math
 import sys
+import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -19,9 +20,10 @@ import yaml
 from PIL import Image
 from skimage.measure import label
 
-from app.contracts.enums import ModelFamily, ModelStatus, ModelVariant, QualityTier
-from app.contracts.models import ModelMetadata
-from app.inference.adapters.unet import UNetAdapter
+from app.contracts.enums import DevicePreference, ModelStatus, RoiMode
+from app.contracts.inference import SegmentationRequest
+from app.inference.gateway import InferenceGateway
+from app.inference.registry import ModelRegistryService
 
 MODEL_ID = "unet-agglomerated-specialized-v1"
 TORCHSCRIPT_SHA256 = "d36cf627dc6d1eea83b769743b657e6bb3d9a1af39ddc6a00ae95acc3b20ffc9"
@@ -153,47 +155,125 @@ def _verify_torchscript(path: Path) -> str:
     return observed
 
 
-class TorchScriptInferencer:
+class GatewayProbabilityInferencer:
+    """Generate calibration probabilities only through the frozen Gateway contract."""
+
     def __init__(self, torchscript: Path, config: Mapping[str, Any]) -> None:
-        metadata = ModelMetadata(
-            model_id=MODEL_ID,
-            family=ModelFamily.UNET,
-            variant=ModelVariant.DENSE_PARTICLE,
-            quality_tier=QualityTier.BALANCED,
-            version="1",
-            status=ModelStatus.READY,
-            supports_box_prompt=False,
-            default_threshold=0.25,
-            preprocess_profile="sem-gray-p1-p99-crop-bottom-130-v1",
-            postprocess_profile="semantic-agglomerate-mask-v1",
-            inference_invalid_bottom_px=BOTTOM_CROP_PX,
-            adapter_path="app.inference.adapters.unet:UNetAdapter",
-            weight_sha256=TORCHSCRIPT_SHA256,
+        if dict(config) != EXPECTED_CONFIG:
+            raise ValueError("agglomerated config differs from the frozen inference contract")
+        self._temporary = tempfile.TemporaryDirectory(
+            prefix="nanoloop-agglomerated-calibration-gateway-"
         )
-        self.adapter = UNetAdapter(
-            metadata=metadata,
-            weight_path=torchscript,
-            weight_bytes=torchscript.read_bytes(),
-            config=config,
-            weight_sha256=TORCHSCRIPT_SHA256,
+        root = Path(self._temporary.name)
+        registry_path = root / "registry.yaml"
+        config_path = _config_path().resolve(strict=True)
+        model_card_path = (
+            _repository_root()
+            / "model_artifacts"
+            / "model_cards"
+            / f"{MODEL_ID}.md"
+        ).resolve(strict=True)
+        registry_payload = {
+            "schema_version": "2.0",
+            "models": [
+                {
+                    "metadata": {
+                        "model_id": MODEL_ID,
+                        "family": "unet",
+                        "variant": "dense_particle",
+                        "quality_tier": "balanced",
+                        "version": "1",
+                        "status": "ready",
+                        "supports_box_prompt": False,
+                        "default_threshold": 0.25,
+                        "default_min_area_px": 1024,
+                        "preprocess_profile": "sem-gray-p1-p99-crop-bottom-130-v1",
+                        "postprocess_profile": "semantic-agglomerate-mask-v1",
+                        "inference_invalid_bottom_px": BOTTOM_CROP_PX,
+                    },
+                    "adapter_path": "app.inference.adapters.unet:UNetAdapter",
+                    "weight_path": str(torchscript.resolve(strict=True)),
+                    "weight_sha256": TORCHSCRIPT_SHA256,
+                    "config_path": str(config_path),
+                    "model_card_path": str(model_card_path),
+                    "required_modules": ["torch"],
+                }
+            ],
+        }
+        registry_path.write_text(
+            yaml.safe_dump(registry_payload, sort_keys=False), encoding="utf-8"
         )
-        self.adapter.load("cpu")
+        registry = ModelRegistryService(
+            registry_path,
+            snapshot_root=root / "model-snapshots",
+        )
+        if registry.registry_error is not None:
+            self._temporary.cleanup()
+            raise ValueError(
+                f"generated calibration registry is invalid: {registry.registry_error}"
+            )
+        self.metadata = registry.get_metadata(MODEL_ID)
+        if self.metadata.status != ModelStatus.READY:
+            reason = self.metadata.health_error or "unknown readiness error"
+            self._temporary.cleanup()
+            raise ValueError(f"generated calibration registry is not ready: {reason}")
+        self.gateway = InferenceGateway(registry)
+        self.bundle = self.gateway.freeze_model_bundle(
+            MODEL_ID,
+            expected_model_version=self.metadata.version,
+            expected_adapter_path=self.metadata.adapter_path,
+            expected_weight_sha256=self.metadata.weight_sha256,
+            expected_config_sha256=self.metadata.config_sha256,
+            expected_model_card_sha256=self.metadata.model_card_sha256,
+            expected_adapter_sha256=self.metadata.adapter_sha256,
+        )
+        self.run_root = root / "runs"
+        self.run_root.mkdir()
+        self.execution_evidence: dict[str, dict[str, object] | None] = {}
 
     def __call__(self, image_path: Path) -> np.ndarray:
         with Image.open(image_path) as image:
             if image.size != (IMAGE_WIDTH, IMAGE_HEIGHT):
                 raise ValueError(f"validation image must be 2048x1536: {image_path.name}")
-            rgb = np.asarray(image.convert("RGB"), dtype=np.uint8)
-        inference_image = self.adapter._prepare_inference_image(rgb[:VALID_HEIGHT])
-        top_probability = self.adapter._predict_probability(inference_image)
-        if top_probability.shape != (VALID_HEIGHT, IMAGE_WIDTH):
+        run_dir = self.run_root / image_path.stem
+        run_dir.mkdir(exist_ok=False)
+        output = self.gateway.predict(
+            MODEL_ID,
+            SegmentationRequest(
+                image_id=image_path.stem,
+                image_path=image_path,
+                image_bytes=image_path.read_bytes(),
+                run_dir=run_dir,
+                roi_mode=RoiMode.FULL_IMAGE,
+                threshold=0.25,
+                min_area_px=0,
+                device=DevicePreference.CPU,
+                seed=2026,
+            ),
+            expected_model_version=self.metadata.version,
+            expected_adapter_path=self.metadata.adapter_path,
+            expected_weight_sha256=self.metadata.weight_sha256,
+            expected_config_sha256=self.metadata.config_sha256,
+            expected_model_card_sha256=self.metadata.model_card_sha256,
+            expected_adapter_sha256=self.metadata.adapter_sha256,
+            model_bundle=self.bundle,
+        )
+        if output.probability_path is None:
+            raise ValueError(f"gateway did not return probability output: {image_path.name}")
+        probability_path = output.probability_path.resolve(strict=True)
+        if not probability_path.is_relative_to(run_dir.resolve(strict=True)):
+            raise ValueError("gateway probability output escaped its calibration run directory")
+        probability = np.asarray(np.load(probability_path, allow_pickle=False), dtype=np.float32)
+        if probability.shape != (IMAGE_HEIGHT, IMAGE_WIDTH):
             raise ValueError(f"unexpected probability shape for {image_path.name}")
-        probability = np.zeros((IMAGE_HEIGHT, IMAGE_WIDTH), dtype=np.float32)
-        probability[:VALID_HEIGHT] = top_probability
+        self.execution_evidence[image_path.name] = (
+            output.execution.model_dump(mode="json") if output.execution is not None else None
+        )
         return probability
 
     def close(self) -> None:
-        self.adapter.unload()
+        self.gateway.cache.clear()
+        self._temporary.cleanup()
 
 
 def cache_probabilities(
@@ -487,7 +567,7 @@ def _write_probability_images(
         destination = directory / f"{Path(filename).stem}-probability.png"
         rendered = np.clip(probabilities[filename] * 255.0, 0, 255).astype(np.uint8)
         Image.fromarray(rendered).save(destination)
-        paths[filename] = str(destination)
+        paths[filename] = destination.relative_to(output_root).as_posix()
     return paths
 
 
@@ -526,8 +606,8 @@ def _write_final_reviews(
         review = np.concatenate((gt_panel, pred_panel, error_panel), axis=1)
         review_path = review_dir / f"{Path(filename).stem}-gt-pred-error.png"
         Image.fromarray(review, mode="RGB").save(review_path)
-        prediction_paths[filename] = str(prediction_path)
-        review_paths[filename] = str(review_path)
+        prediction_paths[filename] = prediction_path.relative_to(output_root).as_posix()
+        review_paths[filename] = review_path.relative_to(output_root).as_posix()
     return prediction_paths, review_paths
 
 
@@ -614,6 +694,7 @@ def run_with_inferencer(
     torchscript_sha256: str = TORCHSCRIPT_SHA256,
     expected_size: tuple[int, int] = (IMAGE_WIDTH, IMAGE_HEIGHT),
     bottom_crop_px: int = BOTTOM_CROP_PX,
+    execution_evidence: Mapping[str, dict[str, object] | None] | None = None,
 ) -> dict[str, object]:
     output_root = _validate_output_root(paths.output_root)
     output_root.mkdir(parents=True, exist_ok=False)
@@ -649,19 +730,21 @@ def run_with_inferencer(
         "schema_version": "1",
         "created_at": datetime.now(UTC).isoformat(),
         "model_id": MODEL_ID,
-        "torchscript_path": str(paths.torchscript),
+        # Human-readable path labels are deliberately portable; SHA-256 is the
+        # identity and the reviewed asset can live at a different mount point.
+        "torchscript_path": paths.torchscript.name,
         "torchscript_sha256": torchscript_sha256,
         "checkpoint_sha256": CHECKPOINT_SHA256,
         "inference_config": {
-            "path": str(_config_path()),
+            "path": _config_path().relative_to(_repository_root()).as_posix(),
             "sha256": _sha256(_config_path()),
         },
         "validation_images": list(VALIDATION_FILENAMES),
         "validation_inputs": {
             filename: {
-                "image_path": str(paths.image_dir / filename),
+                "image_path": filename,
                 "image_sha256": _sha256(paths.image_dir / filename),
-                "mask_path": str(paths.mask_dir / filename),
+                "mask_path": filename,
                 "mask_sha256": _sha256(paths.mask_dir / filename),
             }
             for filename in VALIDATION_FILENAMES
@@ -699,16 +782,20 @@ def run_with_inferencer(
         "selected_threshold": selected_threshold,
         "threshold_results": results,
         "artifacts": {
-            "json": str(json_path),
-            "csv": str(csv_path),
+            "json": json_path.relative_to(output_root).as_posix(),
+            "csv": csv_path.relative_to(output_root).as_posix(),
             "probability_arrays": {
-                name: {"path": str(path), "sha256": _sha256(path)}
+                name: {
+                    "path": path.relative_to(output_root).as_posix(),
+                    "sha256": _sha256(path),
+                }
                 for name, path in probability_paths.items()
             },
             "probability_images": probability_images,
             "final_prediction_masks": predictions,
             "reviews": reviews,
         },
+        "execution_evidence": dict(execution_evidence or {}),
         "evidence_statement": (
             "This is new traceable validation calibration evidence, not a replacement for or "
             "reconstruction of the missing training metadata JSON."
@@ -736,12 +823,13 @@ def run_with_inferencer(
 def run(paths: CalibrationPaths) -> dict[str, object]:
     observed_sha256 = _verify_torchscript(paths.torchscript)
     config = _load_config()
-    inferencer = TorchScriptInferencer(paths.torchscript, config)
+    inferencer = GatewayProbabilityInferencer(paths.torchscript, config)
     try:
         return run_with_inferencer(
             paths,
             infer_probability=inferencer,
             torchscript_sha256=observed_sha256,
+            execution_evidence=inferencer.execution_evidence,
         )
     finally:
         inferencer.close()

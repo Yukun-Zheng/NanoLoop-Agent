@@ -7,14 +7,17 @@ mask/ground-truth input and does not calculate or inspect evaluation metrics.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import re
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from contextlib import ExitStack
 from dataclasses import asdict, dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
+import yaml  # type: ignore[import-untyped]
 from PIL import Image
 
 from app.analysis.application import (
@@ -44,27 +47,28 @@ from app.inference.registry import ModelRegistryService
 from app.storage import LocalFileStore, StoragePaths
 from scripts.models.smoke_unet_agglomerated_analysis import (
     BOTTOM_CROP_PX,
+    CANONICAL_ARTIFACT_KEYS,
     DEVICE,
     EXPECTED_IMAGE_SIZE,
     MIN_AREA_PX,
     MODEL_ID,
-    PRIVATE_TORCHSCRIPT_PATH,
     SEED,
     THRESHOLD,
     TORCHSCRIPT_SHA256,
     CalibratedAnalysis,
+    _absolute_artifact_paths,
+    _canonical_artifact_identities,
+    _load_json,
     _mask_bottom_evidence,
     _sqlite_url,
     _validate_output_root,
+    _validate_schema3_execution,
     load_calibrated_analysis,
 )
 
 TEST_FILENAMES = ("YCu-1.tif", "YCu-2.tif", "YCu-3.tif")
-EXPECTED_OUTPUT_ROOT = Path(
-    "/share/home/tm1045914237210000/a1117256290/GJH/AI4S/"
-    "smoke_results/agglomerated-unet-independent-test-v1"
-)
 REPORT_FILENAME = "agglomerated-independent-test-analysis.json"
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +81,139 @@ class IndependentTestParameters:
 
 def _repository_root() -> Path:
     return Path(__file__).resolve().parents[2]
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _resolve_manifest_evidence(
+    registry_path: Path,
+    declaration: Any,
+    *,
+    label: str,
+) -> Path:
+    if not isinstance(declaration, Mapping):
+        raise ValueError(f"private ready manifest is missing {label} evidence")
+    raw_path = declaration.get("path")
+    expected_sha256 = declaration.get("sha256")
+    if (
+        not isinstance(raw_path, str)
+        or _SHA256_RE.fullmatch(str(expected_sha256)) is None
+    ):
+        raise ValueError(f"private ready manifest has invalid {label} identity")
+    pure = PurePosixPath(raw_path)
+    if pure.is_absolute() or ".." in pure.parts or str(pure) != raw_path:
+        raise ValueError(f"private ready manifest {label} path is not normalized relative")
+    root = registry_path.parent.resolve(strict=True)
+    path = root.joinpath(*pure.parts).resolve(strict=True)
+    if not path.is_relative_to(root) or not path.is_file():
+        raise ValueError(f"private ready manifest {label} evidence escaped its root")
+    if _sha256(path) != expected_sha256:
+        raise ValueError(f"private ready manifest {label} SHA-256 mismatch")
+    return path
+
+
+def _validate_promotion_manifest(
+    registry_path: Path,
+    *,
+    registration: Any,
+) -> None:
+    try:
+        payload = yaml.safe_load(registry_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, yaml.YAMLError) as error:
+        raise ValueError("private ready manifest cannot be read") from error
+    entries = payload.get("models") if isinstance(payload, Mapping) else None
+    matches = [
+        item
+        for item in entries or []
+        if isinstance(item, Mapping)
+        and isinstance(item.get("metadata"), Mapping)
+        and item["metadata"].get("model_id") == MODEL_ID
+    ]
+    if len(matches) != 1:
+        raise ValueError("private ready manifest must contain one agglomerated entry")
+    promotion = matches[0].get("promotion_evidence")
+    if not isinstance(promotion, Mapping) or promotion.get("schema_version") != 1:
+        raise ValueError("private ready manifest is missing schema-v1 promotion evidence")
+    threshold_path = _resolve_manifest_evidence(
+        registry_path, promotion.get("threshold_calibration"), label="threshold calibration"
+    )
+    min_area_path = _resolve_manifest_evidence(
+        registry_path, promotion.get("min_area_calibration"), label="min-area calibration"
+    )
+    smoke_path = _resolve_manifest_evidence(
+        registry_path, promotion.get("analysis_smoke"), label="analysis smoke"
+    )
+    threshold_sha = _sha256(threshold_path)
+    min_area_payload = _load_json(min_area_path, label="min-area promotion evidence")
+    threshold_ref = min_area_payload.get("threshold_calibration_evidence")
+    selected = min_area_payload.get("selected")
+    if (
+        not isinstance(threshold_ref, Mapping)
+        or threshold_ref.get("sha256") != threshold_sha
+        or not isinstance(selected, Mapping)
+        or selected.get("min_area_px") != MIN_AREA_PX
+    ):
+        raise ValueError("promotion evidence threshold/min-area lineage is inconsistent")
+
+    smoke = _load_json(smoke_path, label="analysis smoke promotion evidence")
+    result = smoke.get("result")
+    if (
+        smoke.get("schema_version") != "1"
+        or smoke.get("model_id") != MODEL_ID
+        or not isinstance(result, Mapping)
+        or result.get("private_registry_ready_eligible") is not True
+    ):
+        raise ValueError("analysis smoke evidence is not readiness-eligible")
+    model = result.get("model")
+    expected_model = {
+        "model_id": MODEL_ID,
+        "version": registration.metadata.version,
+        "weight_sha256": registration.weight_sha256,
+        "config_sha256": registration.config_sha256,
+        "model_card_sha256": registration.model_card_sha256,
+        "adapter_sha256": registration.adapter_sha256,
+    }
+    if not isinstance(model, Mapping) or any(
+        model.get(key) != value for key, value in expected_model.items()
+    ):
+        raise ValueError("analysis smoke model identity differs from the private registry")
+    if _SHA256_RE.fullmatch(str(model.get("model_bundle_id", ""))) is None:
+        raise ValueError("analysis smoke is missing the frozen model bundle identity")
+    runs = result.get("runs")
+    if not isinstance(runs, list) or len(runs) != 1:
+        raise ValueError("analysis smoke must contain exactly one validation run")
+    run = runs[0]
+    identities = run.get("canonical_artifact_identities") if isinstance(run, Mapping) else None
+    if (
+        not isinstance(run, Mapping)
+        or run.get("filename") != "BiCu-3.tif"
+        or run.get("final_status") not in {"COMPLETED", "COMPLETED_WITH_WARNINGS"}
+        or not isinstance(run.get("quality"), Mapping)
+        or run["quality"].get("status") not in {"PASS", "WARN"}
+        or not isinstance(identities, Mapping)
+        or set(identities) != set(CANONICAL_ARTIFACT_KEYS)
+    ):
+        raise ValueError("analysis smoke lacks successful canonical run evidence")
+    root = registry_path.parent.resolve(strict=True)
+    for key, identity in identities.items():
+        if not isinstance(identity, Mapping):
+            raise ValueError(f"invalid smoke artifact identity: {key}")
+        raw_path = identity.get("path")
+        expected_sha = identity.get("sha256")
+        if not isinstance(raw_path, str) or _SHA256_RE.fullmatch(str(expected_sha)) is None:
+            raise ValueError(f"invalid smoke artifact identity: {key}")
+        pure = PurePosixPath(raw_path)
+        if pure.is_absolute() or ".." in pure.parts or str(pure) != raw_path:
+            raise ValueError(f"smoke artifact path is not normalized relative: {key}")
+        path = root.joinpath(*pure.parts).resolve(strict=True)
+        if not path.is_relative_to(root) or not path.is_file() or _sha256(path) != expected_sha:
+            raise ValueError(f"smoke artifact identity mismatch: {key}")
 
 
 def _validate_inputs(image_dir: Path) -> Path:
@@ -95,16 +232,10 @@ def _validate_inputs(image_dir: Path) -> Path:
 
 def _validated_parameters(
     namespace: argparse.Namespace,
-    *,
-    expected_output_root: Path = EXPECTED_OUTPUT_ROOT,
 ) -> IndependentTestParameters:
     if namespace.model_id != MODEL_ID:
         raise ValueError(f"model-id must be the frozen Agglomerated model: {MODEL_ID}")
     output_root = _validate_output_root(namespace.output_root)
-    if output_root != expected_output_root.expanduser().resolve(strict=False):
-        raise ValueError(
-            f"output-root must be the fixed independent-test root: {expected_output_root}"
-        )
     registry = namespace.registry.expanduser().resolve(strict=True)
     if not registry.is_file():
         raise ValueError(f"registry is not a file: {registry}")
@@ -143,10 +274,9 @@ def _ready_private_registry(
         raise ValueError("private registry model must already be ready after the BiCu-3 smoke")
     if registration.weight_sha256 != TORCHSCRIPT_SHA256:
         raise ValueError("private registry has the wrong TorchScript SHA-256")
-    if registration.weight_path.resolve() != PRIVATE_TORCHSCRIPT_PATH.resolve():
-        raise ValueError("private registry has the wrong TorchScript path")
     if not registration.weight_path.is_file():
         raise ValueError("private registry TorchScript asset is missing")
+    _validate_promotion_manifest(parameters.registry, registration=registration)
     calibrated = load_calibrated_analysis(registration.config, registration.metadata)
     return registry, calibrated
 
@@ -265,12 +395,21 @@ def execute_analyses(
             raise RuntimeError(f"run is missing the frozen 130 px bottom exclusion: {filename}")
         with uow_factory() as uow:
             artifact_paths = uow.repositories.runs.get_artifact_paths(completed.run_id)
-        relative_mask = artifact_paths.get("pred_mask_path")
-        relative_config = artifact_paths.get("run_config_path")
-        if relative_mask is None or relative_config is None:
-            raise RuntimeError(f"required prediction metadata is missing: {filename}")
-        mask_path = file_store.paths.require_managed(relative_mask, must_exist=True)
-        run_config_path = file_store.paths.require_managed(relative_config, must_exist=True)
+        artifacts = _absolute_artifact_paths(file_store, artifact_paths)
+        missing_artifacts = [
+            key for key in CANONICAL_ARTIFACT_KEYS if artifacts.get(key) is None
+        ]
+        if missing_artifacts:
+            raise RuntimeError(
+                f"canonical Analysis artifacts are missing for {filename}: {missing_artifacts}"
+            )
+        _validate_schema3_execution(completed, artifacts)
+        artifact_identities = _canonical_artifact_identities(
+            artifacts,
+            output_root=parameters.output_root,
+        )
+        mask_path = Path(str(artifacts["pred_mask_path"]))
+        run_config_path = Path(str(artifacts["run_config_path"]))
         metadata_path = file_store.paths.image_metadata(job.job.job_id, image.image_id)
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         if (
@@ -308,13 +447,16 @@ def execute_analyses(
                 "image_metadata": str(metadata_path),
                 "pred_mask": str(mask_path),
                 "run_config": str(run_config_path),
+                "execution_provenance": artifacts["execution_provenance_path"],
                 "frozen_inference": configuration.inference.model_dump(mode="json"),
                 "resolved_postprocess": configuration.resolved_postprocess.model_dump(mode="json"),
                 "resolved_morphometry": configuration.resolved_morphometry.model_dump(mode="json"),
                 "prediction_bottom_check": mask_bottom,
+                "canonical_artifact_identities": artifact_identities,
             }
         )
     return {
+        "schema_version": "1",
         "job_id": job.job.job_id,
         "scope": (
             "YCu-1/2/3 independent-test inference generation only; no ground truth or "
@@ -330,10 +472,6 @@ def execute_analyses(
 
 def run_independent_analysis(parameters: IndependentTestParameters) -> dict[str, Any]:
     output_root = _validate_output_root(parameters.output_root)
-    if output_root != EXPECTED_OUTPUT_ROOT.resolve(strict=False):
-        raise ValueError(
-            f"output-root must be the fixed independent-test root: {EXPECTED_OUTPUT_ROOT}"
-        )
     registry, calibrated = _ready_private_registry(parameters)
     output_root.mkdir(parents=True, exist_ok=False)
     database = Database(

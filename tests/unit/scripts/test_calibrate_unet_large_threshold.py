@@ -13,12 +13,17 @@ from app.contracts.enums import (
     ModelVariant,
     QualityTier,
 )
+from app.contracts.execution import InferenceExecutionEvidence
 from app.contracts.inference import SegmentationOutput, SegmentationRequest
-from app.contracts.models import ModelMetadata
+from app.contracts.models import ModelBundleReference, ModelMetadata
+from scripts.models import calibrate_unet_large_threshold as threshold_module
 from scripts.models.calibrate_unet_large_threshold import (
+    ADAPTER_SHA256,
     BOTTOM_CROP_PX,
     CANDIDATE_THRESHOLDS,
+    CONFIG_SHA256,
     CURRENT_EXPERIMENT_THRESHOLD,
+    MODEL_CARD_SHA256,
     SEED,
     TORCHSCRIPT_SHA256,
     VALIDATION_FILENAMES,
@@ -45,6 +50,14 @@ class FakeGateway:
             probability_path=probability_path,
             binary_mask_path=mask_path,
             runtime_ms=1,
+            execution=InferenceExecutionEvidence(
+                actual_device="cpu",
+                python_random_seeded=True,
+                numpy_random_seeded=True,
+                torch_deterministic_algorithms=True,
+                global_inference_serialized=True,
+                backend="app.inference.adapters.unet.UNetAdapter",
+            ),
         )
 
 
@@ -57,15 +70,30 @@ def _metadata() -> ModelMetadata:
         version="1",
         status=ModelStatus.READY,
         supports_box_prompt=False,
-        default_threshold=0.60,
+        default_threshold=0.50,
         preprocess_profile="sem-gray-unit-crop-bottom-180-v1",
         postprocess_profile="semantic-mask-v1",
         inference_invalid_bottom_px=180,
+        expected_input_width=2048,
+        expected_input_height=1536,
         adapter_path="app.inference.adapters.unet:UNetAdapter",
         weight_sha256=TORCHSCRIPT_SHA256,
-        config_sha256="b" * 64,
-        model_card_sha256="c" * 64,
-        adapter_sha256="d" * 64,
+        config_sha256=CONFIG_SHA256,
+        model_card_sha256=MODEL_CARD_SHA256,
+        adapter_sha256=ADAPTER_SHA256,
+    )
+
+
+def _bundle() -> ModelBundleReference:
+    bundle_id = "e" * 64
+    return ModelBundleReference(
+        bundle_id=bundle_id,
+        manifest_ref=f"bundles/{bundle_id}/manifest.json",
+        weight_ref=f"{TORCHSCRIPT_SHA256}/weights.pt",
+        config_ref=f"{CONFIG_SHA256}/config.yaml",
+        model_card_ref=f"{MODEL_CARD_SHA256}/model-card.md",
+        adapter_ref=f"{ADAPTER_SHA256}/adapter.py",
+        adapter_sha256=ADAPTER_SHA256,
     )
 
 
@@ -84,7 +112,12 @@ def test_fixed_validation_and_threshold_contract() -> None:
     assert SEED == 2026
 
 
-def test_gateway_is_called_once_per_validation_image(tmp_path: Path) -> None:
+def test_gateway_is_called_once_per_validation_image(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(threshold_module, "IMAGE_WIDTH", 2)
+    monkeypatch.setattr(threshold_module, "IMAGE_HEIGHT", 181)
     image_paths: list[Path] = []
     for filename in VALIDATION_FILENAMES:
         path = tmp_path / filename
@@ -97,7 +130,7 @@ def test_gateway_is_called_once_per_validation_image(tmp_path: Path) -> None:
     probability_paths, evidence = cache_probabilities(
         gateway=gateway,
         metadata=_metadata(),
-        model_bundle=None,
+        model_bundle=_bundle(),
         image_paths=image_paths,
         output_root=output_root,
     )
@@ -108,6 +141,12 @@ def test_gateway_is_called_once_per_validation_image(tmp_path: Path) -> None:
     assert all(request.device.value == "cpu" for request in gateway.requests)
     assert all(request.seed == 2026 for request in gateway.requests)
     assert all(request.min_area_px == 0 for request in gateway.requests)
+    assert all(request.threshold == 0.50 for request in gateway.requests)
+    assert all(item["probability_cache"]["sha256"] for item in evidence.values())
+    assert all(
+        item["model"]["model_bundle"] == _bundle().model_dump(mode="json")
+        for item in evidence.values()
+    )
 
 
 def test_threshold_evaluation_is_strict_and_excludes_bottom_180_pixels() -> None:

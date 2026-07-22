@@ -8,7 +8,10 @@ repository.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
+import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +23,21 @@ from torch import Tensor, nn
 
 SMALL_BATCHNORM = "small_batchnorm"
 LARGE_GROUPNORM_OPTIMIZED = "large_groupnorm_optimized"
+MAX_ABS_ERROR = 1e-6
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _validate_expected_sha256(value: str) -> str:
+    if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+        raise ValueError("expected checkpoint SHA-256 must be 64 lowercase hex characters")
+    return value
 
 
 class DoubleConv(nn.Module):
@@ -299,23 +317,58 @@ def _tensor_report(eager: Tensor, scripted: Tensor) -> dict[str, object]:
     scripted_finite = bool(torch.isfinite(scripted).all().item())
     if not eager_finite or not scripted_finite:
         raise RuntimeError("eager or TorchScript output contains non-finite values")
+    max_abs_error = float(torch.max(torch.abs(eager - scripted)).item())
+    if max_abs_error > MAX_ABS_ERROR:
+        raise RuntimeError(
+            f"TorchScript numerical drift exceeds {MAX_ABS_ERROR}: {max_abs_error}"
+        )
     return {
         "shape": list(eager.shape),
         "eager_finite": eager_finite,
         "torchscript_finite": scripted_finite,
-        "max_abs_error": float(torch.max(torch.abs(eager - scripted)).item()),
+        "max_abs_error": max_abs_error,
     }
+
+
+def _temporary_output(output: Path) -> Path:
+    descriptor, name = tempfile.mkstemp(
+        prefix=f".{output.name}.", suffix=".pending", dir=output.parent
+    )
+    os.close(descriptor)
+    return Path(name)
+
+
+def _publish_verified_export(temporary: Path, output: Path) -> None:
+    """Publish without overwriting a target created after the initial path check."""
+
+    try:
+        os.link(temporary, output)
+    except FileExistsError as error:
+        raise ValueError(f"refusing to overwrite existing output: {output}") from error
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def export(
     checkpoint_path: Path,
     output_path: Path,
     architecture_profile: str = SMALL_BATCHNORM,
+    *,
+    expected_checkpoint_sha256: str | None = None,
 ) -> dict[str, object]:
     """Export on CPU and return a JSON-serializable eager/TorchScript comparison report."""
 
     checkpoint, output = _validate_paths(checkpoint_path, output_path)
     profile = _architecture_profile(architecture_profile)
+    checkpoint_sha256 = _sha256(checkpoint)
+    if profile.name == LARGE_GROUPNORM_OPTIMIZED and expected_checkpoint_sha256 is None:
+        raise ValueError(
+            "large profile requires --expected-checkpoint-sha256 from the external custody record"
+        )
+    if expected_checkpoint_sha256 is not None:
+        expected_checkpoint_sha256 = _validate_expected_sha256(expected_checkpoint_sha256)
+        if checkpoint_sha256 != expected_checkpoint_sha256:
+            raise ValueError("checkpoint SHA-256 does not match the explicit expected digest")
     model = profile.build_model().to("cpu")
     checkpoint_state = _load_state_dict(checkpoint)
     state_dict_diagnostic = _diagnose_state_dict(
@@ -338,27 +391,35 @@ def export(
         eager_logits = model(example)
         eager_probability = torch.sigmoid(eager_logits)
 
-    scripted = torch.jit.script(model)
-    torch.jit.save(scripted, str(output))
-    reloaded = torch.jit.load(str(output), map_location="cpu")
-    reloaded.eval()
-    with torch.inference_mode():
-        scripted_logits = reloaded(example)
-        scripted_probability = torch.sigmoid(scripted_logits)
+    temporary_output = _temporary_output(output)
+    try:
+        scripted = torch.jit.script(model)
+        torch.jit.save(scripted, str(temporary_output))
+        reloaded = torch.jit.load(str(temporary_output), map_location="cpu")
+        reloaded.eval()
+        with torch.inference_mode():
+            scripted_logits = reloaded(example)
+            scripted_probability = torch.sigmoid(scripted_logits)
 
-    report: dict[str, object] = {
-        "checkpoint": str(checkpoint),
-        "output": str(output),
-        "architecture_profile": profile.name,
-        "device": "cpu",
-        "input": {"shape": list(example.shape), "dtype": str(example.dtype)},
-        "state_dict": state_dict_diagnostic,
-        "logits": _tensor_report(eager_logits, scripted_logits),
-        "probability": _tensor_report(eager_probability, scripted_probability),
-    }
-    if profile.known_risks:
-        report["known_risks"] = list(profile.known_risks)
-    return report
+        report: dict[str, object] = {
+            "checkpoint": str(checkpoint),
+            "checkpoint_sha256": checkpoint_sha256,
+            "output": str(output),
+            "export_sha256": _sha256(temporary_output),
+            "architecture_profile": profile.name,
+            "device": "cpu",
+            "input": {"shape": list(example.shape), "dtype": str(example.dtype)},
+            "state_dict": state_dict_diagnostic,
+            "logits": _tensor_report(eager_logits, scripted_logits),
+            "probability": _tensor_report(eager_probability, scripted_probability),
+        }
+        if profile.known_risks:
+            report["known_risks"] = list(profile.known_risks)
+        _publish_verified_export(temporary_output, output)
+        return report
+    except Exception:
+        temporary_output.unlink(missing_ok=True)
+        raise
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -372,6 +433,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=SMALL_BATCHNORM,
         help="Confirmed network definition; defaults to the original small U-Net profile",
     )
+    parser.add_argument(
+        "--expected-checkpoint-sha256",
+        help=(
+            "Expected external checkpoint digest; mandatory for the Large profile because no "
+            "trusted checkpoint digest is stored in this repository"
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -382,6 +450,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.checkpoint,
             args.output,
             architecture_profile=args.architecture_profile,
+            expected_checkpoint_sha256=args.expected_checkpoint_sha256,
         )
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         print(f"export failed: {type(exc).__name__}: {exc}")

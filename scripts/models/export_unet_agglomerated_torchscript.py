@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import tempfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -18,6 +20,7 @@ EXPECTED_CHECKPOINT_SHA256 = (
 )
 EXPECTED_KEY_COUNT = 63
 PATCH_SIZE = 384
+MAX_ABS_ERROR = 1e-6
 
 
 def group_count(channels: int) -> int:
@@ -211,12 +214,34 @@ def _tensor_report(eager: Tensor, scripted: Tensor) -> dict[str, object]:
     scripted_finite = bool(torch.isfinite(scripted).all().item())
     if not eager_finite or not scripted_finite:
         raise RuntimeError("eager or TorchScript output contains non-finite values")
+    max_abs_error = float(torch.max(torch.abs(eager - scripted)).item())
+    if max_abs_error > MAX_ABS_ERROR:
+        raise RuntimeError(
+            f"TorchScript numerical drift exceeds {MAX_ABS_ERROR}: {max_abs_error}"
+        )
     return {
         "shape": list(eager.shape),
         "eager_finite": eager_finite,
         "torchscript_finite": scripted_finite,
-        "max_abs_error": float(torch.max(torch.abs(eager - scripted)).item()),
+        "max_abs_error": max_abs_error,
     }
+
+
+def _temporary_output(output: Path) -> Path:
+    descriptor, name = tempfile.mkstemp(
+        prefix=f".{output.name}.", suffix=".pending", dir=output.parent
+    )
+    os.close(descriptor)
+    return Path(name)
+
+
+def _publish_verified_export(temporary: Path, output: Path) -> None:
+    try:
+        os.link(temporary, output)
+    except FileExistsError as error:
+        raise ValueError(f"refusing to overwrite existing output: {output}") from error
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def export(checkpoint_path: Path, output_path: Path) -> dict[str, object]:
@@ -238,26 +263,33 @@ def export(checkpoint_path: Path, output_path: Path) -> dict[str, object]:
         eager_logits = model(example)
         eager_probability = torch.sigmoid(eager_logits)
 
-    scripted = torch.jit.script(model)
-    torch.jit.save(scripted, str(output))
-    reloaded = torch.jit.load(str(output), map_location="cpu")
-    reloaded.eval()
-    with torch.inference_mode():
-        scripted_logits = reloaded(example)
-        scripted_probability = torch.sigmoid(scripted_logits)
+    temporary_output = _temporary_output(output)
+    try:
+        scripted = torch.jit.script(model)
+        torch.jit.save(scripted, str(temporary_output))
+        reloaded = torch.jit.load(str(temporary_output), map_location="cpu")
+        reloaded.eval()
+        with torch.inference_mode():
+            scripted_logits = reloaded(example)
+            scripted_probability = torch.sigmoid(scripted_logits)
 
-    return {
-        "checkpoint": str(checkpoint),
-        "checkpoint_sha256": _sha256(checkpoint),
-        "output": str(output),
-        "torchscript_sha256": _sha256(output),
-        "architecture": "AgglomeratedUNet",
-        "device": "cpu",
-        "input": {"shape": list(example.shape), "dtype": str(example.dtype)},
-        "state_dict": state_dict_diagnostic,
-        "logits": _tensor_report(eager_logits, scripted_logits),
-        "probability": _tensor_report(eager_probability, scripted_probability),
-    }
+        report = {
+            "checkpoint": str(checkpoint),
+            "checkpoint_sha256": _sha256(checkpoint),
+            "output": str(output),
+            "torchscript_sha256": _sha256(temporary_output),
+            "architecture": "AgglomeratedUNet",
+            "device": "cpu",
+            "input": {"shape": list(example.shape), "dtype": str(example.dtype)},
+            "state_dict": state_dict_diagnostic,
+            "logits": _tensor_report(eager_logits, scripted_logits),
+            "probability": _tensor_report(eager_probability, scripted_probability),
+        }
+        _publish_verified_export(temporary_output, output)
+        return report
+    except Exception:
+        temporary_output.unlink(missing_ok=True)
+        raise
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
