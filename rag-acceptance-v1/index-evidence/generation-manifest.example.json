@@ -1,0 +1,14 @@
+{
+  "schema_version": 2,
+  "generation": null,
+  "model": null,
+  "model_revision": null,
+  "model_fingerprint": null,
+  "dimension": null,
+  "index_sha256": null,
+  "database_membership_sha256": null,
+  "created_at": null,
+  "restart_reused": false,
+  "verified": false,
+  "notes": "Template only. Copy runtime-generated facts into a private run record; do not mark verified before mismatch and restart tests."
+}
