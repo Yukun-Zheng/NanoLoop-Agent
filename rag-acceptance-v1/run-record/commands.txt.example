@@ -1,0 +1,24 @@
+# 后端联调合同（来自黄睿健 MVP_BACKEND_HANDOFF.md，2026-07-19）
+# - 本地开发地址：http://127.0.0.1:8000，版本化前缀 /api/v1
+# - API Key 默认关闭鉴权；本地运行可省略 --api-key
+# - 对外/共享联调：使用“环境级固定、可轮换”的共享 Key，通过 X-API-Key 请求头传递
+#   不写入仓库；联调结束或泄露时轮换。对外地址用 HTTPS。
+# - 最终 Base URL 与 Key 的安全交付方式待部署完成后统一提供（当前暂无）。
+# - 结论：D 的 RAG 验收现阶段在本地 127.0.0.1:8000 跑；真实部署到位后只换 --api-base。
+
+# 实际执行的命令（资产到位后逐条记录真实命令与退出码）
+
+# 1. 安装 RAG 依赖
+pip install -e '.[dev,rag]'
+
+# 2. 升级数据库
+alembic -c alembic.ini upgrade head
+
+# 3. 启动 API（embedding 挂载到 EMBEDDING_MODEL）
+NANOLOOP_API_EXTRAS=rag EMBEDDING_MODEL=/path/to/bge-small-zh-v1.5-<commit> uvicorn app.main:app
+
+# 4. 摄取语料 + 跑问题集
+python scripts/run_rag_acceptance.py --api-base http://127.0.0.1:8000 --package rag-acceptance-v1 --job-id <job_id> --api-key <secret>
+
+# 5. 重启 API 后重跑（验证不重新 embedding）
+# 重复步骤 3、4，记录到 restart-smoke.json
