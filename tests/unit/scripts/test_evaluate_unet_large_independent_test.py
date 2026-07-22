@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
 import pytest
 from PIL import Image
 
+from app.analysis.postprocessing import NormalizedInstance
+from app.contracts.analysis_config import MorphometryConfig, PostprocessProfile
+from scripts.models import evaluate_unet_large_independent_test as evaluation_module
 from scripts.models.evaluate_unet_large_independent_test import (
     ADAPTER_PATH,
     ADAPTER_SHA256,
@@ -30,6 +35,7 @@ from scripts.models.evaluate_unet_large_independent_test import (
     _load_foreground,
     _validate_output_root,
     compute_metrics,
+    compute_scientific_metrics,
     run_evaluation,
 )
 
@@ -43,6 +49,15 @@ BUILD = {
     "installed_dependencies_sha256": "2" * 64,
     "application_source_sha256": "3" * 64,
 }
+
+
+def test_frozen_adapter_digest_matches_current_repository_source() -> None:
+    repository_root = Path(__file__).resolve().parents[3]
+    observed = hashlib.sha256(
+        (repository_root / "app/inference/adapters/unet.py").read_bytes()
+    ).hexdigest()
+
+    assert observed == ADAPTER_SHA256
 
 
 def _run_config(image_sha256: str) -> dict[str, Any]:
@@ -132,6 +147,84 @@ def _write_mask(path: Path, foreground: list[tuple[int, int]] = ()) -> None:
     Image.fromarray(pixels).save(path)
 
 
+def _write_tolerance_policy(
+    root: Path,
+    *,
+    overrides: dict[str, float] | None = None,
+    iou_threshold: float = 0.5,
+) -> Path:
+    tolerances = {
+        "minimum_instance_precision": 0.0,
+        "minimum_instance_recall": 0.0,
+        "minimum_instance_f1": 0.0,
+        "maximum_count_absolute_error": 1_000_000.0,
+        "maximum_count_relative_error": 1_000_000.0,
+        "maximum_mean_area_relative_error": 1_000_000.0,
+        "maximum_mean_equivalent_diameter_relative_error": 1_000_000.0,
+        "maximum_number_density_relative_error": 1_000_000.0,
+        "maximum_perimeter_density_relative_error": 1_000_000.0,
+    }
+    if overrides:
+        tolerances.update(overrides)
+    path = root / "tolerance-policy.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1",
+                "policy_id": "test-large-policy",
+                "policy_version": "test",
+                "instance_matching": {
+                    "metric": "mask_iou",
+                    "mask_iou_threshold": iou_threshold,
+                },
+                "per_image_tolerances": tolerances,
+                "ground_truth_count_zero_rule": (
+                    "relative_error_denominator_is_maximum_of_gt_count_and_one"
+                ),
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _scientific_arrays(
+    prediction_regions: list[tuple[slice, slice]],
+    truth_regions: list[tuple[slice, slice]],
+) -> tuple[np.ndarray, np.ndarray]:
+    prediction = np.zeros((40, 40), dtype=bool)
+    truth = np.zeros_like(prediction)
+    for rows, columns in prediction_regions:
+        prediction[rows, columns] = True
+    for rows, columns in truth_regions:
+        truth[rows, columns] = True
+    return prediction, truth
+
+
+def _scientific_metrics(
+    prediction: np.ndarray,
+    truth: np.ndarray,
+    *,
+    iou_threshold: float = 0.5,
+) -> dict[str, Any]:
+    return compute_scientific_metrics(
+        prediction,
+        truth,
+        profile=PostprocessProfile(
+            profile_id="test",
+            min_area_px=0,
+            fill_holes=False,
+            watershed_enabled=False,
+            exclude_border=False,
+            connectivity=2,
+        ),
+        morphometry=MorphometryConfig(perimeter_neighborhood=8),
+        scale_nm_per_pixel=SCALE_NM_PER_PIXEL,
+        iou_threshold=iou_threshold,
+        sample_id="test",
+    )
+
+
 def _write_fixture(
     root: Path,
     *,
@@ -141,6 +234,7 @@ def _write_fixture(
     analysis_root = root / "analysis"
     mask_dir = root / "truth"
     mask_dir.mkdir()
+    _write_tolerance_policy(root)
     prediction_points = prediction_points or {}
     truth_points = truth_points or {}
     for index, filename in enumerate(TEST_FILENAMES):
@@ -173,6 +267,19 @@ def _write_fixture(
         _write_mask(run_dir / "pred_mask.png", prediction_points.get(sample_id, []))
         _write_mask(mask_dir / filename, truth_points.get(sample_id, []))
     return analysis_root, mask_dir
+
+
+def _evaluation_parameters(
+    analysis_root: Path,
+    mask_dir: Path,
+    output_root: Path,
+) -> EvaluationParameters:
+    return EvaluationParameters(
+        analysis_root,
+        mask_dir,
+        output_root,
+        output_root.parent / "tolerance-policy.json",
+    )
 
 
 def test_bottom_180_pixels_are_excluded_and_metrics_are_correct(tmp_path: Path) -> None:
@@ -210,7 +317,7 @@ def test_rejects_mask_dimension_mismatch(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="dimensions are not 2048x1536"):
         run_evaluation(
-            EvaluationParameters(analysis_root, mask_dir, tmp_path / "evaluation-output")
+            _evaluation_parameters(analysis_root, mask_dir, tmp_path / "evaluation-output")
         )
 
 
@@ -225,17 +332,18 @@ def test_rejects_existing_and_repository_output_roots(tmp_path: Path) -> None:
 
 
 def test_three_sample_summary_and_artifacts(tmp_path: Path) -> None:
-    points = {
-        "SrZr-3": [(10, 10)],
-        "BaCu-2": [(20, 20), (21, 21)],
-        "PrCu-3": [(30, 30), (31, 31), (32, 32)],
-    }
-    analysis_root, mask_dir = _write_fixture(
-        tmp_path, prediction_points=points, truth_points=points
-    )
+    analysis_root, mask_dir = _write_fixture(tmp_path)
+    for index, filename in enumerate(TEST_FILENAMES):
+        prediction = next(
+            analysis_root.glob(
+                f"artifacts/job_*/images/img_{index}/runs/run_{index}/pred_mask.png"
+            )
+        )
+        _write_large_component(prediction, x=100 + index * 50, y=100)
+        _write_large_component(mask_dir / filename, x=100 + index * 50, y=100)
     output_root = tmp_path / "evaluation-output"
 
-    result = run_evaluation(EvaluationParameters(analysis_root, mask_dir, output_root))
+    result = run_evaluation(_evaluation_parameters(analysis_root, mask_dir, output_root))
 
     assert [item["sample_id"] for item in result["per_image"]] == [
         "SrZr-3",
@@ -248,13 +356,17 @@ def test_three_sample_summary_and_artifacts(tmp_path: Path) -> None:
         "precision": 1.0,
         "recall": 1.0,
     }
-    assert result["micro_average"]["tp"] == 6
+    assert result["micro_average"]["tp"] == 2_700
     assert result["micro_average"]["fp"] == 0
     assert result["micro_average"]["fn"] == 0
     assert result["evaluation_region"]["evaluated_pixels_per_image"] == (
         IMAGE_WIDTH * VALID_HEIGHT
     )
     assert (output_root / "metrics.json").is_file()
+    assert result["overall_status"] == "PASS"
+    assert result["failures"] == []
+    assert (output_root / "scientific-metrics.csv").is_file()
+    assert (output_root / "failure-cases.csv").is_file()
     with (output_root / "metrics.csv").open(encoding="utf-8", newline="") as stream:
         rows = list(csv.DictReader(stream))
     assert [row["scope"] for row in rows] == [
@@ -272,6 +384,268 @@ def test_three_sample_summary_and_artifacts(tmp_path: Path) -> None:
             assert image.size == (IMAGE_WIDTH * 3, VALID_HEIGHT)
 
 
+def test_scientific_metrics_fully_match_instances_and_morphometry() -> None:
+    prediction, truth = _scientific_arrays(
+        [(slice(5, 10), slice(5, 10))],
+        [(slice(5, 10), slice(5, 10))],
+    )
+
+    metrics = _scientific_metrics(prediction, truth)
+
+    assert metrics["instance_matching"]["matched_count"] == 1
+    assert metrics["instance_matching"]["precision"] == 1.0
+    assert metrics["instance_matching"]["recall"] == 1.0
+    assert metrics["instance_matching"]["f1"] == 1.0
+    assert metrics["count"]["prediction_count"] == 1
+    assert metrics["count"]["ground_truth_count"] == 1
+    assert metrics["count"]["absolute_error"] == 0
+    assert metrics["count"]["relative_error"] == 0.0
+    assert metrics["morphometry"]["mean_area_relative_error"] == 0.0
+    assert metrics["morphometry"]["mean_equivalent_diameter_absolute_error_px"] == 0.0
+    assert metrics["morphometry"]["mean_equivalent_diameter_relative_error"] == 0.0
+    assert metrics["morphometry"]["number_density_relative_error"] == 0.0
+    assert metrics["morphometry"]["perimeter_density_relative_error"] == 0.0
+
+
+def test_scientific_metrics_reports_missed_and_false_positive_instances() -> None:
+    missed_prediction, missed_truth = _scientific_arrays(
+        [], [(slice(5, 10), slice(5, 10))]
+    )
+    missed = _scientific_metrics(missed_prediction, missed_truth)
+    assert missed["instance_matching"]["false_negative_count"] == 1
+    assert missed["instance_matching"]["recall"] == 0.0
+    assert missed["count"]["absolute_error"] == 1
+
+    false_positive_prediction, false_positive_truth = _scientific_arrays(
+        [(slice(5, 10), slice(5, 10))], []
+    )
+    false_positive = _scientific_metrics(false_positive_prediction, false_positive_truth)
+    assert false_positive["instance_matching"]["false_positive_count"] == 1
+    assert false_positive["instance_matching"]["precision"] == 0.0
+    assert false_positive["count"]["ground_truth_count"] == 0
+    assert false_positive["count"]["relative_error"] == 1.0
+    assert false_positive["morphometry"]["mean_area_relative_error"] is None
+    assert false_positive["morphometry"]["not_evaluable_reason"] == "ground_truth_count_zero"
+
+
+def test_scientific_metrics_never_filters_small_ground_truth_with_model_min_area() -> None:
+    prediction, truth = _scientific_arrays(
+        [],
+        [(slice(5, 15), slice(5, 15))],
+    )
+
+    metrics = compute_scientific_metrics(
+        prediction,
+        truth,
+        profile=PostprocessProfile(
+            profile_id="test",
+            min_area_px=512,
+            fill_holes=False,
+            watershed_enabled=False,
+            exclude_border=False,
+            connectivity=2,
+        ),
+        morphometry=MorphometryConfig(perimeter_neighborhood=8),
+        scale_nm_per_pixel=SCALE_NM_PER_PIXEL,
+        iou_threshold=0.5,
+        sample_id="small-gt",
+    )
+
+    assert metrics["instance_matching"]["prediction_count"] == 0
+    assert metrics["instance_matching"]["ground_truth_count"] == 1
+    assert metrics["instance_matching"]["false_negative_count"] == 1
+    assert metrics["instance_matching"]["recall"] == 0.0
+    assert metrics["instance_matching"]["prediction_min_area_px"] == 512
+    assert metrics["instance_matching"]["ground_truth_min_area_px"] == 0
+
+
+def test_instance_matching_includes_iou_threshold_boundary() -> None:
+    prediction, truth = _scientific_arrays(
+        [(slice(5, 7), slice(5, 7))],
+        [(slice(5, 7), slice(5, 9))],
+    )
+
+    at_threshold = _scientific_metrics(prediction, truth, iou_threshold=0.5)
+    above_threshold = _scientific_metrics(prediction, truth, iou_threshold=0.500001)
+
+    assert at_threshold["instance_matching"]["matched_count"] == 1
+    assert above_threshold["instance_matching"]["matched_count"] == 0
+
+
+def test_instance_matching_maximizes_cardinality_before_iou_tiebreaks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    masks = [np.zeros((1, 1), dtype=bool) for _ in range(4)]
+    prediction_instances = [
+        NormalizedInstance(0, masks[0], (0, 0, 1, 1), 1, None, False),
+        NormalizedInstance(1, masks[1], (0, 0, 1, 1), 1, None, False),
+    ]
+    truth_instances = [
+        NormalizedInstance(0, masks[2], (0, 0, 1, 1), 1, None, False),
+        NormalizedInstance(1, masks[3], (0, 0, 1, 1), 1, None, False),
+    ]
+    scores = {
+        (id(masks[0]), id(masks[2])): 0.90,
+        (id(masks[0]), id(masks[3])): 0.80,
+        (id(masks[1]), id(masks[2])): 0.85,
+        (id(masks[1]), id(masks[3])): 0.00,
+    }
+
+    def fake_iou(prediction: np.ndarray, truth: np.ndarray) -> float:
+        return scores[(id(prediction), id(truth))]
+
+    monkeypatch.setattr(evaluation_module, "_mask_iou", fake_iou)
+
+    matches = evaluation_module._match_instances(
+        prediction_instances,
+        truth_instances,
+        iou_threshold=0.5,
+    )
+
+    assert len(matches) == 2
+    assert {
+        (item["prediction_instance_index"], item["ground_truth_instance_index"])
+        for item in matches
+    } == {(0, 1), (1, 0)}
+
+
+def test_tolerance_policy_rejects_zero_iou_threshold(tmp_path: Path) -> None:
+    policy_path = _write_tolerance_policy(tmp_path, iou_threshold=0.0)
+
+    with pytest.raises(ValueError, match="mask_iou_threshold must be positive"):
+        evaluation_module._load_tolerance_policy(policy_path)
+
+
+def test_not_evaluable_morphometry_is_a_failure(tmp_path: Path) -> None:
+    prediction, truth = _scientific_arrays(
+        [(slice(5, 10), slice(5, 10))],
+        [],
+    )
+    metrics = _scientific_metrics(prediction, truth)
+    policy, _path, _sha256 = evaluation_module._load_tolerance_policy(
+        _write_tolerance_policy(tmp_path)
+    )
+
+    failures = evaluation_module._evaluate_tolerances(metrics, policy)
+
+    not_evaluable = [
+        failure for failure in failures if failure["reason_code"] == "METRIC_NOT_EVALUABLE"
+    ]
+    assert {failure["metric"] for failure in not_evaluable} == {
+        "mean_area_relative_error",
+        "mean_equivalent_diameter_relative_error",
+        "number_density_relative_error",
+        "perimeter_density_relative_error",
+    }
+    assert all(failure["observed"] is None for failure in not_evaluable)
+
+
+def test_main_returns_nonzero_when_scientific_gate_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        evaluation_module,
+        "build_parser",
+        lambda: SimpleNamespace(parse_args=lambda _argv: object()),
+    )
+    monkeypatch.setattr(evaluation_module, "_validated_parameters", lambda _namespace: object())
+    monkeypatch.setattr(
+        evaluation_module,
+        "run_evaluation",
+        lambda _parameters: {"overall_status": "FAIL"},
+    )
+
+    assert evaluation_module.main([]) == 2
+
+
+def _write_large_component(path: Path, *, x: int, y: int) -> None:
+    _write_large_components(path, origins=[(x, y)])
+
+
+def _write_large_components(path: Path, *, origins: list[tuple[int, int]]) -> None:
+    pixels = np.zeros((IMAGE_HEIGHT, IMAGE_WIDTH), dtype=np.uint8)
+    for x, y in origins:
+        pixels[y : y + 30, x : x + 30] = 255
+    Image.fromarray(pixels).save(path)
+
+
+def test_policy_failures_and_failure_cases_csv(tmp_path: Path) -> None:
+    analysis_root, mask_dir = _write_fixture(tmp_path)
+    prediction = next(analysis_root.glob("artifacts/job_*/images/img_0/runs/run_0/pred_mask.png"))
+    _write_large_component(prediction, x=100, y=100)
+    _write_tolerance_policy(
+        tmp_path,
+        overrides={
+            "minimum_instance_precision": 1.0,
+            "minimum_instance_recall": 1.0,
+            "minimum_instance_f1": 1.0,
+            "maximum_count_absolute_error": 0.0,
+            "maximum_count_relative_error": 0.0,
+        },
+    )
+    output_root = tmp_path / "evaluation-output"
+
+    result = run_evaluation(_evaluation_parameters(analysis_root, mask_dir, output_root))
+
+    assert result["overall_status"] == "FAIL"
+    sample = result["per_image"][0]
+    assert sample["tolerance_assessment"]["status"] == "FAIL"
+    assert {failure["metric"] for failure in sample["tolerance_assessment"]["failures"]} == {
+        "instance_precision",
+        "instance_f1",
+        "count_absolute_error",
+        "count_relative_error",
+        "mean_area_relative_error",
+        "mean_equivalent_diameter_relative_error",
+        "number_density_relative_error",
+        "perimeter_density_relative_error",
+    }
+    with (output_root / "failure-cases.csv").open(encoding="utf-8", newline="") as stream:
+        failures = list(csv.DictReader(stream))
+    assert len(failures) == 16
+    assert {
+        sample_id: sum(row["sample_id"] == sample_id for row in failures)
+        for sample_id in ("SrZr-3", "BaCu-2", "PrCu-3")
+    } == {"SrZr-3": 8, "BaCu-2": 4, "PrCu-3": 4}
+    assert {row["reason_code"] for row in failures} == {
+        "METRIC_NOT_EVALUABLE",
+        "TOLERANCE_NOT_MET",
+    }
+
+
+def test_single_tolerance_failure_is_reported(tmp_path: Path) -> None:
+    analysis_root, mask_dir = _write_fixture(tmp_path)
+    prediction = next(analysis_root.glob("artifacts/job_*/images/img_0/runs/run_0/pred_mask.png"))
+    _write_large_components(prediction, origins=[(100, 100), (200, 200)])
+    _write_large_component(mask_dir / TEST_FILENAMES[0], x=100, y=100)
+    _write_tolerance_policy(tmp_path, overrides={"maximum_count_absolute_error": 0.0})
+
+    result = run_evaluation(
+        _evaluation_parameters(analysis_root, mask_dir, tmp_path / "evaluation-output")
+    )
+
+    assert result["overall_status"] == "FAIL"
+    assert result["per_image"][0]["tolerance_assessment"]["failures"] == [
+        {
+            "metric": "count_absolute_error",
+            "operator": "<=",
+            "observed": 1.0,
+            "tolerance": 0.0,
+            "reason_code": "TOLERANCE_NOT_MET",
+        }
+    ]
+
+
+def test_missing_tolerance_policy_fails_before_output_creation(tmp_path: Path) -> None:
+    analysis_root, mask_dir = _write_fixture(tmp_path)
+    output_root = tmp_path / "evaluation-output"
+
+    with pytest.raises(ValueError, match="tolerance-policy is required"):
+        run_evaluation(EvaluationParameters(analysis_root, mask_dir, output_root))
+
+    assert not output_root.exists()
+
+
 def test_rejects_duplicate_prediction_for_a_fixed_sample(tmp_path: Path) -> None:
     analysis_root, mask_dir = _write_fixture(tmp_path)
     first_image = analysis_root / "artifacts" / "job_test" / "images" / "img_0"
@@ -284,7 +658,7 @@ def test_rejects_duplicate_prediction_for_a_fixed_sample(tmp_path: Path) -> None
 
     with pytest.raises(ValueError, match=r"multiple pred_mask\.png"):
         run_evaluation(
-            EvaluationParameters(analysis_root, mask_dir, tmp_path / "evaluation-output")
+            _evaluation_parameters(analysis_root, mask_dir, tmp_path / "evaluation-output")
         )
 
 
@@ -296,7 +670,7 @@ def test_rejects_prediction_outside_formal_analysis_layout(tmp_path: Path) -> No
 
     with pytest.raises(ValueError, match="outside the formal Analysis layout"):
         run_evaluation(
-            EvaluationParameters(analysis_root, mask_dir, tmp_path / "evaluation-output")
+            _evaluation_parameters(analysis_root, mask_dir, tmp_path / "evaluation-output")
         )
 
 
@@ -307,7 +681,7 @@ def test_rejects_nonzero_prediction_in_bottom_exclusion(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="bottom 180 px is not zero"):
         run_evaluation(
-            EvaluationParameters(analysis_root, mask_dir, tmp_path / "evaluation-output")
+            _evaluation_parameters(analysis_root, mask_dir, tmp_path / "evaluation-output")
         )
 
 
@@ -324,7 +698,7 @@ def test_rejects_wrong_frozen_asset_identity(tmp_path: Path, field: str) -> None
 
     with pytest.raises(ValueError, match="frozen Large asset"):
         run_evaluation(
-            EvaluationParameters(analysis_root, mask_dir, tmp_path / "evaluation-output")
+            _evaluation_parameters(analysis_root, mask_dir, tmp_path / "evaluation-output")
         )
 
 
@@ -337,5 +711,5 @@ def test_rejects_missing_or_mismatched_execution_provenance(tmp_path: Path) -> N
 
     with pytest.raises(ValueError, match="model_bundle_id differs"):
         run_evaluation(
-            EvaluationParameters(analysis_root, mask_dir, tmp_path / "evaluation-output")
+            _evaluation_parameters(analysis_root, mask_dir, tmp_path / "evaluation-output")
         )
