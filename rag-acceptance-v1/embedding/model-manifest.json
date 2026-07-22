@@ -1,0 +1,18 @@
+{
+  "model": "BAAI/bge-small-zh-v1.5",
+  "revision": "TODO: 精确 commit（例如 7999e1d3359715c523056ef9478215996d62a620，以实际核对为准）",
+  "dimension": 512,
+  "normalize": true,
+  "max_length": 512,
+  "pooling": "mean",
+  "license": "TODO: 以模型卡为准",
+  "local_dir": "TODO: 挂载目录（与 .env 中 EMBEDDING_MODEL 一致）",
+  "tree_sha256": "TODO: 目录树 SHA-256",
+  "resource": {
+    "device": "cpu",
+    "memory_mb": 0,
+    "cold_start_seconds": 0
+  },
+  "verified": false,
+  "notes": "API 强制 local_files_only=True；revision 必须落盘记录，不得用 main/latest"
+}
