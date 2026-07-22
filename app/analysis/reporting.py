@@ -70,9 +70,26 @@ class JobExportSnapshot:
     runs: tuple[SegmentationRunDTO, ...]
     queries: tuple[QueryAuditRecordDTO, ...] = ()
     box_revisions: tuple[BoxSetDTO, ...] = ()
+    image_storage_paths: tuple[str, ...] = ()
+    run_artifact_paths: tuple[tuple[str, str], ...] = ()
 
 
 class ReportWriter:
+    _CANONICAL_RUN_ARTIFACT_FILENAMES = frozenset(
+        {
+            "execution_provenance.json",
+            "image_summary.json",
+            "instances.json",
+            "labeled_particles.png",
+            "overlay.png",
+            "particles.csv",
+            "pred_mask.png",
+            "quality_report.json",
+            "run_config.json",
+            "transform.json",
+        }
+    )
+
     PARTICLE_COLUMNS = (
         "particle_id",
         "run_id",
@@ -174,18 +191,12 @@ class ReportWriter:
         job_dir = self.file_store.paths.require_managed(self.file_store.paths.job_dir(job_id))
         if not job_dir.is_dir():
             raise FileNotFoundError(job_id)
-        excluded = {
-            self.file_store.paths.export_manifest(job_id),
-            self.file_store.paths.export_zip(job_id),
-        }
-        files = [
-            path
-            for path in sorted(job_dir.rglob("*"))
-            if path.is_file()
-            and path not in excluded
-            and "exports" not in path.relative_to(job_dir).parts
-            and self._selected_run_path(path, job_dir=job_dir, run_ids=run_ids)
-        ]
+        files = self._declared_export_files(
+            job_id,
+            job_dir=job_dir,
+            snapshot=snapshot,
+            run_ids=run_ids,
+        )
         # The exact selected member bytes define one immutable archive. Repeated
         # exports reuse it, while a changed snapshot publishes at a new path so
         # every previously issued token keeps resolving to its original bytes.
@@ -221,7 +232,7 @@ class ReportWriter:
                 },
             )
 
-        selected = [run for run in snapshot.runs if run_ids is None or run.run_id in run_ids]
+        selected = self._selected_runs(snapshot, run_ids=run_ids)
         images = {image.image_id: image for image in snapshot.images}
         status_counts = Counter(run.status.value for run in selected)
         self.file_store.atomic_write_json(
@@ -613,15 +624,131 @@ class ReportWriter:
         return "\n".join(elements) + "\n"
 
     @staticmethod
-    def _selected_run_path(path: Path, *, job_dir: Path, run_ids: set[str] | None) -> bool:
-        if run_ids is None:
-            return True
+    def _selected_runs(
+        snapshot: JobExportSnapshot,
+        *,
+        run_ids: set[str] | None,
+    ) -> list[SegmentationRunDTO]:
+        return sorted(
+            (run for run in snapshot.runs if run_ids is None or run.run_id in run_ids),
+            key=lambda run: run.run_id,
+        )
+
+    def _declared_export_files(
+        self,
+        job_id: str,
+        *,
+        job_dir: Path,
+        snapshot: JobExportSnapshot | None,
+        run_ids: set[str] | None,
+    ) -> list[Path]:
+        """Collect only durable files declared by the export snapshot.
+
+        Corrected-mask uploads are first staged below ``input/review_mask_*``.
+        A recursive job-directory scan would expose those capability-addressed
+        temporary files, as well as arbitrary crash residue, in every export.
+        """
+
+        if snapshot is None:
+            # The snapshot-free entry point is retained for low-level report
+            # tests and callers that only need canonical run reports. It never
+            # walks input staging or arbitrary job-level files.
+            return [
+                path
+                for path in sorted(job_dir.rglob("*"))
+                if path.is_file()
+                and self._is_canonical_run_artifact(
+                    path,
+                    job_dir=job_dir,
+                    run_ids=run_ids,
+                )
+            ]
+
+        paths = self.file_store.paths
+        selected = self._selected_runs(snapshot, run_ids=run_ids)
+        selected_by_id = {run.run_id: run for run in selected}
+        snapshot_run_ids = {run.run_id for run in snapshot.runs}
+        declared: set[Path] = set()
+
+        def include_if_present(path: str | Path) -> None:
+            managed = paths.require_managed(path)
+            if managed.is_file():
+                declared.add(managed)
+
+        for fixed_path in (
+            paths.job_manifest(job_id),
+            paths.job_config(job_id),
+            paths.job_summary(job_id),
+            paths.run_summary(job_id),
+            paths.sample_summary(job_id),
+            paths.audit_summary(job_id),
+            paths.software_manifest(job_id),
+            paths.query_history(job_id),
+            paths.rag_citations(job_id),
+            paths.chart_file(job_id, "particle_count_by_run.svg"),
+            paths.chart_file(job_id, "coverage_ratio_by_run.svg"),
+        ):
+            include_if_present(fixed_path)
+
+        image_input_dirs = {
+            paths.require_managed(paths.input_dir(job_id, image.image_id))
+            for image in snapshot.images
+        }
+        for storage_path in snapshot.image_storage_paths:
+            managed = paths.require_managed(storage_path)
+            if managed.parent not in image_input_dirs or not managed.name.startswith("original."):
+                raise ValueError("export snapshot contains an undeclared image storage path")
+            include_if_present(managed)
+
+        for image in snapshot.images:
+            include_if_present(paths.image_metadata(job_id, image.image_id))
+        for revision in snapshot.box_revisions:
+            include_if_present(paths.boxes_revision(job_id, revision.image_id, revision.revision))
+
+        for run in selected:
+            for filename in self._CANONICAL_RUN_ARTIFACT_FILENAMES:
+                include_if_present(paths.run_artifact(job_id, run.image_id, run.run_id, filename))
+            if run.configuration.review_source == "corrected_mask":
+                include_if_present(
+                    paths.run_artifact(job_id, run.image_id, run.run_id, "corrected_mask.png")
+                )
+
+        for artifact_run_id, artifact_path in sorted(snapshot.run_artifact_paths):
+            if artifact_run_id not in snapshot_run_ids:
+                raise ValueError("export snapshot contains artifacts for an unknown run")
+            selected_run = selected_by_id.get(artifact_run_id)
+            if selected_run is None:
+                continue
+            managed = paths.require_managed(artifact_path)
+            run_dir = paths.require_managed(
+                paths.run_dir(job_id, selected_run.image_id, selected_run.run_id)
+            )
+            try:
+                relative = managed.relative_to(run_dir)
+            except ValueError as error:
+                raise ValueError("export snapshot contains an artifact outside its run") from error
+            if not relative.parts or any(
+                part.startswith(".") or part.endswith(".tmp") for part in relative.parts
+            ):
+                raise ValueError("export snapshot contains a transient run artifact")
+            include_if_present(managed)
+
+        return sorted(declared)
+
+    def _is_canonical_run_artifact(
+        self,
+        path: Path,
+        *,
+        job_dir: Path,
+        run_ids: set[str] | None,
+    ) -> bool:
         parts = path.relative_to(job_dir).parts
-        try:
-            run_marker = parts.index("runs")
-        except ValueError:
-            return True
-        return run_marker + 1 < len(parts) and parts[run_marker + 1] in run_ids
+        if len(parts) != 5 or parts[0] != "images" or parts[2] != "runs":
+            return False
+        run_id = parts[3]
+        return (run_ids is None or run_id in run_ids) and parts[
+            4
+        ] in self._CANONICAL_RUN_ARTIFACT_FILENAMES
 
     def _particles_csv(self, result: MorphometryResult) -> str:
         buffer = io.StringIO(newline="")

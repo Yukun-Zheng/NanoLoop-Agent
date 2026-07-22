@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import os
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -595,7 +596,12 @@ def test_source_paths_cannot_escape_or_traverse_symlinks(
         service.ingest(outside, _metadata())
 
     link = knowledge_harness.source_root / "linked.txt"
-    link.symlink_to(outside)
+    try:
+        link.symlink_to(outside)
+    except OSError as error:
+        if os.name == "nt" and getattr(error, "winerror", None) == 1314:
+            pytest.skip("Windows symlink privilege is unavailable")
+        raise
     with pytest.raises(KnowledgeSourcePathError, match="symlinks"):
         service.ingest(link, _metadata())
 

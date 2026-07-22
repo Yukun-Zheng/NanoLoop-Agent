@@ -6,7 +6,10 @@ import os
 import shutil
 import sqlite3
 import stat
+import subprocess
+import sys
 import zipfile
+from contextlib import closing
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -25,6 +28,19 @@ from app.operations.backup import (
     verify_backup,
 )
 from app.storage.file_token_keyring_store import FileTokenV2KeyRingStore
+
+_LOCK_PROBE = """
+import sys
+from pathlib import Path
+
+from app.operations.backup import BackupPreconditionError, StateDirectoryLock
+
+try:
+    with StateDirectoryLock(Path(sys.argv[1]), exclusive=sys.argv[2] == "exclusive"):
+        print("acquired")
+except BackupPreconditionError:
+    print("blocked")
+"""
 
 
 @dataclass(frozen=True)
@@ -45,10 +61,8 @@ def _make_state_tree(tmp_path: Path) -> _StateTree:
         directory.mkdir(parents=True, exist_ok=True)
 
     database = data_root / "nanoloop.db"
-    with sqlite3.connect(database) as connection:
-        connection.execute(
-            "CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"
-        )
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)")
         connection.execute(
             "INSERT INTO alembic_version (version_num) VALUES (?)",
             (expected_alembic_heads()[0],),
@@ -56,11 +70,11 @@ def _make_state_tree(tmp_path: Path) -> _StateTree:
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("CREATE TABLE parent (id INTEGER PRIMARY KEY)")
         connection.execute(
-            "CREATE TABLE child ("
-            "id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parent(id))"
+            "CREATE TABLE child (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parent(id))"
         )
         connection.execute("INSERT INTO parent (id) VALUES (1)")
         connection.execute("INSERT INTO child (id, parent_id) VALUES (1, 1)")
+        connection.commit()
 
     (data_root / "runtime.json").write_text('{"ready": true}\n', encoding="utf-8")
     (data_root / "unrelated.db-wal").write_bytes(b"ordinary-runtime-data")
@@ -115,13 +129,12 @@ def test_create_verify_restore_roundtrip_preserves_unicode_hidden_readonly_and_t
     assert created.archive_sha256 == verified.archive_sha256 == restored.archive_sha256
     assert created.manifest.production_ready is True
     assert verified.manifest.missing_production_requirements == ()
-    assert stat.S_IMODE(archive.stat().st_mode) == 0o600
-    assert stat.S_IMODE(created.checksum_path.stat().st_mode) == 0o600
+    if os.name == "posix":
+        assert stat.S_IMODE(archive.stat().st_mode) == 0o600
+        assert stat.S_IMODE(created.checksum_path.stat().st_mode) == 0o600
     with zipfile.ZipFile(archive) as bundle:
         assert all(info.compress_type == zipfile.ZIP_STORED for info in bundle.infolist())
-    assert (destination / "outputs" / "样本 α" / ".只读结果").read_bytes() == (
-        b"immutable-result"
-    )
+    assert (destination / "outputs" / "样本 α" / ".只读结果").read_bytes() == (b"immutable-result")
     restored_readonly = destination / "outputs" / "样本 α" / ".只读结果"
     assert stat.S_IMODE(restored_readonly.stat().st_mode) == 0o444
     assert restored_readonly.stat().st_mtime_ns == state.readonly_output.stat().st_mtime_ns
@@ -131,16 +144,20 @@ def test_create_verify_restore_roundtrip_preserves_unicode_hidden_readonly_and_t
     assert (destination / "knowledge_base" / "sources" / "知识源.md").exists()
     restored_token = destination / "data" / ".file_token_secret"
     assert restored_token.read_bytes() == state.token.read_bytes()
-    assert stat.S_IMODE(restored_token.stat().st_mode) == 0o600
+    if os.name == "posix":
+        assert stat.S_IMODE(restored_token.stat().st_mode) == 0o600
+    else:
+        assert restored_token.stat().st_mode & stat.S_IWRITE
     restored_v2_keyring = destination / "data" / ".file_token_v2_keyring.json"
     assert restored_v2_keyring.read_bytes() == state.v2_keyring.read_bytes()
-    assert stat.S_IMODE(restored_v2_keyring.stat().st_mode) == 0o600
+    if os.name == "posix":
+        assert stat.S_IMODE(restored_v2_keyring.stat().st_mode) == 0o600
+    else:
+        assert restored_v2_keyring.stat().st_mode & stat.S_IWRITE
     assert FileTokenV2KeyRingStore(restored_v2_keyring).load().active_kid == "backup-test"
     assert not (destination / "data" / "tmp" / "ignored.tmp").exists()
     assert not (destination / "data" / StateDirectoryLock.filename).exists()
-    assert (destination / "data" / "unrelated.db-wal").read_bytes() == (
-        b"ordinary-runtime-data"
-    )
+    assert (destination / "data" / "unrelated.db-wal").read_bytes() == (b"ordinary-runtime-data")
     with sqlite3.connect(destination / "data" / "nanoloop.db") as connection:
         assert connection.execute("SELECT parent_id FROM child").fetchall() == [(1,)]
 
@@ -344,7 +361,7 @@ def test_verify_rejects_archive_bytes_that_do_not_match_checksum(
     created = create_backup(state.layout, archive, offline_confirmed=True)
     content = bytearray(archive.read_bytes())
     if mutation == "sidecar":
-        created.checksum_path.write_text(f"{'0' * 64}\n", encoding="ascii")
+        created.checksum_path.write_bytes(f"{'0' * 64}\n".encode("ascii"))
     elif mutation == "tamper":
         content[len(content) // 2] ^= 0x01
         archive.write_bytes(content)
@@ -383,7 +400,42 @@ def test_shared_state_lock_blocks_backup_exclusive_lock(tmp_path: Path) -> None:
     assert not archive.exists()
     assert not Path(f"{archive}.sha256").exists()
     lock_path = state.layout.data_root / StateDirectoryLock.filename
-    assert stat.S_IMODE(lock_path.stat().st_mode) == 0o600
+    assert lock_path.is_file() and not lock_path.is_symlink()
+    if os.name == "posix":
+        assert stat.S_IMODE(lock_path.stat().st_mode) == 0o600
+
+
+def test_state_lock_has_cross_process_shared_and_exclusive_semantics(
+    tmp_path: Path,
+) -> None:
+    with StateDirectoryLock(tmp_path, exclusive=False):
+        assert _probe_state_lock(tmp_path, exclusive=False) == "acquired"
+        assert _probe_state_lock(tmp_path, exclusive=True) == "blocked"
+
+    with StateDirectoryLock(tmp_path, exclusive=True):
+        assert _probe_state_lock(tmp_path, exclusive=False) == "blocked"
+        assert _probe_state_lock(tmp_path, exclusive=True) == "blocked"
+
+    assert _probe_state_lock(tmp_path, exclusive=True) == "acquired"
+
+
+def _probe_state_lock(data_root: Path, *, exclusive: bool) -> str:
+    project_root = Path(__file__).resolve().parents[3]
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            _LOCK_PROBE,
+            str(data_root),
+            "exclusive" if exclusive else "shared",
+        ],
+        cwd=project_root,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    return result.stdout.strip()
 
 
 def test_runtime_file_cannot_collide_with_canonical_database_member(tmp_path: Path) -> None:
