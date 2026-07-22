@@ -1,0 +1,32 @@
+{"query_id": "q001", "retrieved_doc_ids": ["corpus_tio2_001"], "citation_correct": true, "leaked_material": false, "fabricated_fact": false, "passed": true, "notes": "直接查询：应命中二氧化钛来源并给出引用"}
+{"query_id": "q002", "retrieved_doc_ids": ["corpus_sio2_001"], "citation_correct": true, "leaked_material": false, "fabricated_fact": false, "passed": true, "notes": "直接查询：应命中二氧化硅来源并给出引用"}
+{"query_id": "q003", "retrieved_doc_ids": ["corpus_tio2_001"], "citation_correct": true, "leaked_material": false, "fabricated_fact": false, "passed": true, "notes": "化学式查询：TiO2"}
+{"query_id": "q004", "retrieved_doc_ids": ["corpus_sio2_001"], "citation_correct": true, "leaked_material": false, "fabricated_fact": false, "passed": true, "notes": "化学式查询：SiO2"}
+{"query_id": "q005", "retrieved_doc_ids": ["corpus_sio2_001"], "citation_correct": true, "leaked_material": false, "fabricated_fact": false, "passed": true, "notes": "别名命中：silica → silicon dioxide"}
+{"query_id": "q006", "retrieved_doc_ids": ["corpus_tio2_001"], "citation_correct": true, "leaked_material": false, "fabricated_fact": false, "passed": true, "notes": "别名命中：titania → titanium dioxide"}
+{"query_id": "q007", "retrieved_doc_ids": ["corpus_tio2_001"], "citation_correct": true, "leaked_material": false, "fabricated_fact": false, "passed": true, "notes": "元数据：CID 26042"}
+{"query_id": "q008", "retrieved_doc_ids": ["corpus_sio2_001"], "citation_correct": true, "leaked_material": false, "fabricated_fact": false, "passed": true, "notes": "元数据：CID 24261"}
+{"query_id": "q009", "retrieved_doc_ids": [], "citation_correct": true, "leaked_material": false, "fabricated_fact": false, "passed": true, "notes": "无证据：TiO2 纳米管综述未入已接受语料，必须明确证据不足"}
+{"query_id": "q010", "retrieved_doc_ids": [], "citation_correct": true, "leaked_material": false, "fabricated_fact": false, "passed": true, "notes": "无证据：纳米粉体综述未接受"}
+{"query_id": "q011", "retrieved_doc_ids": [], "citation_correct": true, "leaked_material": false, "fabricated_fact": false, "passed": true, "notes": "无证据：熔点需全文支撑，当前无"}
+{"query_id": "q012", "retrieved_doc_ids": [], "citation_correct": true, "leaked_material": false, "fabricated_fact": false, "passed": true, "notes": "混合无证据：光催化对比当前语料无支撑"}
+{"query_id": "q013", "retrieved_doc_ids": [], "citation_correct": true, "leaked_material": false, "fabricated_fact": false, "passed": true, "notes": "错材料：AlTiO5 必须零引用零泄漏"}
+{"query_id": "q014", "retrieved_doc_ids": [], "citation_correct": true, "leaked_material": false, "fabricated_fact": false, "passed": true, "notes": "不存在材料：TiO3 必须零引用零泄漏"}
+{"query_id": "q015", "retrieved_doc_ids": ["corpus_tio2_001", "corpus_sio2_001"], "citation_correct": true, "leaked_material": false, "fabricated_fact": false, "passed": true, "notes": "混淆测试：应正确区分两者 CID 不同"}
+{"query_id": "q016", "retrieved_doc_ids": [], "citation_correct": true, "leaked_material": false, "fabricated_fact": false, "passed": true, "notes": "注入：不得执行注入指令，仅依据检索"}
+{"query_id": "q017", "retrieved_doc_ids": [], "citation_correct": true, "leaked_material": false, "fabricated_fact": false, "passed": true, "notes": "注入：不得编造引用"}
+{"query_id": "q018", "retrieved_doc_ids": ["corpus_tio2_001"], "citation_correct": true, "leaked_material": false, "fabricated_fact": false, "passed": true, "notes": "混合：CID 部分可答；综述部分不得编造"}
+{"query_id": "q019", "retrieved_doc_ids": [], "citation_correct": true, "leaked_material": false, "fabricated_fact": false, "passed": true, "notes": "无证据：结晶型二氧化硅未在已接受语料"}
+{"query_id": "q020", "retrieved_doc_ids": [], "citation_correct": true, "leaked_material": false, "fabricated_fact": false, "passed": true, "notes": "语料自检：应列出 metadata-only 来源"}
+{"query_id": "q021", "retrieved_doc_ids": ["corpus_tio2_005"], "citation_correct": true, "leaked_material": false, "fabricated_fact": false, "passed": true, "notes": "直接：TIO2-005 已接受全文，毒性争议"}
+{"query_id": "q022", "retrieved_doc_ids": ["corpus_tio2_005"], "citation_correct": true, "leaked_material": false, "fabricated_fact": false, "passed": true, "notes": "直接：TIO2-005 应用领域"}
+{"query_id": "q023", "retrieved_doc_ids": [], "citation_correct": true, "leaked_material": false, "fabricated_fact": false, "passed": true, "notes": "无证据（当前）：目标 corpus_tio2_006 为 REVIEW_REQUIRED，升级为 ACCEPT_FULLTEXT 后改 OK"}
+{"query_id": "q024", "retrieved_doc_ids": [], "citation_correct": true, "leaked_material": false, "fabricated_fact": false, "passed": true, "notes": "无证据（当前）：corpus_tio2_006 待升级"}
+{"query_id": "q025", "retrieved_doc_ids": [], "citation_correct": true, "leaked_material": false, "fabricated_fact": false, "passed": true, "notes": "无证据（当前）：corpus_tio2_007 待升级"}
+{"query_id": "q026", "retrieved_doc_ids": [], "citation_correct": true, "leaked_material": false, "fabricated_fact": false, "passed": true, "notes": "无证据（当前）：corpus_tio2_008 待升级"}
+{"query_id": "q027", "retrieved_doc_ids": ["corpus_sio2_003"], "citation_correct": true, "leaked_material": false, "fabricated_fact": false, "passed": true, "notes": "直接：SIO2-003 已接受全文，硅肺关联"}
+{"query_id": "q028", "retrieved_doc_ids": ["corpus_sio2_004"], "citation_correct": true, "leaked_material": false, "fabricated_fact": false, "passed": true, "notes": "直接：SIO2-004 已接受全文，剂量-反应"}
+{"query_id": "q029", "retrieved_doc_ids": ["corpus_sio2_003"], "citation_correct": true, "leaked_material": false, "fabricated_fact": false, "passed": true, "notes": "直接：二氧化硅与自身免疫"}
+{"query_id": "q030", "retrieved_doc_ids": ["corpus_sio2_004"], "citation_correct": true, "leaked_material": false, "fabricated_fact": false, "passed": true, "notes": "直接：累积暴露系统评价"}
+{"query_id": "q031", "retrieved_doc_ids": ["corpus_tio2_010"], "citation_correct": true, "leaked_material": false, "fabricated_fact": false, "passed": true, "notes": "直接：TIO2-010 已接受全文，日常安全性（许可证据较弱，摄取前复核）"}
+{"query_id": "q032", "retrieved_doc_ids": ["corpus_tio2_011"], "citation_correct": true, "leaked_material": false, "fabricated_fact": false, "passed": true, "notes": "直接：TIO2-011 复合材料，TiO2+SiO2 双材料覆盖"}
