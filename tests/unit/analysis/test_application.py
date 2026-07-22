@@ -46,8 +46,9 @@ from app.contracts.enums import (
     RoiMode,
     ScaleMode,
 )
+from app.contracts.execution import InferenceExecutionEvidence
 from app.contracts.inference import SegmentationOutput, SegmentationRequest
-from app.contracts.models import ModelHealth, ModelMetadata
+from app.contracts.models import ModelBundleReference, ModelHealth, ModelMetadata
 from app.contracts.repositories import StoredImageAsset, UnitOfWork
 from app.core.config import Settings
 from app.core.errors import (
@@ -62,7 +63,7 @@ from app.db.models import ModelRegistryRecord, SegmentationRun
 from app.db.repositories import SqlAlchemyRepositorySet, SqlAlchemyUnitOfWork
 from app.db.session import Database
 from app.inference.gateway import InferenceGateway
-from app.storage import FileTokenError, LocalFileStore, StoragePaths
+from app.storage import FileTokenError, LocalFileStore, StoragePathError, StoragePaths
 from tests.unit.inference.fakes import FakeAdapter
 from tests.unit.inference.helpers import build_registry, model_entry
 
@@ -71,6 +72,32 @@ ApplicationHarness = tuple[
     LocalFileStore,
     Callable[[], UnitOfWork],
 ]
+
+
+def _model_bundle(model: ModelMetadata) -> ModelBundleReference:
+    assert model.weight_sha256 is not None
+    assert model.adapter_sha256 is not None
+    prefix = f"bundles/{model.model_id}"
+    return ModelBundleReference(
+        bundle_id=model.weight_sha256,
+        manifest_ref=f"{prefix}/manifest.json",
+        weight_ref=f"{prefix}/weights.bin",
+        config_ref=f"{prefix}/config.yaml",
+        model_card_ref=f"{prefix}/model-card.md",
+        adapter_ref=f"{prefix}/adapter.py",
+        adapter_sha256=model.adapter_sha256,
+    )
+
+
+def _execution_evidence(backend: str) -> InferenceExecutionEvidence:
+    return InferenceExecutionEvidence(
+        actual_device="cpu",
+        python_random_seeded=True,
+        numpy_random_seeded=True,
+        torch_deterministic_algorithms=False,
+        global_inference_serialized=True,
+        backend=backend,
+    )
 
 
 class FakeGateway:
@@ -93,6 +120,7 @@ class FakeGateway:
             weight_sha256="a" * 64,
             config_sha256="b" * 64,
             model_card_sha256="c" * 64,
+            adapter_sha256="d" * 64,
         )
 
     def list_models(self, only_ready: bool = False) -> list[ModelMetadata]:
@@ -107,6 +135,26 @@ class FakeGateway:
             )
         ]
 
+    def freeze_model_bundle(
+        self,
+        model_id: str,
+        *,
+        expected_model_version: str | None = None,
+        expected_adapter_path: str | None = None,
+        expected_weight_sha256: str | None = None,
+        expected_config_sha256: str | None = None,
+        expected_model_card_sha256: str | None = None,
+        expected_adapter_sha256: str | None = None,
+    ) -> ModelBundleReference:
+        assert model_id == self.model.model_id
+        assert expected_model_version == self.model.version
+        assert expected_adapter_path == self.model.adapter_path
+        assert expected_weight_sha256 == self.model.weight_sha256
+        assert expected_config_sha256 == self.model.config_sha256
+        assert expected_model_card_sha256 == self.model.model_card_sha256
+        assert expected_adapter_sha256 == self.model.adapter_sha256
+        return _model_bundle(self.model)
+
     def predict(
         self,
         _model_id: str,
@@ -117,6 +165,8 @@ class FakeGateway:
         expected_weight_sha256: str | None = None,
         expected_config_sha256: str | None = None,
         expected_model_card_sha256: str | None = None,
+        expected_adapter_sha256: str | None = None,
+        model_bundle: ModelBundleReference | None = None,
     ) -> SegmentationOutput:
         self.predict_calls += 1
         assert request.image_bytes is not None
@@ -126,6 +176,8 @@ class FakeGateway:
         assert expected_weight_sha256 == self.model.weight_sha256
         assert expected_config_sha256 == self.model.config_sha256
         assert expected_model_card_sha256 == self.model.model_card_sha256
+        assert expected_adapter_sha256 == self.model.adapter_sha256
+        assert model_bundle == _model_bundle(self.model)
         if self.fail:
             raise RuntimeError("fixture inference failed")
         mask = np.zeros((64, 64), dtype=np.uint8)
@@ -143,6 +195,7 @@ class FakeGateway:
             binary_mask_path=mask_path,
             probability_path=probability_path,
             runtime_ms=7,
+            execution=_execution_evidence("tests.fake:FakeAdapter"),
         )
 
 
@@ -157,6 +210,8 @@ class HoleGateway(FakeGateway):
         expected_weight_sha256: str | None = None,
         expected_config_sha256: str | None = None,
         expected_model_card_sha256: str | None = None,
+        expected_adapter_sha256: str | None = None,
+        model_bundle: ModelBundleReference | None = None,
     ) -> SegmentationOutput:
         output = super().predict(
             model_id,
@@ -166,6 +221,8 @@ class HoleGateway(FakeGateway):
             expected_weight_sha256=expected_weight_sha256,
             expected_config_sha256=expected_config_sha256,
             expected_model_card_sha256=expected_model_card_sha256,
+            expected_adapter_sha256=expected_adapter_sha256,
+            model_bundle=model_bundle,
         )
         with Image.open(output.binary_mask_path) as image:
             mask = np.asarray(image).copy()
@@ -185,12 +242,16 @@ class BoundaryGateway(FakeGateway):
         expected_weight_sha256: str | None = None,
         expected_config_sha256: str | None = None,
         expected_model_card_sha256: str | None = None,
+        expected_adapter_sha256: str | None = None,
+        model_bundle: ModelBundleReference | None = None,
     ) -> SegmentationOutput:
         assert expected_model_version == self.model.version
         assert expected_adapter_path == self.model.adapter_path
         assert expected_weight_sha256 == self.model.weight_sha256
         assert expected_config_sha256 == self.model.config_sha256
         assert expected_model_card_sha256 == self.model.model_card_sha256
+        assert expected_adapter_sha256 == self.model.adapter_sha256
+        assert model_bundle == _model_bundle(self.model)
         mask = np.zeros((64, 64), dtype=np.uint8)
         mask[0:10, 20:30] = 255
         mask_path = request.run_dir / "pred_mask.png"
@@ -200,6 +261,7 @@ class BoundaryGateway(FakeGateway):
             height=64,
             binary_mask_path=mask_path,
             runtime_ms=2,
+            execution=_execution_evidence("tests.fake:BoundaryAdapter"),
         )
 
 
@@ -221,6 +283,7 @@ class CartesianGateway:
                 weight_sha256="1" * 64,
                 config_sha256="a" * 64,
                 model_card_sha256="d" * 64,
+                adapter_sha256="4" * 64,
             ),
             ModelMetadata(
                 model_id="yolo-dense-fast-v2",
@@ -237,6 +300,7 @@ class CartesianGateway:
                 weight_sha256="2" * 64,
                 config_sha256="b" * 64,
                 model_card_sha256="e" * 64,
+                adapter_sha256="5" * 64,
             ),
             ModelMetadata(
                 model_id="sam2-low-accurate-v3",
@@ -253,6 +317,7 @@ class CartesianGateway:
                 weight_sha256="3" * 64,
                 config_sha256="c" * 64,
                 model_card_sha256="f" * 64,
+                adapter_sha256="6" * 64,
             ),
         ]
 
@@ -271,6 +336,26 @@ class CartesianGateway:
             for model in self.models
         ]
 
+    def freeze_model_bundle(
+        self,
+        model_id: str,
+        *,
+        expected_model_version: str | None = None,
+        expected_adapter_path: str | None = None,
+        expected_weight_sha256: str | None = None,
+        expected_config_sha256: str | None = None,
+        expected_model_card_sha256: str | None = None,
+        expected_adapter_sha256: str | None = None,
+    ) -> ModelBundleReference:
+        model = next(item for item in self.models if item.model_id == model_id)
+        assert expected_model_version == model.version
+        assert expected_adapter_path == model.adapter_path
+        assert expected_weight_sha256 == model.weight_sha256
+        assert expected_config_sha256 == model.config_sha256
+        assert expected_model_card_sha256 == model.model_card_sha256
+        assert expected_adapter_sha256 == model.adapter_sha256
+        return _model_bundle(model)
+
     def predict(
         self,
         _model_id: str,
@@ -281,6 +366,8 @@ class CartesianGateway:
         expected_weight_sha256: str | None = None,
         expected_config_sha256: str | None = None,
         expected_model_card_sha256: str | None = None,
+        expected_adapter_sha256: str | None = None,
+        model_bundle: ModelBundleReference | None = None,
     ) -> SegmentationOutput:
         raise AssertionError("Cartesian-product creation must not execute inference")
 
@@ -392,9 +479,15 @@ def test_create_and_execute_run_closes_the_analysis_loop(
     assert completed.configuration.weight_sha256 == "a" * 64
     assert completed.configuration.config_sha256 == "b" * 64
     assert completed.configuration.model_card_sha256 == "c" * 64
+    assert completed.configuration.adapter_sha256 == "d" * 64
+    assert completed.configuration.schema_version == 3
+    assert completed.configuration.model_bundle is not None
     assert completed.execution is not None
-    assert completed.execution.actual_device == "not_applicable"
-    assert "runtime_execution_evidence_unavailable_legacy_adapter" in (
+    assert completed.execution.actual_device == "cpu"
+    assert completed.execution.backend == "tests.fake:FakeAdapter"
+    assert completed.execution.model_bundle_id == "a" * 64
+    assert completed.execution.adapter_sha256 == "d" * 64
+    assert "runtime_execution_evidence_unavailable_legacy_adapter" not in (
         completed.execution.warnings
     )
     assert [event.to_status for event in completed.status_history] == [
@@ -421,7 +514,7 @@ def test_create_and_execute_run_closes_the_analysis_loop(
     execution_payload = json.loads(
         (file_store.paths.root / execution_path).read_text(encoding="utf-8")
     )
-    assert execution_payload["actual_device"] == "not_applicable"
+    assert execution_payload["actual_device"] == "cpu"
     assert execution_payload["seed"] == 42
     mask_path = paths["pred_mask_path"]
     assert mask_path is not None
@@ -443,6 +536,94 @@ def test_create_and_execute_run_closes_the_analysis_loop(
         height=64,
     )
     assert np.array_equal(decoded_instance, normalized_pixels > 0)
+
+
+def test_create_runs_fails_closed_without_bundle_freeze_support(
+    application_harness: ApplicationHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _database, file_store, factory = application_harness
+    gateway = FakeGateway()
+    monkeypatch.setattr(gateway, "freeze_model_bundle", None)
+    service = AnalysisApplicationService(
+        uow_factory=factory,
+        file_store=file_store,
+        inference_gateway=gateway,
+    )
+
+    with pytest.raises(ModelNotReadyError) as captured:
+        service.create_runs(
+            "job_1",
+            CreateRunsRequest(
+                image_ids=["img_1"],
+                model_ids=["unet-general-balanced-v1"],
+                roi_mode=RoiMode.FULL_IMAGE,
+            ),
+        )
+
+    assert captured.value.details["reason"] == "model_bundle_freeze_unsupported"
+    with factory() as uow:
+        assert uow.repositories.runs.list_by_job("job_1") == []
+
+
+def test_create_runs_fails_closed_without_adapter_digest(
+    application_harness: ApplicationHarness,
+) -> None:
+    _database, file_store, factory = application_harness
+    gateway = FakeGateway()
+    gateway.model = gateway.model.model_copy(update={"adapter_sha256": None})
+    service = AnalysisApplicationService(
+        uow_factory=factory,
+        file_store=file_store,
+        inference_gateway=gateway,
+    )
+
+    with pytest.raises(ModelNotReadyError) as captured:
+        service.create_runs(
+            "job_1",
+            CreateRunsRequest(
+                image_ids=["img_1"],
+                model_ids=["unet-general-balanced-v1"],
+                roi_mode=RoiMode.FULL_IMAGE,
+            ),
+        )
+
+    assert captured.value.details["reason"] == "artifact_provenance_incomplete"
+    assert captured.value.details["missing_fields"] == ["adapter_sha256"]
+    with factory() as uow:
+        assert uow.repositories.runs.list_by_job("job_1") == []
+
+
+def test_create_runs_fails_closed_for_invalid_bundle_reference(
+    application_harness: ApplicationHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _database, file_store, factory = application_harness
+    gateway = FakeGateway()
+
+    def invalid_freeze(*_args: object, **_kwargs: object) -> object:
+        return None
+
+    monkeypatch.setattr(gateway, "freeze_model_bundle", invalid_freeze)
+    service = AnalysisApplicationService(
+        uow_factory=factory,
+        file_store=file_store,
+        inference_gateway=gateway,
+    )
+
+    with pytest.raises(ModelNotReadyError) as captured:
+        service.create_runs(
+            "job_1",
+            CreateRunsRequest(
+                image_ids=["img_1"],
+                model_ids=["unet-general-balanced-v1"],
+                roi_mode=RoiMode.FULL_IMAGE,
+            ),
+        )
+
+    assert captured.value.details["reason"] == "invalid_model_bundle_reference"
+    with factory() as uow:
+        assert uow.repositories.runs.list_by_job("job_1") == []
 
 
 def test_queued_run_executes_complete_bundle_after_config_and_card_sources_change(
@@ -609,7 +790,8 @@ def test_execution_uses_only_the_frozen_scientific_configuration(
     completed = service.execute_run(run_id)
 
     assert completed.configuration.provenance_status == "complete"
-    assert completed.configuration.schema_version == 2
+    assert completed.configuration.schema_version == 3
+    assert completed.configuration.model_bundle == _model_bundle(HoleGateway().model)
     assert completed.configuration.image_sha256 is not None
     assert completed.configuration.scale_nm_per_pixel == 1.0
     assert completed.configuration.resolved_postprocess == PostprocessProfile(
@@ -739,6 +921,68 @@ def test_changed_original_image_fails_before_gateway_call(
         assert failed.error_code == "INPUT_ARTIFACT_MISMATCH"
 
 
+@pytest.mark.parametrize("path_failure", ["missing", "outside_managed_root"])
+def test_unreadable_original_path_fails_claimed_run_and_does_not_block_next_run(
+    application_harness: ApplicationHarness,
+    path_failure: str,
+) -> None:
+    database, file_store, factory = application_harness
+    gateway = FakeGateway()
+    service = AnalysisApplicationService(
+        uow_factory=factory,
+        file_store=file_store,
+        inference_gateway=gateway,
+    )
+    failed_run_id = service.create_runs(
+        "job_1",
+        CreateRunsRequest(
+            image_ids=["img_1"],
+            model_ids=["unet-general-balanced-v1"],
+            roi_mode=RoiMode.FULL_IMAGE,
+        ),
+    )[0]
+    with factory() as uow:
+        storage_path = uow.repositories.images.get_storage_path("img_1")
+    original_path = file_store.paths.require_managed(storage_path, must_exist=True)
+    original_bytes = original_path.read_bytes()
+
+    if path_failure == "missing":
+        original_path.unlink()
+    else:
+        with database.session() as session:
+            image = session.get(ImageAssetRecord, "img_1")
+            assert image is not None
+            image.storage_path = "../outside-managed-root.png"
+
+    with pytest.raises(StoragePathError):
+        service.execute_run(failed_run_id)
+
+    with database.session() as session:
+        failed = session.get(SegmentationRun, failed_run_id)
+        assert failed is not None
+        assert failed.status == JobStatus.FAILED.value
+        assert failed.error_code == "INFERENCE_FAILED"
+
+    if path_failure == "missing":
+        file_store.atomic_write_bytes(original_path, original_bytes)
+    else:
+        with database.session() as session:
+            image = session.get(ImageAssetRecord, "img_1")
+            assert image is not None
+            image.storage_path = storage_path
+
+    next_run_id = service.create_runs(
+        "job_1",
+        CreateRunsRequest(
+            image_ids=["img_1"],
+            model_ids=["unet-general-balanced-v1"],
+            roi_mode=RoiMode.FULL_IMAGE,
+        ),
+    )[0]
+    assert service.execute_run(next_run_id).status == JobStatus.COMPLETED
+    assert gateway.predict_calls == 1
+
+
 @pytest.mark.parametrize(
     "missing_field",
     [
@@ -746,6 +990,8 @@ def test_changed_original_image_fails_before_gateway_call(
         "weight_sha256",
         "config_sha256",
         "model_card_sha256",
+        "adapter_sha256",
+        "model_bundle",
         "image_sha256",
         "resolved_postprocess",
         "resolved_morphometry",
@@ -1025,6 +1271,9 @@ def test_create_runs_persists_two_by_three_cartesian_product_without_duplicate_d
         assert run.configuration.weight_sha256 == model.weight_sha256
         assert run.configuration.config_sha256 == model.config_sha256
         assert run.configuration.model_card_sha256 == model.model_card_sha256
+        assert run.configuration.adapter_sha256 == model.adapter_sha256
+        assert run.configuration.schema_version == 3
+        assert run.configuration.model_bundle == _model_bundle(model)
         assert run.configuration.preprocess_profile == model.preprocess_profile
         assert run.configuration.postprocess_profile == model.postprocess_profile
         assert run.threshold == model.default_threshold
@@ -1285,7 +1534,7 @@ def test_review_creates_immutable_child_run(application_harness: ApplicationHarn
     assert "foreground_ratio_too_low" not in completed_child.quality.reasons
 
 
-def test_review_rejects_changed_model_provenance(
+def test_review_reuses_frozen_bundle_after_registry_provenance_changes(
     application_harness: ApplicationHarness,
 ) -> None:
     _database, file_store, factory = application_harness
@@ -1304,12 +1553,18 @@ def test_review_rejects_changed_model_provenance(
         ),
     )[0]
     service.execute_run(parent_id)
+    with factory() as uow:
+        parent_configuration = uow.repositories.runs.get(parent_id).configuration
     gateway.model = gateway.model.model_copy(update={"config_sha256": "d" * 64})
 
-    with pytest.raises(ModelNotReadyError) as captured:
-        service.create_review_run(parent_id, ReviewRunRequest(threshold=0.8))
+    child_id = service.create_review_run(parent_id, ReviewRunRequest(threshold=0.8))
 
-    assert captured.value.details["reason"] == "config_sha256_mismatch"
+    with factory() as uow:
+        child_configuration = uow.repositories.runs.get(child_id).configuration
+    assert child_configuration.schema_version == 3
+    assert child_configuration.config_sha256 == parent_configuration.config_sha256
+    assert child_configuration.adapter_sha256 == parent_configuration.adapter_sha256
+    assert child_configuration.model_bundle == parent_configuration.model_bundle
 
 
 def test_corrected_mask_review_bypasses_model_and_preserves_hash(

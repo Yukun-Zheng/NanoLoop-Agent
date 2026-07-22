@@ -43,7 +43,15 @@ def open_rgb(source: Path | bytes) -> np.ndarray:
 
 
 def output_dir(run_dir: Path, model_id: str) -> Path:
-    destination = Path(run_dir) / "inference" / model_id
+    """Return the run-local adapter workspace.
+
+    A run is already bound to exactly one model, so another model-id directory
+    adds no isolation. Keeping adapter intermediates at the run root also avoids
+    exceeding the legacy 260-character Windows path limit for UUID-based jobs.
+    """
+
+    del model_id
+    destination = Path(run_dir)
     destination.mkdir(parents=True, exist_ok=True)
     return destination
 

@@ -385,39 +385,66 @@ class AnalysisApplicationService:
         ]
         health = {item.model_id: item for item in self.inference_gateway.health()}
         freeze_bundle = getattr(self.inference_gateway, "freeze_model_bundle", None)
+        if not callable(freeze_bundle):
+            raise ModelNotReadyError(
+                "模型网关不支持冻结完整 bundle，不能创建新的可复现运行",
+                details={
+                    "model_ids": [model.model_id for model in selected_models],
+                    "reason": "model_bundle_freeze_unsupported",
+                },
+            )
         frozen_bundles: dict[str, ModelBundleReference] = {}
-        if callable(freeze_bundle):
-            for model in selected_models:
-                model_health = health.get(model.model_id)
-                weight_sha256 = model.weight_sha256 or (
-                    model_health.weight_sha256 if model_health else None
+        for model in selected_models:
+            model_health = health.get(model.model_id)
+            weight_sha256 = model.weight_sha256 or (
+                model_health.weight_sha256 if model_health else None
+            )
+            required = {
+                "adapter_path": model.adapter_path,
+                "weight_sha256": weight_sha256,
+                "config_sha256": model.config_sha256,
+                "model_card_sha256": model.model_card_sha256,
+                "adapter_sha256": model.adapter_sha256,
+            }
+            missing = [name for name, value in required.items() if value is None]
+            if missing:
+                raise ModelNotReadyError(
+                    "模型缺少完整 bundle 来源，不能创建可复现运行",
+                    details={
+                        "model_id": model.model_id,
+                        "reason": "artifact_provenance_incomplete",
+                        "missing_fields": missing,
+                    },
                 )
-                required = {
-                    "adapter_path": model.adapter_path,
-                    "weight_sha256": weight_sha256,
-                    "config_sha256": model.config_sha256,
-                    "model_card_sha256": model.model_card_sha256,
-                    "adapter_sha256": model.adapter_sha256,
-                }
-                missing = [name for name, value in required.items() if value is None]
-                if missing:
-                    raise ModelNotReadyError(
-                        "模型缺少完整 bundle 来源，不能创建可复现运行",
-                        details={
-                            "model_id": model.model_id,
-                            "reason": "artifact_provenance_incomplete",
-                            "missing_fields": missing,
-                        },
+            try:
+                bundle = ModelBundleReference.model_validate(
+                    freeze_bundle(
+                        model.model_id,
+                        expected_model_version=model.version,
+                        expected_adapter_path=model.adapter_path,
+                        expected_weight_sha256=weight_sha256,
+                        expected_config_sha256=model.config_sha256,
+                        expected_model_card_sha256=model.model_card_sha256,
+                        expected_adapter_sha256=model.adapter_sha256,
                     )
-                frozen_bundles[model.model_id] = freeze_bundle(
-                    model.model_id,
-                    expected_model_version=model.version,
-                    expected_adapter_path=model.adapter_path,
-                    expected_weight_sha256=weight_sha256,
-                    expected_config_sha256=model.config_sha256,
-                    expected_model_card_sha256=model.model_card_sha256,
-                    expected_adapter_sha256=model.adapter_sha256,
                 )
+            except (TypeError, ValueError) as error:
+                raise ModelNotReadyError(
+                    "模型网关没有返回合法的冻结 bundle",
+                    details={
+                        "model_id": model.model_id,
+                        "reason": "invalid_model_bundle_reference",
+                    },
+                ) from error
+            if bundle.adapter_sha256 != model.adapter_sha256:
+                raise ModelNotReadyError(
+                    "冻结 bundle 与模型 Adapter 摘要不一致",
+                    details={
+                        "model_id": model.model_id,
+                        "reason": "adapter_sha256_mismatch",
+                    },
+                )
+            frozen_bundles[model.model_id] = bundle.model_copy(deep=True)
         created_at = utc_now()
         execution_build = capture_execution_build_provenance()
         runs: list[SegmentationRunDTO] = []
@@ -492,8 +519,9 @@ class AnalysisApplicationService:
                         "weight_sha256": resolved_weight_sha256,
                         "config_sha256": model.config_sha256,
                         "model_card_sha256": model.model_card_sha256,
+                        "adapter_sha256": model.adapter_sha256,
                     }
-                    model_bundle = frozen_bundles.get(model.model_id)
+                    model_bundle = frozen_bundles[model.model_id]
                     missing_provenance = [
                         field for field, value in model_provenance.items() if value is None
                     ]
@@ -507,7 +535,7 @@ class AnalysisApplicationService:
                             },
                         )
                     configuration = RunConfiguration(
-                        schema_version=3 if model_bundle is not None else 2,
+                        schema_version=3,
                         provenance_status="complete",
                         provenance_warnings=[],
                         model_id=model.model_id,
@@ -843,8 +871,12 @@ class AnalysisApplicationService:
         # Claim outside the failure-recording block. A duplicate delivery is a
         # scheduler race, not a scientific run failure, and must never overwrite
         # the state of the worker that already owns this immutable run.
-        run, image, image_path = self._claim_execution_inputs(run_id)
+        run, image, storage_path = self._claim_execution_inputs(run_id)
         try:
+            image_path = self.file_store.paths.require_managed(
+                storage_path,
+                must_exist=True,
+            )
             configuration = run.configuration
             image_bytes = image_path.read_bytes()
             self._verify_input_image(
@@ -1137,7 +1169,7 @@ class AnalysisApplicationService:
 
     def _claim_execution_inputs(
         self, run_id: str
-    ) -> tuple[SegmentationRunDTO, ImageAssetDTO, Path]:
+    ) -> tuple[SegmentationRunDTO, ImageAssetDTO, str]:
         with self.uow_factory() as uow:
             if not uow.repositories.runs.claim_queued(run_id):
                 existing = uow.repositories.runs.get(run_id)
@@ -1151,8 +1183,7 @@ class AnalysisApplicationService:
             statuses = [item.status for item in uow.repositories.runs.list_by_job(run.job_id)]
             uow.repositories.jobs.update_status(run.job_id, aggregate_job_status(statuses))
             uow.commit()
-        image_path = self.file_store.paths.require_managed(storage_path, must_exist=True)
-        return run, image, image_path
+        return run, image, storage_path
 
     def _set_run_status(self, run_id: str, status: JobStatus) -> None:
         with self.uow_factory() as uow:

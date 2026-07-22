@@ -1,5 +1,6 @@
 """Tests for canonical storage layout and traversal defenses."""
 
+import os
 from pathlib import Path
 
 import pytest
@@ -87,7 +88,12 @@ def test_require_managed_rejects_outside_and_symlink_escape(tmp_path: Path) -> N
         paths.require_managed(outside)
 
     link = paths.root / "link"
-    link.symlink_to(outside, target_is_directory=True)
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except OSError as error:
+        if os.name == "nt" and getattr(error, "winerror", None) == 1314:
+            pytest.skip("Windows symlink privilege is unavailable")
+        raise
     with pytest.raises(StoragePathError):
         paths.require_managed(link / "payload.bin")
 

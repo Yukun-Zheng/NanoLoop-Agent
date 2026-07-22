@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -344,7 +345,12 @@ def test_path_normalization_preserves_symlink_for_core_rejection(tmp_path: Path)
     target = tmp_path / "target.zip"
     target.write_bytes(b"not-a-backup")
     link = tmp_path / "linked.zip"
-    link.symlink_to(target)
+    try:
+        link.symlink_to(target)
+    except OSError as error:
+        if os.name == "nt" and getattr(error, "winerror", None) == 1314:
+            pytest.skip("Windows symlink privilege is unavailable")
+        raise
 
     assert cli._path(link) == link.absolute()
     assert cli._path(link).is_symlink()

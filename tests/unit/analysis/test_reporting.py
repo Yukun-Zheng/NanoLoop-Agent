@@ -2,6 +2,7 @@ import json
 import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
@@ -194,6 +195,11 @@ def test_write_reports_and_export_have_versioned_auditable_files(tmp_path: Path)
         ),
         box_revisions=(BoxSetDTO(image_id="img_1", revision=0, boxes=[]),),
     )
+    staged_mask = file_store.paths.input_dir("job_1") / "review_mask_pending" / "original.png"
+    undeclared_residue = file_store.paths.job_dir("job_1") / "worker-residue.tmp"
+    file_store.atomic_write_bytes(staged_mask, b"private staged mask")
+    file_store.atomic_write_bytes(undeclared_residue, b"undeclared transient data")
+
     exported = writer.build_job_export("job_1", snapshot=snapshot)
     issued_path = exported.path
     issued_bytes = issued_path.read_bytes()
@@ -211,6 +217,8 @@ def test_write_reports_and_export_have_versioned_auditable_files(tmp_path: Path)
             "rag_citations.json",
             "images/img_1/boxes_revision_000.json",
         } <= names
+        assert "input/review_mask_pending/original.png" not in names
+        assert "worker-residue.tmp" not in names
         run_summary = archive.read("run_summary.csv").decode("utf-8-sig")
         sample_summary = archive.read("sample_summary.csv").decode("utf-8-sig")
         audit = json.loads(archive.read("audit_summary.json"))
@@ -250,6 +258,49 @@ def test_write_reports_and_export_have_versioned_auditable_files(tmp_path: Path)
     assert repeated.sha256 == exported.sha256
     assert issued_path.read_bytes() == issued_bytes
     assert file_store.resolve_file_token(exported.file_token) == issued_path
+
+    second_run = snapshot.runs[0].model_copy(
+        update={
+            "run_id": "run_2",
+            "summary": result.image_summary.model_copy(update={"run_id": "run_2"}),
+        }
+    )
+    reverse_snapshot = JobExportSnapshot(
+        job=snapshot.job,
+        images=snapshot.images,
+        runs=(second_run, snapshot.runs[0]),
+        queries=snapshot.queries,
+        box_revisions=snapshot.box_revisions,
+    )
+    forward_snapshot = JobExportSnapshot(
+        job=snapshot.job,
+        images=snapshot.images,
+        runs=(snapshot.runs[0], second_run),
+        queries=snapshot.queries,
+        box_revisions=snapshot.box_revisions,
+    )
+    # The source digest is intentionally part of the export. Freeze it for this
+    # order-only assertion so concurrent source edits cannot create a false delta.
+    stable_software_manifest = writer._software_manifest()
+    with patch.object(writer, "_software_manifest", return_value=stable_software_manifest):
+        reverse_export = writer.build_job_export(
+            "job_1",
+            run_ids={"run_2", "run_1"},
+            snapshot=reverse_snapshot,
+        )
+        forward_export = writer.build_job_export(
+            "job_1",
+            run_ids={"run_1", "run_2"},
+            snapshot=forward_snapshot,
+        )
+    assert forward_export.path == reverse_export.path
+    assert forward_export.sha256 == reverse_export.sha256
+    assert forward_export.path.read_bytes() == reverse_export.path.read_bytes()
+    with zipfile.ZipFile(forward_export.path) as archive:
+        ordered_job_summary = json.loads(archive.read("job_summary.json"))
+        ordered_audit = json.loads(archive.read("audit_summary.json"))
+    assert ordered_job_summary["selected_run_ids"] == ["run_1", "run_2"]
+    assert [run["run_id"] for run in ordered_audit["run_lineage"]] == ["run_1", "run_2"]
 
     changed_query = snapshot.queries[0].model_copy(
         update={

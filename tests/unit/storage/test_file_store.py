@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import threading
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
@@ -22,6 +23,15 @@ from app.storage import (
 )
 
 _TOKEN_SECRET = b"test-only-file-token-secret-material"
+
+
+def _symlink_or_skip(link: Path, target: Path) -> None:
+    try:
+        link.symlink_to(target)
+    except OSError as error:
+        if os.name == "nt" and getattr(error, "winerror", None) == 1314:
+            pytest.skip("Windows symlink privilege is unavailable")
+        raise
 
 
 @pytest.fixture
@@ -274,7 +284,7 @@ def test_build_zip_rejects_symlink_even_when_target_is_managed(
     target = paths.job_config("job_001")
     store.atomic_write_json(target, {})
     link = paths.job_dir("job_001") / "linked.json"
-    link.symlink_to(target)
+    _symlink_or_skip(link, target)
 
     with pytest.raises(StoragePathError, match="symbolic links"):
         store.build_zip("job_001", [link])
@@ -313,7 +323,7 @@ def test_file_token_cannot_be_redirected_through_a_symlink(
     token = store.create_file_token(first)
 
     first.unlink()
-    first.symlink_to(second)
+    _symlink_or_skip(first, second)
 
     with pytest.raises(FileTokenError, match="available"):
         store.resolve_file_token(token)

@@ -74,6 +74,23 @@ SQLite 同时是任务、运行、查询和 ROI revision 的事实源。`query_h
 
 ## 验证
 
+### 无真实模型时的工程闭环
+
+模型 checkpoint 尚未交付时，可以用独立的 deterministic fixture registry 走通真实的
+`Alembic → FastAPI → SQLite → 持久队列 → InferenceGateway/bundle snapshot → 分析制品 →
+数据问答 → 确定性 ZIP` 链路：
+
+```bash
+python scripts/mvp_fixture_smoke.py
+```
+
+该命令默认使用临时状态目录，不需要网络、私有权重或生产语料；传入
+`--state-dir <目录>` 可保留数据库与制品供排查。fixture 输出会显式带
+`simulated_fixture_output_not_scientific`，只证明工程集成，不代表分割精度或科学有效性。
+默认 `model_artifacts/registry.yaml` 不受影响，真实模型在 checkpoint 未到位时仍诚实保持
+`unavailable`。实现边界与接手说明见
+[MVP 后端交接记录](docs/MVP_BACKEND_HANDOFF.md)。
+
 完整本地门禁：
 
 ```bash

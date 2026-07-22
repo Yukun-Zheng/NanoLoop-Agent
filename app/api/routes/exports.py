@@ -36,7 +36,9 @@ async def export_analysis(
     box_revisions = repositories.boxes.list_by_job(job_id)
     all_runs = {run.run_id: run for run in repositories.runs.list_by_job(job_id)}
     queries = repositories.queries.list_by_job(job_id)
-    selected_ids = list(dict.fromkeys(run_ids)) if run_ids else list(all_runs)
+    # A run selection is a set by contract. Canonicalize it before building the
+    # snapshot so query-string order cannot change report rows or ZIP bytes.
+    selected_ids = sorted(set(run_ids)) if run_ids else sorted(all_runs)
     if not selected_ids:
         raise ExportNotReadyError(details={"job_id": job_id, "reason": "no_runs"})
     missing = [run_id for run_id in selected_ids if run_id not in all_runs]
@@ -61,6 +63,18 @@ async def export_analysis(
             runs=tuple(all_runs[run_id] for run_id in selected_ids),
             queries=tuple(queries),
             box_revisions=tuple(box_revisions),
+            image_storage_paths=tuple(
+                sorted(repositories.images.get_storage_path(image.image_id) for image in images)
+            ),
+            run_artifact_paths=tuple(
+                (run_id, artifact_path)
+                for run_id in selected_ids
+                for artifact_path in sorted(
+                    path
+                    for path in repositories.runs.get_artifact_paths(run_id).values()
+                    if path is not None
+                )
+            ),
         ),
     )
     prefix = request.app.state.settings.api_prefix.rstrip("/")

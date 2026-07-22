@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import ctypes
 import errno
-import fcntl
 import hashlib
+import importlib
 import os
 import shutil
 import sqlite3
@@ -12,12 +13,13 @@ import stat
 import tempfile
 import zipfile
 from collections.abc import Callable, Iterable
+from ctypes import wintypes
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from itertools import pairwise
 from pathlib import Path, PurePosixPath
-from typing import Literal
+from typing import Any, Literal
 
 from alembic.config import Config
 from alembic.script import ScriptDirectory
@@ -28,6 +30,7 @@ _MANIFEST_PATH = "manifest.json"
 _MANIFEST_LIMIT_BYTES = 16 * 1024 * 1024
 _MAX_MEMBER_COUNT = 1_000_000
 _DIGEST_PATTERN = r"^[0-9a-f]{64}$"
+_O_BINARY = getattr(os, "O_BINARY", 0)
 _CANONICAL_DATABASE_PATH = "data/nanoloop.db"
 _CANONICAL_TOKEN_PATH = "data/.file_token_secret"
 _CANONICAL_DIRECTORIES = (
@@ -38,6 +41,22 @@ _CANONICAL_DIRECTORIES = (
     "knowledge_base/sources",
     "knowledge_base/index",
 )
+
+_WINDOWS_LOCKFILE_FAIL_IMMEDIATELY = 0x00000001
+_WINDOWS_LOCKFILE_EXCLUSIVE_LOCK = 0x00000002
+_WINDOWS_LOCK_CONFLICT_ERRORS = frozenset({32, 33})
+
+
+class _WindowsOverlapped(ctypes.Structure):
+    """Minimal OVERLAPPED layout used to lock the first byte of the lock file."""
+
+    _fields_ = (
+        ("Internal", ctypes.c_size_t),
+        ("InternalHigh", ctypes.c_size_t),
+        ("Offset", wintypes.DWORD),
+        ("OffsetHigh", wintypes.DWORD),
+        ("hEvent", wintypes.HANDLE),
+    )
 
 
 class BackupError(RuntimeError):
@@ -170,7 +189,7 @@ class _FileState:
     mode: int
     size: int
     mtime_ns: int
-    ctime_ns: int
+    change_ns: int
 
     @classmethod
     def from_stat(cls, value: os.stat_result) -> _FileState:
@@ -180,7 +199,11 @@ class _FileState:
             mode=value.st_mode,
             size=value.st_size,
             mtime_ns=value.st_mtime_ns,
-            ctime_ns=value.st_ctime_ns,
+            change_ns=(
+                value.st_ctime_ns
+                if os.name == "posix"
+                else int(getattr(value, "st_birthtime_ns", 0))
+            ),
         )
 
 
@@ -213,8 +236,116 @@ class _ResolvedLayout:
         )
 
 
+def _acquire_descriptor_lock(descriptor: int, *, exclusive: bool) -> None:
+    """Acquire a non-blocking advisory lock using the native platform API."""
+
+    if os.name == "nt":
+        _acquire_windows_descriptor_lock(descriptor, exclusive=exclusive)
+        return
+    if os.name == "posix":
+        fcntl: Any = importlib.import_module("fcntl")
+        operation = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+        fcntl.flock(descriptor, operation | fcntl.LOCK_NB)
+        return
+    raise BackupPreconditionError(
+        f"state directory locks are unsupported on platform {os.name!r}"
+    )
+
+
+def _release_descriptor_lock(descriptor: int) -> None:
+    """Release a lock acquired by :func:`_acquire_descriptor_lock`."""
+
+    if os.name == "nt":
+        _release_windows_descriptor_lock(descriptor)
+        return
+    if os.name == "posix":
+        fcntl: Any = importlib.import_module("fcntl")
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        return
+    raise BackupPreconditionError(
+        f"state directory locks are unsupported on platform {os.name!r}"
+    )
+
+
+def _acquire_windows_descriptor_lock(descriptor: int, *, exclusive: bool) -> None:
+    kernel32, handle = _windows_lock_api(descriptor)
+    lock_file = kernel32.LockFileEx
+    lock_file.argtypes = (
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.POINTER(_WindowsOverlapped),
+    )
+    lock_file.restype = wintypes.BOOL
+    flags = _WINDOWS_LOCKFILE_FAIL_IMMEDIATELY
+    if exclusive:
+        flags |= _WINDOWS_LOCKFILE_EXCLUSIVE_LOCK
+    overlapped = _WindowsOverlapped()
+    ctypes.set_last_error(0)
+    if lock_file(handle, flags, 0, 1, 0, ctypes.byref(overlapped)):
+        return
+    error_code = ctypes.get_last_error()
+    error = OSError(error_code, ctypes.FormatError(error_code))
+    if error_code in _WINDOWS_LOCK_CONFLICT_ERRORS:
+        raise BlockingIOError(errno.EACCES, "state directory lock is held") from error
+    raise error
+
+
+def _release_windows_descriptor_lock(descriptor: int) -> None:
+    kernel32, handle = _windows_lock_api(descriptor)
+    unlock_file = kernel32.UnlockFileEx
+    unlock_file.argtypes = (
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.POINTER(_WindowsOverlapped),
+    )
+    unlock_file.restype = wintypes.BOOL
+    overlapped = _WindowsOverlapped()
+    ctypes.set_last_error(0)
+    if unlock_file(handle, 0, 1, 0, ctypes.byref(overlapped)):
+        return
+    error_code = ctypes.get_last_error()
+    raise OSError(error_code, ctypes.FormatError(error_code))
+
+
+def _windows_lock_api(descriptor: int) -> tuple[Any, wintypes.HANDLE]:
+    """Return kernel32 and the Windows HANDLE owned by one CRT descriptor."""
+
+    msvcrt: Any = importlib.import_module("msvcrt")
+    raw_handle = int(msvcrt.get_osfhandle(descriptor))
+    if raw_handle == -1:
+        raise OSError(errno.EBADF, "invalid state lock descriptor")
+    return ctypes.WinDLL("kernel32", use_last_error=True), wintypes.HANDLE(raw_handle)
+
+
+def _set_open_file_mode(descriptor: int, path: Path, mode: int) -> None:
+    """Apply Unix mode bits without requiring ``os.fchmod`` on Windows."""
+
+    if os.name == "posix":
+        platform_os: Any = os
+        platform_os.fchmod(descriptor, mode)
+        return
+    # Windows chmod controls the read-only attribute rather than the DACL. The
+    # file is already opened and proven to be the same non-symlink regular file.
+    os.chmod(path, mode)
+
+
+def _set_restored_file_time(path: Path, mtime_ns: int) -> None:
+    timestamps = (mtime_ns, mtime_ns)
+    if os.utime in os.supports_follow_symlinks:
+        os.utime(path, ns=timestamps, follow_symlinks=False)
+        return
+    # The path was created with O_EXCL inside a private staging directory, so
+    # Windows' lack of follow_symlinks support does not introduce a redirect.
+    os.utime(path, ns=timestamps)
+
+
 class StateDirectoryLock:
-    """Non-blocking POSIX advisory lock for every state reader or writer process."""
+    """Non-blocking platform advisory lock for every state reader or writer process."""
 
     filename = ".nanoloop-state.lock"
 
@@ -232,6 +363,7 @@ class StateDirectoryLock:
         flags = (
             os.O_RDWR
             | os.O_CREAT
+            | _O_BINARY
             | getattr(os, "O_CLOEXEC", 0)
             | getattr(os, "O_NOFOLLOW", 0)
         )
@@ -254,10 +386,9 @@ class StateDirectoryLock:
                 raise BackupPreconditionError(
                     "state lock path must be one non-symlink regular file"
                 )
-            os.fchmod(descriptor, 0o600)
-            operation = fcntl.LOCK_EX if self.exclusive else fcntl.LOCK_SH
+            _set_open_file_mode(descriptor, lock_path, 0o600)
             try:
-                fcntl.flock(descriptor, operation | fcntl.LOCK_NB)
+                _acquire_descriptor_lock(descriptor, exclusive=self.exclusive)
             except OSError as error:
                 if error.errno in {errno.EACCES, errno.EAGAIN}:
                     raise BackupPreconditionError(
@@ -277,7 +408,7 @@ class StateDirectoryLock:
             return
         self._descriptor = None
         try:
-            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            _release_descriptor_lock(descriptor)
         finally:
             os.close(descriptor)
 
@@ -691,7 +822,9 @@ def _walk_component(
         for entry in entries:
             path = Path(entry.path)
             try:
-                metadata = entry.stat(follow_symlinks=False)
+                # CPython's Windows DirEntry cache can report st_dev/st_ino as
+                # zero, which cannot be compared with the later opened HANDLE.
+                metadata = path.lstat()
             except OSError as error:
                 raise BackupValidationError(f"cannot inspect backup source {path}") from error
             if stat.S_ISLNK(metadata.st_mode):
@@ -798,6 +931,7 @@ def _write_source_member(
     descriptor = _open_regular_no_follow(source_file.source)
     digest = hashlib.sha256()
     size = 0
+    archive_mode = _archive_member_mode(source_file)
     try:
         opened_state = _FileState.from_stat(os.fstat(descriptor))
         if opened_state != source_file.state:
@@ -809,7 +943,7 @@ def _write_source_member(
             archive.open(
                 _zip_info(
                     source_file.archive_path,
-                    stat.S_IMODE(source_file.state.mode),
+                    archive_mode,
                 ),
                 mode="w",
                 force_zip64=True,
@@ -831,9 +965,19 @@ def _write_source_member(
         component=source_file.component,
         size=size,
         sha256=digest.hexdigest(),
-        mode=stat.S_IMODE(source_file.state.mode),
+        mode=archive_mode,
         mtime_ns=source_file.state.mtime_ns,
     )
+
+
+def _archive_member_mode(source_file: _SourceFile) -> int:
+    mode = stat.S_IMODE(source_file.state.mode)
+    if os.name == "nt" and source_file.archive_path == _CANONICAL_TOKEN_PATH:
+        # Windows' stat mode exposes only its read-only attribute, not the DACL,
+        # and reports a writable owner-only secret as 0666. Preserve the backup
+        # contract's least-privilege Unix mode for restoration onto POSIX hosts.
+        return 0o600
+    return mode
 
 
 def _verify_zip_archive(path: Path) -> BackupManifest:
@@ -910,7 +1054,13 @@ def _extract_member(
     _validate_zip_info(info)
     destination = staging_root.joinpath(*PurePosixPath(record.path).parts)
     destination.parent.mkdir(mode=0o750, parents=True, exist_ok=True)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | _O_BINARY
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
     descriptor = os.open(destination, flags, 0o600)
     digest = hashlib.sha256()
     observed_size = 0
@@ -929,12 +1079,12 @@ def _extract_member(
                         raise OSError("short write while restoring backup member")
                     view = view[written:]
         os.fsync(descriptor)
-        os.fchmod(descriptor, record.mode)
+        _set_open_file_mode(descriptor, destination, record.mode)
     finally:
         os.close(descriptor)
     if observed_size != record.size or digest.hexdigest() != record.sha256:
         raise BackupValidationError(f"restored member digest mismatch: {record.path}")
-    os.utime(destination, ns=(record.mtime_ns, record.mtime_ns), follow_symlinks=False)
+    _set_restored_file_time(destination, record.mtime_ns)
     return destination
 
 
@@ -1127,12 +1277,17 @@ def _validate_source_permissions(
     mode = stat.S_IMODE(path.lstat().st_mode)
     if mode & 0o7000:
         raise BackupPreconditionError(f"{label} cannot use special permission bits")
-    if secret and mode != 0o600:
+    if secret and os.name == "posix" and mode != 0o600:
         raise BackupPreconditionError(f"{label} must use mode 0600")
 
 
-def _open_regular_no_follow(path: Path) -> int:
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+def _open_regular_no_follow(path: Path, *, writable: bool = False) -> int:
+    flags = (
+        (os.O_RDWR if writable else os.O_RDONLY)
+        | _O_BINARY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
     try:
         descriptor = os.open(path, flags)
     except OSError as error:
@@ -1202,7 +1357,9 @@ def _same_inode(first: Path, second: Path) -> bool:
 
 
 def _fsync_file(path: Path) -> None:
-    descriptor = _open_regular_no_follow(path)
+    # Windows rejects fsync on a read-only CRT descriptor even when the HANDLE
+    # itself names a regular file. These are private writable publication temps.
+    descriptor = _open_regular_no_follow(path, writable=True)
     try:
         os.fsync(descriptor)
     finally:
@@ -1210,7 +1367,12 @@ def _fsync_file(path: Path) -> None:
 
 
 def _fsync_directory(path: Path) -> None:
-    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0)
+    flags = (
+        os.O_RDONLY
+        | _O_BINARY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
     try:
         descriptor = os.open(path, flags)
     except OSError:
