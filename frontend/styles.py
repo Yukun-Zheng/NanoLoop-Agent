@@ -127,6 +127,17 @@ p, li, label { line-height: 1.5; }
 .stButton > button[kind="primary"]:hover, .stDownloadButton > button[kind="primary"]:hover {
   background: var(--nl-teal-dark); border-color: var(--nl-teal-dark);
 }
+
+/* ===== 修复侧边栏按钮启用状态的文字对比度 =====
+   侧边栏 [data-testid="stSidebar"] * { color: #edf6f5 } 使所有文字变浅。
+   按钮禁用时背景深色，浅色文字可读；启用后背景变浅，浅色文字不可读。
+   以下规则恢复启用状态的深色文字，保留 primary 按钮白字。 */
+[data-testid="stSidebar"] .stButton > button:enabled:not([kind="primary"]),
+[data-testid="stSidebar"] [data-testid="stFormSubmitButton"] button:enabled,
+[data-testid="stSidebar"] .stDownloadButton > button:enabled {
+  color: #14232b !important;
+}
+
 [data-testid="stFileUploaderDropzone"] { background: #f9fbfb; border-color: #b9cacc; }
 
 @media (max-width: 760px) {
