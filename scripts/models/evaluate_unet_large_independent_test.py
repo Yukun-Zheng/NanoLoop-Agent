@@ -26,7 +26,7 @@ ADAPTER_PATH = "app.inference.adapters.unet:UNetAdapter"
 TORCHSCRIPT_SHA256 = "007d9a16bf31e5f960160c52eefa938b83feeac2e6c0d7dec9c8670a38626e05"
 CONFIG_SHA256 = "4e48c75d960faaa17868f0318da5526a6ba72211396ec106c2e57ce7eecc8856"
 MODEL_CARD_SHA256 = "bac2eacbc3569cc24e76aa90edf4a00ed1cfd7149180bf07113a4e905e2d7bfc"
-ADAPTER_SHA256 = "a40d7df346675946a280df9a1f0eeecc42bc8d6261f10e375f6f2ab6631f184a"
+ADAPTER_SHA256 = "6055db452f0a78a0352732d66ea3436f16a558cf19d1a6f022a78627136dfab6"
 TEST_FILENAMES = ("SrZr-3.tif", "BaCu-2.tif", "PrCu-3.tif")
 IMAGE_WIDTH = 2048
 IMAGE_HEIGHT = 1536
@@ -567,6 +567,8 @@ def _load_tolerance_policy(path: Path | None) -> tuple[dict[str, Any], Path, str
         field="tolerance-policy instance_matching.mask_iou_threshold",
         minimum=0.0,
     )
+    if matching_threshold == 0.0:
+        raise ValueError("tolerance-policy instance_matching.mask_iou_threshold must be positive")
     if matching_threshold > 1.0:
         raise ValueError("tolerance-policy instance_matching.mask_iou_threshold must be at most 1")
     tolerances = _mapping(
@@ -600,37 +602,51 @@ def _match_instances(
     *,
     iou_threshold: float,
 ) -> list[dict[str, float | int]]:
-    candidates: list[tuple[float, int, int, int, int]] = []
+    candidates: dict[int, list[tuple[float, int, int]]] = {}
     for prediction_position, prediction in enumerate(prediction_instances):
         for truth_position, truth in enumerate(truth_instances):
             iou = _mask_iou(prediction.mask, truth.mask)
             if iou >= iou_threshold:
-                candidates.append(
-                    (
-                        iou,
-                        prediction.instance_index,
-                        truth.instance_index,
-                        prediction_position,
-                        truth_position,
-                    )
+                candidates.setdefault(prediction_position, []).append(
+                    (iou, truth.instance_index, truth_position)
                 )
-    candidates.sort(key=lambda item: (-item[0], item[1], item[2]))
-    matched_prediction: set[int] = set()
-    matched_truth: set[int] = set()
-    matches: list[dict[str, float | int]] = []
-    for iou, prediction_index, truth_index, prediction_position, truth_position in candidates:
-        if prediction_position in matched_prediction or truth_position in matched_truth:
-            continue
-        matched_prediction.add(prediction_position)
-        matched_truth.add(truth_position)
-        matches.append(
-            {
-                "prediction_instance_index": prediction_index,
-                "ground_truth_instance_index": truth_index,
-                "iou": iou,
-            }
+    for options in candidates.values():
+        options.sort(key=lambda item: (-item[0], item[1]))
+
+    truth_to_prediction: dict[int, int] = {}
+    selected: dict[int, tuple[int, float]] = {}
+
+    def augment(prediction_position: int, visited_truth: set[int]) -> bool:
+        for iou, _truth_index, truth_position in candidates.get(prediction_position, []):
+            if truth_position in visited_truth:
+                continue
+            visited_truth.add(truth_position)
+            incumbent = truth_to_prediction.get(truth_position)
+            if incumbent is not None and not augment(incumbent, visited_truth):
+                continue
+            truth_to_prediction[truth_position] = prediction_position
+            selected[prediction_position] = (truth_position, iou)
+            return True
+        return False
+
+    prediction_order = sorted(
+        range(len(prediction_instances)),
+        key=lambda position: prediction_instances[position].instance_index,
+    )
+    for prediction_position in prediction_order:
+        augment(prediction_position, set())
+
+    return [
+        {
+            "prediction_instance_index": prediction_instances[prediction_position].instance_index,
+            "ground_truth_instance_index": truth_instances[truth_position].instance_index,
+            "iou": iou,
+        }
+        for prediction_position, (truth_position, iou) in sorted(
+            selected.items(),
+            key=lambda item: prediction_instances[item[0]].instance_index,
         )
-    return matches
+    ]
 
 
 def _relative_error(prediction: float | None, truth: float | None) -> float | None:
@@ -664,7 +680,16 @@ def compute_scientific_metrics(
     prediction_instances = _instances_for_evaluation(
         prediction, roi_mask=roi_mask, profile=profile
     )
-    truth_instances = _instances_for_evaluation(truth, roi_mask=roi_mask, profile=profile)
+    # The frozen prediction threshold/min-area policy is part of the model under
+    # evaluation. It must never erase human GT before recall and morphometry are
+    # measured. This matches the calibration contract, which always measures GT
+    # with min_area_px=0 and reports candidate-filtered retention separately.
+    truth_profile = profile.model_copy(update={"min_area_px": 0})
+    truth_instances = _instances_for_evaluation(
+        truth,
+        roi_mask=roi_mask,
+        profile=truth_profile,
+    )
     prediction_measurement = measure(
         run_id=f"evaluation-{sample_id}-prediction",
         instances=prediction_instances,
@@ -702,8 +727,10 @@ def compute_scientific_metrics(
     has_ground_truth_particles = truth_count > 0
     return {
         "instance_matching": {
-            "rule": "one_to_one_greedy_descending_mask_iou",
+            "rule": "one_to_one_maximum_cardinality_mask_iou",
             "iou_threshold": iou_threshold,
+            "prediction_min_area_px": profile.min_area_px,
+            "ground_truth_min_area_px": 0,
             "prediction_count": prediction_count,
             "ground_truth_count": truth_count,
             "matched_count": matched_count,
@@ -802,9 +829,18 @@ def _evaluate_tolerances(
     failures: list[dict[str, Any]] = []
     for metric, tolerance_field, operator in _TOLERANCE_FIELDS:
         observed = values[metric]
-        if observed is None:
-            continue
         tolerance = float(tolerances[tolerance_field])
+        if observed is None:
+            failures.append(
+                {
+                    "metric": metric,
+                    "operator": ">=" if operator == "gte" else "<=",
+                    "observed": None,
+                    "tolerance": tolerance,
+                    "reason_code": "METRIC_NOT_EVALUABLE",
+                }
+            )
+            continue
         passed = observed >= tolerance if operator == "gte" else observed <= tolerance
         if not passed:
             failures.append(
@@ -1137,7 +1173,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 1
     print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
-    return 0
+    return 0 if result["overall_status"] == "PASS" else 2
 
 
 if __name__ == "__main__":
