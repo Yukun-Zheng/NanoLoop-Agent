@@ -373,3 +373,24 @@
 - v4.0 主线：先完成至少一个真实模型、固定独立 SEM/GT、合法语料、固定 embedding、真实引用和
   无降级闭环；ASR、SAM2 深化、本地生成式 LLM、爬虫和前端重写暂缓。v3.0、RAG v1.0 中的旧
   时间表和旧人员分工仅保留为历史记录。
+
+## 2026-07-22 20:17 +08:00 — Large U-Net PR 解冲突、资产状态复核与 checkpoint 勘误
+
+- PR 修复：[PR #5](https://github.com/Yukun-Zheng/NanoLoop-Agent/pull/5) 原先错误地以较旧的
+  `main` 为 base，导致 GitHub 展示大量冲突；已改为项目约定的 `yukun`。当前 PR 保持开放、未由
+  集成人代为合并，head 为 `feat/a-real-unet-large-v1@8314e0a`，状态为 `MERGEABLE / CLEAN`。
+- 代码复核：保留郭境濠移除 Adapter 内 `min_area_px` 统计后处理的正确边界；修正公开 registry
+  在未收到权重时误标 `ready` 的问题。公开 Large U-Net 继续 `unavailable`，私有测试只在临时
+  registry 中注入 fixture SHA 与 `ready`，因此不会把“代码接缝可测”误报为“真实模型资产已交付”。
+- PR 验证：[GitHub Actions run 29915725707](https://github.com/Yukun-Zheng/NanoLoop-Agent/actions/runs/29915725707)
+  全绿，覆盖 Ruff/严格 Mypy/迁移、Python 3.11/3.12 测试和 CPU 容器冒烟；本地完整 `make check`
+  通过 1100 项 Pytest，另有 33 项 Large U-Net 资产/tiling/smoke 窄测试通过。
+- checkpoint 勘误：历史 v3.0 中“不提交 checkpoint / 权重”的意思是“不进入公开 Git”，不是
+  “不用交给项目”。checkpoint / 可部署 `.pt` 是 A 模块必交资产，必须通过私有服务器、受控网盘
+  或线下介质实际交给项目负责人，并附 SHA-256、config、model card、许可、split/GT、环境和真实
+  smoke 证据；项目负责人实际收到并复核前，公开 registry 不得标记 `ready`。当前 v4.0、郭境濠
+  handoff、文档索引和 PR 模板已统一这一口径。
+- 后端交接复核：黄睿健提供的本地 `http://127.0.0.1:8000`、`/api/v1`、`X-API-Key`、HTTPS 与
+  轮换建议已由 README、部署文档和 v4.0 覆盖，无需把旧 `MVP_BACKEND_HANDOFF.md` 升格为当前
+  权威文档。仓库可确认默认 `AUTH_MODE=auto` 且无 Key 时关闭鉴权；实际环境是否配置 Key 仍需部署
+  时检查，正式共享 Key 联调应显式使用 `AUTH_MODE=shared_key`。
