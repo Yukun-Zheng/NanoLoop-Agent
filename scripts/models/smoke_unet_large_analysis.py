@@ -23,11 +23,19 @@ from app.analysis.application import (
     InferenceGatewayProtocol,
 )
 from app.analysis.config import MorphometryConfig, PostprocessProfile
+from app.analysis.instance_artifacts import decode_binary_mask
+from app.analysis.morphometry import measure
+from app.analysis.postprocessing import NormalizedInstance
+from app.analysis.preprocessing import build_analysis_roi
+from app.analysis.quality import QualityInputs, evaluate
+from app.analysis.reporting import ReportWriter
 from app.contracts.analyses import (
     CreateAnalysisMetadata,
     CreateRunsRequest,
     ImageMetadataInput,
+    ImageSummaryDTO,
     InferenceOptions,
+    QualityReportDTO,
     RunConfiguration,
     ScaleInput,
 )
@@ -45,6 +53,7 @@ from app.inference.gateway import InferenceGateway
 from app.inference.model_sync import sync_model_registry
 from app.inference.registry import ModelRegistryService
 from app.storage import LocalFileStore, StoragePaths
+from scripts.smoke_test import validate_export_zip
 
 MODEL_ID = "unet-large-optimized-v1"
 MODEL_VERSION = "1"
@@ -54,7 +63,7 @@ TORCHSCRIPT_SHA256 = "007d9a16bf31e5f960160c52eefa938b83feeac2e6c0d7dec9c8670a38
 # the corresponding version-1 config/card/adapter is deliberately changed.
 CONFIG_SHA256 = "4e48c75d960faaa17868f0318da5526a6ba72211396ec106c2e57ce7eecc8856"
 MODEL_CARD_SHA256 = "bac2eacbc3569cc24e76aa90edf4a00ed1cfd7149180bf07113a4e905e2d7bfc"
-ADAPTER_SHA256 = "536ba2ef6f32c97b34b21cfefdfcd7b09f3680c93c63def78180f10dd021091c"
+ADAPTER_SHA256 = "a40d7df346675946a280df9a1f0eeecc42bc8d6261f10e375f6f2ab6631f184a"
 TEST_FILENAMES = ("SrZr-3.tif", "BaCu-2.tif", "PrCu-3.tif")
 IMAGE_WIDTH = 2048
 IMAGE_HEIGHT = 1536
@@ -411,6 +420,556 @@ def _validate_mask_bottom(path: Path) -> None:
         raise RuntimeError("canonical prediction mask bottom 180 px is not zero")
 
 
+def _run_context(*, sample_id: str, run_id: str) -> str:
+    return f"sample={sample_id}, run={run_id}"
+
+
+def _load_json_object(path: Path, *, artifact: str, context: str) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"{context}: invalid {artifact}: {path}") from error
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"{context}: {artifact} must be a JSON object")
+    return payload
+
+
+def _load_report_artifact(
+    path: Path,
+    model_type: type[Any],
+    *,
+    artifact: str,
+    context: str,
+) -> Any:
+    payload = _load_json_object(path, artifact=artifact, context=context)
+    file_schema_version = payload.pop("schema_version", None)
+    if file_schema_version != LocalFileStore.schema_version:
+        raise RuntimeError(
+            f"{context}: {artifact}.schema_version must be {LocalFileStore.schema_version}"
+        )
+    try:
+        return model_type.model_validate(payload)
+    except ValueError as error:
+        raise RuntimeError(f"{context}: {artifact} violates its DTO contract") from error
+
+
+def _read_foreground_mask(path: Path, *, artifact: str, context: str) -> np.ndarray:
+    try:
+        with Image.open(path) as image:
+            pixels = np.asarray(image)
+    except OSError as error:
+        raise RuntimeError(f"{context}: cannot read {artifact}: {path}") from error
+    if pixels.ndim == 2:
+        return np.asarray(pixels != 0, dtype=bool)
+    if pixels.ndim == 3:
+        return np.asarray(np.any(pixels != 0, axis=-1), dtype=bool)
+    raise RuntimeError(f"{context}: {artifact} has unsupported shape {pixels.shape}")
+
+
+def _required_int(value: object, *, field: str, artifact: str, context: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise RuntimeError(f"{context}: {artifact}.{field} must be an integer")
+    return value
+
+
+def _required_float(value: object, *, field: str, artifact: str, context: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise RuntimeError(f"{context}: {artifact}.{field} must be numeric")
+    result = float(value)
+    if not math.isfinite(result):
+        raise RuntimeError(f"{context}: {artifact}.{field} must be finite")
+    return result
+
+
+def _assert_close(
+    observed: float | None,
+    expected: float | None,
+    *,
+    field: str,
+    artifact: str,
+    context: str,
+) -> None:
+    if observed is None or expected is None:
+        if observed != expected:
+            raise RuntimeError(
+                f"{context}: {artifact}.{field} differs (expected={expected}, observed={observed})"
+            )
+        return
+    if not math.isclose(observed, expected, rel_tol=1e-12, abs_tol=1e-15):
+        raise RuntimeError(
+            f"{context}: {artifact}.{field} differs (expected={expected}, observed={observed})"
+        )
+
+
+def _csv_optional_float(
+    row: Mapping[str, str],
+    *,
+    field: str,
+    context: str,
+) -> float | None:
+    value = row.get(field)
+    if value is None:
+        raise RuntimeError(f"{context}: particles.csv is missing column {field}")
+    if value == "":
+        return None
+    try:
+        result = float(value)
+    except ValueError as error:
+        raise RuntimeError(f"{context}: particles.csv.{field} is not numeric") from error
+    if not math.isfinite(result):
+        raise RuntimeError(f"{context}: particles.csv.{field} must be finite")
+    return result
+
+
+def _csv_required_int(row: Mapping[str, str], *, field: str, context: str) -> int:
+    value = row.get(field)
+    if value is None:
+        raise RuntimeError(f"{context}: particles.csv is missing column {field}")
+    try:
+        return int(value)
+    except ValueError as error:
+        raise RuntimeError(f"{context}: particles.csv.{field} is not an integer") from error
+
+
+def _load_canonical_instances(
+    path: Path,
+    *,
+    width: int,
+    height: int,
+    roi_mask: np.ndarray,
+    context: str,
+) -> tuple[list[NormalizedInstance], np.ndarray]:
+    payload = _load_json_object(path, artifact="instances.json", context=context)
+    if payload.get("coordinate_space") != "original_px":
+        raise RuntimeError(f"{context}: instances.json.coordinate_space is not original_px")
+    if payload.get("width") != width or payload.get("height") != height:
+        raise RuntimeError(f"{context}: instances.json dimensions differ from the source image")
+    records = payload.get("instances")
+    if not isinstance(records, list):
+        raise RuntimeError(f"{context}: instances.json.instances must be a list")
+    if payload.get("instance_count") != len(records):
+        raise RuntimeError(f"{context}: instances.json.instance_count differs from instances")
+
+    union = np.zeros((height, width), dtype=bool)
+    instances: list[NormalizedInstance] = []
+    seen_indices: set[int] = set()
+    for position, value in enumerate(records):
+        record_context = f"{context}, instances.json.instances[{position}]"
+        if not isinstance(value, Mapping):
+            raise RuntimeError(f"{record_context} must be an object")
+        instance_index = _required_int(
+            value.get("instance_index"),
+            field="instance_index",
+            artifact="instances.json",
+            context=record_context,
+        )
+        if instance_index < 1 or instance_index in seen_indices:
+            raise RuntimeError(f"{record_context} has a duplicate or invalid instance_index")
+        seen_indices.add(instance_index)
+        raw_bbox = value.get("bbox_xyxy")
+        if not isinstance(raw_bbox, list) or len(raw_bbox) != 4:
+            raise RuntimeError(f"{record_context}.bbox_xyxy must contain four integers")
+        bbox = tuple(
+            _required_int(
+                coordinate,
+                field=f"bbox_xyxy[{coordinate_index}]",
+                artifact="instances.json",
+                context=record_context,
+            )
+            for coordinate_index, coordinate in enumerate(raw_bbox)
+        )
+        x1, y1, x2, y2 = bbox
+        if x1 < 0 or y1 < 0 or x2 > width or y2 > height or x1 >= x2 or y1 >= y2:
+            raise RuntimeError(f"{record_context}.bbox_xyxy is outside the source image")
+        raw_mask = value.get("mask")
+        if not isinstance(raw_mask, Mapping):
+            raise RuntimeError(f"{record_context}.mask must be an object")
+        if raw_mask.get("encoding") != "flat_rle_v1" or raw_mask.get("order") != "row_major":
+            raise RuntimeError(f"{record_context}.mask is not canonical flat_rle_v1 row-major data")
+        starts = raw_mask.get("starts")
+        lengths = raw_mask.get("lengths")
+        if (
+            not isinstance(starts, list)
+            or not isinstance(lengths, list)
+            or any(isinstance(item, bool) or not isinstance(item, int) for item in starts + lengths)
+        ):
+            raise RuntimeError(f"{record_context}.mask RLE contains non-integer values")
+        try:
+            mask = decode_binary_mask(starts=starts, lengths=lengths, width=width, height=height)
+        except ValueError as error:
+            raise RuntimeError(f"{record_context}.mask RLE is invalid") from error
+        if not np.any(mask):
+            raise RuntimeError(f"{record_context}.mask is empty")
+        if np.any(mask & ~roi_mask):
+            raise RuntimeError(f"{record_context}.mask escapes the effective ROI")
+        if np.any(union & mask):
+            raise RuntimeError(f"{record_context}.mask overlaps a prior canonical instance")
+        area_px = _required_int(
+            value.get("area_px"),
+            field="area_px",
+            artifact="instances.json",
+            context=record_context,
+        )
+        measured_area = int(np.count_nonzero(mask))
+        if area_px != measured_area:
+            raise RuntimeError(f"{record_context}.area_px differs from its decoded RLE mask")
+        ys, xs = np.nonzero(mask)
+        measured_bbox = (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1)
+        if bbox != measured_bbox:
+            raise RuntimeError(f"{record_context}.bbox_xyxy differs from its decoded RLE mask")
+        confidence_raw = value.get("confidence")
+        confidence = (
+            None
+            if confidence_raw is None
+            else _required_float(
+                confidence_raw,
+                field="confidence",
+                artifact="instances.json",
+                context=record_context,
+            )
+        )
+        touches = value.get("touches_roi_boundary")
+        if not isinstance(touches, bool):
+            raise RuntimeError(f"{record_context}.touches_roi_boundary must be boolean")
+        union |= mask
+        instances.append(
+            NormalizedInstance(
+                instance_index=instance_index,
+                mask=mask,
+                bbox=bbox,
+                area_px=area_px,
+                confidence=confidence,
+                touches_roi_boundary=touches,
+            )
+        )
+    return instances, union
+
+
+def _validate_particles_csv(
+    path: Path,
+    *,
+    instances: list[NormalizedInstance],
+    configuration: RunConfiguration,
+    roi_mask: np.ndarray,
+    run_id: str,
+    context: str,
+) -> Any:
+    try:
+        with path.open("r", encoding="utf-8-sig", newline="") as stream:
+            rows = list(csv.DictReader(stream))
+    except OSError as error:
+        raise RuntimeError(f"{context}: cannot read particles.csv: {path}") from error
+    if len(rows) != len(instances):
+        raise RuntimeError(f"{context}: particles.csv row count differs from instances.json")
+    postprocess = configuration.resolved_postprocess
+    morphometry = configuration.resolved_morphometry
+    if postprocess is None or morphometry is None:
+        raise RuntimeError(f"{context}: run configuration has no resolved scientific settings")
+    measured = measure(
+        run_id=run_id,
+        instances=instances,
+        roi_mask=roi_mask,
+        scale_nm_per_pixel=configuration.scale_nm_per_pixel,
+        config=morphometry,
+    )
+    # Particle IDs are intentionally random; compare the stable, canonical columns only.
+    by_index = {instance.instance_index: instance for instance in instances}
+    measured_by_index = {particle.instance_index: particle for particle in measured.particles}
+    seen_indices: set[int] = set()
+    for row_number, row in enumerate(rows, start=2):
+        row_context = f"{context}, particles.csv row {row_number}"
+        instance_index = _csv_required_int(row, field="instance_index", context=row_context)
+        if instance_index in seen_indices or instance_index not in by_index:
+            raise RuntimeError(f"{row_context}: instance_index does not match instances.json")
+        seen_indices.add(instance_index)
+        instance = by_index[instance_index]
+        csv_area = _csv_optional_float(row, field="area_px", context=row_context)
+        if csv_area is None or not math.isclose(
+            csv_area,
+            float(instance.area_px),
+            rel_tol=0.0,
+            abs_tol=0.0,
+        ):
+            raise RuntimeError(f"{row_context}: area_px differs from instances.json")
+        bbox = tuple(
+            _csv_required_int(row, field=field, context=row_context)
+            for field in ("bbox_x1", "bbox_y1", "bbox_x2", "bbox_y2")
+        )
+        if bbox != instance.bbox:
+            raise RuntimeError(f"{row_context}: bbox differs from instances.json")
+        particle = measured_by_index[instance_index]
+        if row.get("run_id") != particle.run_id:
+            raise RuntimeError(f"{row_context}: run_id differs from recomputed morphometry")
+        for field, expected in (
+            ("perimeter_px", particle.perimeter_px),
+            ("equivalent_diameter_px", particle.equivalent_diameter_px),
+            ("equivalent_diameter_nm", particle.equivalent_diameter_nm),
+            ("circularity", particle.circularity),
+            ("confidence", particle.confidence),
+        ):
+            _assert_close(
+                _csv_optional_float(row, field=field, context=row_context),
+                expected,
+                field=field,
+                artifact="particles.csv",
+                context=row_context,
+            )
+    if seen_indices != set(by_index):
+        raise RuntimeError(f"{context}: particles.csv does not cover every canonical instance")
+    return measured
+
+
+def _validate_summary_and_quality(
+    *,
+    summary_path: Path,
+    quality_path: Path,
+    measured: Any,
+    configuration: RunConfiguration,
+    instances: list[NormalizedInstance],
+    union: np.ndarray,
+    roi_mask: np.ndarray,
+    context: str,
+) -> None:
+    summary = _load_report_artifact(
+        summary_path,
+        ImageSummaryDTO,
+        artifact="image_summary.json",
+        context=context,
+    )
+    quality = _load_report_artifact(
+        quality_path,
+        QualityReportDTO,
+        artifact="quality_report.json",
+        context=context,
+    )
+    expected_summary = measured.image_summary
+    if summary.run_id != expected_summary.run_id:
+        raise RuntimeError(f"{context}: image_summary.json.run_id differs from particles.csv")
+    if summary.particle_count != expected_summary.particle_count:
+        raise RuntimeError(
+            f"{context}: image_summary.json.particle_count differs from particles.csv"
+        )
+    if summary.roi_area_px != expected_summary.roi_area_px:
+        raise RuntimeError(
+            f"{context}: image_summary.json.roi_area_px differs from the effective ROI"
+        )
+    for field in (
+        "number_density_px2",
+        "number_density_um2",
+        "mean_equivalent_diameter_px",
+        "mean_equivalent_diameter_nm",
+        "coverage_ratio",
+        "perimeter_density_px",
+        "perimeter_density_um",
+    ):
+        _assert_close(
+            getattr(summary, field),
+            getattr(expected_summary, field),
+            field=field,
+            artifact="image_summary.json",
+            context=context,
+        )
+    if summary.quality_status != quality.status:
+        raise RuntimeError(
+            f"{context}: image_summary.json.quality_status differs from quality_report.json.status"
+        )
+    quality_gate = configuration.resolved_quality_gate
+    postprocess = configuration.resolved_postprocess
+    if quality_gate is None or postprocess is None:
+        raise RuntimeError(f"{context}: run configuration has no resolved quality settings")
+    candidate_count = quality.metrics.get("candidate_instance_count")
+    boundary_count = quality.metrics.get("boundary_instance_count")
+    if (
+        isinstance(candidate_count, bool)
+        or not isinstance(candidate_count, int)
+        or isinstance(boundary_count, bool)
+        or not isinstance(boundary_count, int)
+    ):
+        raise RuntimeError(f"{context}: quality_report.json has invalid candidate diagnostics")
+    recomputed_quality = evaluate(
+        QualityInputs(
+            roi_area_px=int(np.count_nonzero(roi_mask)),
+            foreground_area_px=int(np.count_nonzero(union)),
+            instances=instances,
+            minimum_area_px=postprocess.min_area_px,
+            validation_warnings=[],
+            candidate_instance_count=candidate_count,
+            boundary_instance_count=boundary_count,
+        ),
+        quality_gate,
+    )
+    if set(quality.metrics) != set(recomputed_quality.metrics):
+        raise RuntimeError(f"{context}: quality_report.json metrics differ from canonical analysis")
+    for field, expected in recomputed_quality.metrics.items():
+        observed = quality.metrics[field]
+        if isinstance(expected, (int, float)) and not isinstance(expected, bool):
+            if isinstance(observed, bool) or not isinstance(observed, (int, float)):
+                raise RuntimeError(f"{context}: quality_report.json.{field} has an invalid type")
+            _assert_close(
+                float(observed),
+                float(expected),
+                field=field,
+                artifact="quality_report.json",
+                context=context,
+            )
+        elif observed != expected:
+            raise RuntimeError(
+                f"{context}: quality_report.json.{field} differs from canonical analysis"
+            )
+
+
+def _canonical_artifact_identities(
+    file_store: LocalFileStore,
+    artifacts: Mapping[str, str | None],
+    *,
+    output_root: Path,
+    context: str,
+) -> dict[str, dict[str, str]]:
+    resolved_root = output_root.resolve(strict=True)
+    identities: dict[str, dict[str, str]] = {}
+    for key in sorted(REQUIRED_ARTIFACT_KEYS):
+        raw_path = artifacts.get(key)
+        if raw_path is None:
+            raise RuntimeError(f"{context}: missing canonical artifact {key}")
+        path = Path(raw_path).resolve(strict=True)
+        try:
+            relative = path.relative_to(resolved_root)
+        except ValueError as error:
+            raise RuntimeError(
+                f"{context}: canonical artifact escaped smoke output: {key}"
+            ) from error
+        identities[key] = {
+            "path": relative.as_posix(),
+            "sha256": file_store.calculate_sha256(path),
+        }
+    return identities
+
+
+def _validate_canonical_chain(
+    *,
+    artifacts: Mapping[str, str | None],
+    configuration: RunConfiguration,
+    width: int,
+    height: int,
+    sample_id: str,
+    run_id: str,
+    output_root: Path,
+    file_store: LocalFileStore,
+) -> dict[str, dict[str, str]]:
+    context = _run_context(sample_id=sample_id, run_id=run_id)
+    pred_mask_path = artifacts.get("pred_mask_path")
+    instances_path = artifacts.get("instances_path")
+    particles_csv_path = artifacts.get("particles_csv_path")
+    summary_path = artifacts.get("image_summary_path")
+    quality_path = artifacts.get("quality_report_path")
+    if None in (pred_mask_path, instances_path, particles_csv_path, summary_path, quality_path):
+        raise RuntimeError(f"{context}: canonical artifact chain is incomplete")
+    roi_mask = build_analysis_roi(
+        width=width,
+        height=height,
+        analysis_roi=configuration.analysis_roi,
+        roi_mode=RoiMode.FULL_IMAGE,
+        boxes=[],
+    )
+    pred_mask = _read_foreground_mask(
+        Path(str(pred_mask_path)), artifact="pred_mask.png", context=context
+    )
+    if pred_mask.shape != roi_mask.shape:
+        raise RuntimeError(f"{context}: pred_mask.png dimensions differ from the effective ROI")
+    instances, union = _load_canonical_instances(
+        Path(str(instances_path)),
+        width=width,
+        height=height,
+        roi_mask=roi_mask,
+        context=context,
+    )
+    if not np.array_equal(union, pred_mask):
+        raise RuntimeError(f"{context}: instances.json union differs from pred_mask.png")
+    measured = _validate_particles_csv(
+        Path(str(particles_csv_path)),
+        instances=instances,
+        configuration=configuration,
+        roi_mask=roi_mask,
+        run_id=run_id,
+        context=context,
+    )
+    _validate_summary_and_quality(
+        summary_path=Path(str(summary_path)),
+        quality_path=Path(str(quality_path)),
+        measured=measured,
+        configuration=configuration,
+        instances=instances,
+        union=union,
+        roi_mask=roi_mask,
+        context=context,
+    )
+    return _canonical_artifact_identities(
+        file_store,
+        artifacts,
+        output_root=output_root,
+        context=context,
+    )
+
+
+def _validate_export_canonical_artifacts(
+    manifest: Mapping[str, Any],
+    *,
+    runs: Sequence[Mapping[str, Any]],
+    file_store: LocalFileStore,
+    job_id: str,
+) -> None:
+    records = manifest.get("files")
+    if not isinstance(records, list):
+        raise RuntimeError("export.zip: export manifest files must be a list")
+    manifest_hashes: dict[str, str] = {}
+    for record in records:
+        if not isinstance(record, Mapping):
+            raise RuntimeError("export.zip: export manifest contains a non-object file record")
+        path = record.get("path")
+        sha256 = record.get("sha256")
+        if not isinstance(path, str) or not isinstance(sha256, str) or path in manifest_hashes:
+            raise RuntimeError(
+                "export.zip: export manifest has an invalid or duplicate file record"
+            )
+        manifest_hashes[path] = sha256
+    job_dir = file_store.paths.job_dir(job_id).resolve(strict=True)
+    for run in runs:
+        context = _run_context(sample_id=str(run["sample_id"]), run_id=str(run["run_id"]))
+        identities = run.get("canonical_artifact_identities")
+        artifacts = run.get("artifacts")
+        if not isinstance(identities, Mapping) or not isinstance(artifacts, Mapping):
+            raise RuntimeError(f"{context}: canonical export evidence is incomplete")
+        if set(identities) != REQUIRED_ARTIFACT_KEYS:
+            raise RuntimeError(
+                f"{context}: canonical export evidence has an unexpected artifact mapping"
+            )
+        expected_paths: set[str] = set()
+        for key in REQUIRED_ARTIFACT_KEYS:
+            identity = identities.get(key)
+            raw_path = artifacts.get(key)
+            if not isinstance(identity, Mapping) or not isinstance(raw_path, str):
+                raise RuntimeError(f"{context}: canonical export evidence is invalid for {key}")
+            source = Path(raw_path).resolve(strict=True)
+            try:
+                member_path = source.relative_to(job_dir).as_posix()
+            except ValueError as error:
+                raise RuntimeError(
+                    f"{context}: canonical artifact is outside this export: {key}"
+                ) from error
+            if member_path in expected_paths:
+                raise RuntimeError(f"{context}: canonical artifacts map to the same export member")
+            expected_paths.add(member_path)
+            source_sha256 = file_store.calculate_sha256(source)
+            if identity.get("sha256") != source_sha256:
+                raise RuntimeError(
+                    f"{context}: canonical artifact SHA changed before export: {key}"
+                )
+            if manifest_hashes.get(member_path) != source_sha256:
+                raise RuntimeError(
+                    f"{context}: export.zip manifest SHA differs from canonical artifact {key}"
+                )
+
+
 def _sqlite_url(path: Path) -> str:
     return f"sqlite:///{path.resolve(strict=False).as_posix()}"
 
@@ -664,6 +1223,16 @@ def execute_analyses(
             perimeter_density_um=completed.summary.perimeter_density_um,
             valid_height=image.height - calibrated.bottom_crop_px,
         )
+        canonical_artifact_identities = _validate_canonical_chain(
+            artifacts=artifacts,
+            configuration=configuration,
+            width=image.width,
+            height=image.height,
+            sample_id=Path(filename).stem,
+            run_id=completed.run_id,
+            output_root=parameters.output_root,
+            file_store=file_store,
+        )
         current_identity = {
             "model_id": configuration.model_id,
             "version": configuration.model_version,
@@ -718,8 +1287,21 @@ def execute_analyses(
                     },
                 },
                 "artifacts": artifacts,
+                "canonical_artifact_identities": canonical_artifact_identities,
             }
         )
+    exported = ReportWriter(file_store).build_job_export(job.job.job_id, run_ids=set(run_ids))
+    export_manifest = validate_export_zip(
+        exported.path.read_bytes(),
+        expected_job_id=job.job.job_id,
+        expected_run_ids=set(run_ids),
+    )
+    _validate_export_canonical_artifacts(
+        export_manifest,
+        runs=run_results,
+        file_store=file_store,
+        job_id=job.job.job_id,
+    )
     return {
         "job_id": job.job.job_id,
         "test_scope": "three held-out fields of view; no test masks were read",
@@ -730,6 +1312,9 @@ def execute_analyses(
             "scale_expression": "100/184 nm_per_pixel",
         },
         "runs": run_results,
+        "export_path": str(exported.path),
+        "export_sha256": file_store.calculate_sha256(exported.path),
+        "export_manifest": export_manifest,
     }
 
 
