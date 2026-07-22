@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "package": "rag-acceptance-v1",
+  "owner": "徐皓彬 (D)",
+  "baseline_commit": "yukun@31405f4",
+  "updated_at": "2026-07-23",
+  "status": "candidate_scaffold",
+  "corpus_manifest": "corpus/corpus-manifest.csv",
+  "corpus_summary": {
+    "total_candidates": 17,
+    "candidate_fulltext": 5,
+    "accepted_fulltext": 0,
+    "note": "No corpus file is accepted until its SHA-256, page check, licence review and independent reviewer are recorded."
+  },
+  "embedding_manifest": "embedding/model-manifest.json",
+  "embedding_status": "candidate_unverified",
+  "real_acceptance_completed": false
+}

@@ -27,6 +27,17 @@ knowledge_base/sources/*
 model_artifacts/weights/*
 !model_artifacts/weights/.gitkeep
 
+# RAG acceptance private inputs and generated evidence
+rag-acceptance-v1/corpus/sources/*
+!rag-acceptance-v1/corpus/sources/.gitkeep
+rag-acceptance-v1/evaluation/*-results.*
+rag-acceptance-v1/evaluation/acceptance-summary.*
+rag-acceptance-v1/index-evidence/*.faiss
+rag-acceptance-v1/index-evidence/*.index
+rag-acceptance-v1/index-evidence/index-sha256.txt
+rag-acceptance-v1/index-evidence/database-membership-summary.json
+rag-acceptance-v1/run-record/*.json
+
 # Frontend/runtime caches
 .streamlit/secrets.toml
 node_modules/
