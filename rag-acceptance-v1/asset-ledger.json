@@ -1,0 +1,29 @@
+{
+  "package": "rag-acceptance-v1",
+  "owner": "徐皓彬 (D)",
+  "baseline_commit": "yukun@16456a3",
+  "updated_at": "2026-07-22",
+  "assets": [
+    {
+      "asset_id": "rag-embedding-bge-small-zh-v1.5",
+      "name": "BAAI/bge-small-zh-v1.5",
+      "type": "embedding",
+      "purpose": "固定本地 embedding 模型，用于真实 FAISS 向量检索",
+      "source": "HuggingFace Hub",
+      "license": "TODO: 填写模型许可证（如 MIT/Apache-2.0，以模型卡为准）",
+      "model_revision": "TODO: 填写精确 commit（不要用 main/latest）",
+      "dimension": 512,
+      "normalize": true,
+      "max_length": 512,
+      "pooling": "mean",
+      "external_path": "TODO: 受控存储路径或 Hub revision",
+      "local_dir": "TODO: 运行时挂载目录（EMBEDDING_MODEL）",
+      "tree_sha256": "TODO: 目录树 SHA-256",
+      "size_bytes": null,
+      "allowed_for_demo": false,
+      "verified": false,
+      "notes": "运行前必须 local-files-only 加载，禁止运行时下载"
+    }
+  ],
+  "corpus": []
+}
