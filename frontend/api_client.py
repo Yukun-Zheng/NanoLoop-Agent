@@ -6,6 +6,7 @@ import json
 import math
 import mimetypes
 import re
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from email.message import Message
@@ -94,6 +95,8 @@ class NanoLoopApiClient:
         upload_timeout: float | httpx.Timeout | None = None,
         client: httpx.Client | None = None,
         request_id_factory: Callable[[], str] | None = None,
+        max_retries: int = 2,
+        default_retry_delay: float = 3.0,
     ) -> None:
         parsed = urlsplit(base_url)
         if (
@@ -112,11 +115,13 @@ class NanoLoopApiClient:
         self._api_key = _normalize_api_key(api_key)
         self._timeout = timeout or httpx.Timeout(30.0, connect=5.0, pool=5.0)
         self._upload_timeout = upload_timeout or httpx.Timeout(
-            120.0,
+            300.0,
             connect=5.0,
             pool=5.0,
         )
         self._request_id_factory = request_id_factory or (lambda: f"web_{uuid4().hex}")
+        self._max_retries = max(0, max_retries)
+        self._default_retry_delay = max(0.0, default_retry_delay)
         self._owns_client = client is None
         self._client = client or httpx.Client(follow_redirects=False)
 
@@ -164,6 +169,8 @@ class NanoLoopApiClient:
         self,
         files: Sequence[UploadPart],
         metadata: Mapping[str, Any],
+        *,
+        timeout: float | httpx.Timeout | None = None,
     ) -> ApiResult[JsonObject]:
         if not files:
             raise ValueError("create_analysis requires at least one upload")
@@ -180,7 +187,7 @@ class NanoLoopApiClient:
             "/analyses",
             files=multipart,
             form={"metadata_json": _encode_json(metadata)},
-            timeout=self._upload_timeout,
+            timeout=timeout or self._upload_timeout,
         )
 
     def get_analysis(self, job_id: str) -> ApiResult[JsonObject]:
@@ -358,42 +365,56 @@ class NanoLoopApiClient:
         form: Mapping[str, str] | None = None,
         timeout: float | httpx.Timeout | None = None,
     ) -> ApiResult[JsonObject]:
-        outbound_request_id = self._new_request_id()
-        response = self._send(
-            method,
-            self._api_url(path),
-            request_id=outbound_request_id,
-            params=params,
-            json_body=json_body,
-            files=files,
-            form=form,
-            timeout=timeout or self._timeout,
-        )
-        if not response.is_success:
-            self._raise_response_error(response, outbound_request_id)
-        payload = _decode_json_response(response, outbound_request_id)
-        request_id = _envelope_request_id(payload, response, outbound_request_id)
-        status = payload.get("status")
-        if status == "error":
-            self._raise_envelope_error(response.status_code, payload, request_id)
-        if status not in {"success", "accepted"}:
-            raise _protocol_error(
-                response.status_code,
-                request_id,
-                "response envelope has an invalid status",
+        resolved_timeout = timeout or self._timeout
+        for attempt in range(self._max_retries + 1):
+            outbound_request_id = self._new_request_id()
+            response = self._send(
+                method,
+                self._api_url(path),
+                request_id=outbound_request_id,
+                params=params,
+                json_body=json_body,
+                files=files,
+                form=form,
+                timeout=resolved_timeout,
             )
-        data = payload.get("data")
-        if not isinstance(data, dict):
-            raise _protocol_error(
-                response.status_code,
-                request_id,
-                "response envelope data must be an object",
+            if (
+                response.status_code == 429
+                and attempt < self._max_retries
+            ):
+                delay = _parse_retry_after(
+                    response.headers.get("retry-after"),
+                    default=self._default_retry_delay,
+                )
+                time.sleep(delay)
+                continue
+            if not response.is_success:
+                self._raise_response_error(response, outbound_request_id)
+            payload = _decode_json_response(response, outbound_request_id)
+            request_id = _envelope_request_id(payload, response, outbound_request_id)
+            status = payload.get("status")
+            if status == "error":
+                self._raise_envelope_error(response.status_code, payload, request_id)
+            if status not in {"success", "accepted"}:
+                raise _protocol_error(
+                    response.status_code,
+                    request_id,
+                    "response envelope has an invalid status",
+                )
+            data = payload.get("data")
+            if not isinstance(data, dict):
+                raise _protocol_error(
+                    response.status_code,
+                    request_id,
+                    "response envelope data must be an object",
+                )
+            return ApiResult(
+                data=_json_object(data),
+                request_id=request_id,
+                status=cast(ApiStatus, status),
             )
-        return ApiResult(
-            data=_json_object(data),
-            request_id=request_id,
-            status=cast(ApiStatus, status),
-        )
+        # Unreachable: the final iteration always returns or raises.
+        raise RuntimeError("retry loop exhausted without resolution")  # pragma: no cover
 
     def _send(
         self,
@@ -533,6 +554,21 @@ def _normalize_api_key(value: str | None) -> str | None:
     if value != value.strip() or any(not 0x21 <= ord(character) <= 0x7E for character in value):
         raise ValueError("api_key must contain only visible ASCII characters without whitespace")
     return value
+
+
+def _parse_retry_after(header_value: str | None, *, default: float) -> float:
+    """Parse the ``Retry-After`` response header into a delay in seconds.
+
+    The header may be either a non-negative integer (seconds) or an HTTP-date.
+    For HTTP-date values or missing headers, fall back to *default*.
+    """
+    if header_value is None:
+        return default
+    try:
+        seconds = float(header_value)
+    except (ValueError, TypeError):
+        return default
+    return max(0.0, seconds)
 
 
 def _validate_uploads(parts: Sequence[UploadPart]) -> None:

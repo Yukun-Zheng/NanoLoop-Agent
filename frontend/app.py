@@ -1305,11 +1305,17 @@ def _render_comparison_run(
     if quality is None:
         st.info("后端未返回质量门禁报告；下方数值不能替代质量判断。")
     else:
+        quality_status = str(quality.get("status", "unknown"))
         st.markdown(
-            status_badge(str(quality.get("status", "unknown"))),
+            status_badge(quality_status),
             unsafe_allow_html=True,
         )
         st.caption(f"耗时：{run.get('runtime_ms') or '—'} ms")
+        if quality_status.upper() == "REVIEW_REQUIRED":
+            st.warning(
+                "该运行结果需要人工复核。请切换到单运行详情页，在“复核子运行”页签"
+                "提交修正参数或校正掩膜。"
+            )
         reasons = quality.get("reasons")
         if isinstance(reasons, list) and reasons:
             for reason in reasons[:3]:
