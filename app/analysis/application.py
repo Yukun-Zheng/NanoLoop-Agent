@@ -35,11 +35,13 @@ from app.analysis.validation import infer_analysis_roi, validate_image
 from app.analysis.visualization import write_review_visualizations
 from app.contracts.analyses import (
     AnalysisJobDTO,
+    AnalysisROI,
     CorrectedMaskUploadData,
     CreateAnalysisMetadata,
     CreateRunsRequest,
     ImageAssetDTO,
     InferenceOptions,
+    InvalidPixelRegion,
     JobDetailDTO,
     ReviewRunRequest,
     RunConfiguration,
@@ -561,7 +563,7 @@ class AnalysisApplicationService:
                         roi_mode=request.roi_mode,
                         box_revision=box_revision,
                         boxes=box_set.boxes if request.roi_mode == RoiMode.BOXES else [],
-                        analysis_roi=image.analysis_roi,
+                        analysis_roi=self._apply_model_invalid_bottom(image, model),
                         inference=inference,
                         preprocess_profile=model.preprocess_profile,
                         postprocess_profile=model.postprocess_profile,
@@ -1328,6 +1330,34 @@ class AnalysisApplicationService:
                 }
             )
         return model
+
+    @staticmethod
+    def _apply_model_invalid_bottom(image: ImageAssetDTO, model: ModelMetadata) -> AnalysisROI:
+        """Freeze a model-declared bottom information bar outside the scientific ROI."""
+
+        bottom_px = model.inference_invalid_bottom_px
+        if bottom_px == 0:
+            return image.analysis_roi.model_copy(deep=True)
+        if bottom_px >= image.height:
+            raise InvalidImageError(
+                details={
+                    "image_id": image.image_id,
+                    "reason": "model_invalid_bottom_exhausts_image",
+                    "height": image.height,
+                    "inference_invalid_bottom_px": bottom_px,
+                }
+            )
+        invalid_bottom = InvalidPixelRegion(
+            x1=0,
+            y1=image.height - bottom_px,
+            x2=image.width,
+            y2=image.height,
+            reason="model_bottom_information_bar",
+        )
+        return image.analysis_roi.model_copy(
+            update={"invalid_rects": [*image.analysis_roi.invalid_rects, invalid_bottom]},
+            deep=True,
+        )
 
     def _normalize_output(
         self,

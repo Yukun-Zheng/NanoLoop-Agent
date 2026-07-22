@@ -35,6 +35,16 @@ def test_validate_image_rejects_extension_content_mismatch(tmp_path: Path) -> No
     assert exc_info.value.details["reason"] == "extension_content_mismatch"
 
 
+def test_validate_image_accepts_jpeg_bytes_with_tif_filename(tmp_path: Path) -> None:
+    path = tmp_path / "YCu-1.tif"
+    Image.new("RGB", (2048, 1536), color=(12, 34, 56)).save(path, format="JPEG")
+
+    result = validate_image(path)
+
+    assert result.format == "JPEG"
+    assert (result.width, result.height, result.mode, result.bit_depth) == (2048, 1536, "RGB", 8)
+
+
 def test_validate_image_rejects_unsupported_extension_even_for_valid_bytes(
     tmp_path: Path,
 ) -> None:

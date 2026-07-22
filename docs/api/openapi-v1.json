@@ -2036,6 +2036,13 @@
             ],
             "title": "Health Error"
           },
+          "inference_invalid_bottom_px": {
+            "default": 0,
+            "maximum": 4096,
+            "minimum": 0,
+            "title": "Inference Invalid Bottom Px",
+            "type": "integer"
+          },
           "metric_context": {
             "additionalProperties": true,
             "title": "Metric Context",

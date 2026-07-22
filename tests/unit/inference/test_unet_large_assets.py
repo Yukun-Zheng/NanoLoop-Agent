@@ -1,0 +1,212 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import yaml
+
+
+def _artifact_root() -> Path:
+    return Path(__file__).parents[3] / "model_artifacts"
+
+
+def _registry_models() -> dict[str, dict[str, object]]:
+    payload = yaml.safe_load((_artifact_root() / "registry.yaml").read_text(encoding="utf-8"))
+    return {entry["metadata"]["model_id"]: entry for entry in payload["models"]}
+
+
+def test_large_unet_config_freezes_confirmed_inference_contract() -> None:
+    config = yaml.safe_load(
+        (_artifact_root() / "configs" / "unet-large-optimized-v1.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert config == {
+        "schema_version": "1",
+        "loader": "torchscript",
+        "input_channels": 1,
+        "input_size": [512, 512],
+        "patch_size": [512, 512],
+        "stride": [256, 256],
+        "tiling_padding": "reflect",
+        "overlap_fusion": "uniform",
+        "bottom_crop_px": 180,
+        "pixel_scale": 255.0,
+        "mean": [0.0],
+        "std": [1.0],
+        "output_activation": "logits",
+        "threshold_comparison": "gt",
+        "default_threshold": 0.50,
+        "calibrated_analysis": {
+            "threshold": 0.50,
+            "threshold_comparison": "gt",
+            "min_area_px": 512,
+            "min_area_nm2": 151.22873345935727,
+            "min_area_equivalent_diameter_nm": 13.87625323135418,
+            "watershed_enabled": False,
+            "fill_holes": True,
+            "exclude_border": True,
+            "connectivity": 2,
+            "perimeter_neighborhood": 8,
+            "bottom_crop_px": 180,
+            "scale_nm_per_pixel": 100 / 184,
+        },
+    }
+
+
+def test_large_registry_entry_remains_unavailable_with_180_px_invalid_bottom() -> None:
+    entry = _registry_models()["unet-large-optimized-v1"]
+    metadata = entry["metadata"]
+
+    assert metadata["status"] == "unavailable"
+    assert metadata["inference_invalid_bottom_px"] == 180
+    assert metadata["default_threshold"] == 0.50
+    assert metadata["metrics"]["min_area_gt_retention"] == 1.0
+    assert metadata["metric_context"] == {
+        "validation_scope": "field_of_view",
+        "validation_image_count": 6,
+        "threshold_comparison": "gt",
+        "calibrated_threshold": 0.50,
+        "calibrated_min_area_px": 512,
+        "calibrated_min_area_nm2": 151.22873345935727,
+        "calibrated_min_area_equivalent_diameter_nm": 13.87625323135418,
+        "watershed_enabled": False,
+        "fill_holes": True,
+        "exclude_border": True,
+        "connectivity": 2,
+        "perimeter_neighborhood": 8,
+        "bottom_crop_px": 180,
+        "scale_nm_per_pixel": 100 / 184,
+    }
+    assert entry["adapter_path"] == "app.inference.adapters.unet:UNetAdapter"
+    assert entry["weight_path"] == "weights/unet-large-optimized-v1.pt"
+    assert entry["weight_sha256"] is None
+    assert entry["config_path"] == "configs/unet-large-optimized-v1.yaml"
+    assert entry["model_card_path"] == "model_cards/unet-large-optimized-v1.md"
+
+
+def test_small_unet_asset_contract_is_unchanged() -> None:
+    config = yaml.safe_load(
+        (_artifact_root() / "configs" / "unet-small-balanced-v1.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    entry = _registry_models()["unet-small-balanced-v1"]
+
+    assert config == {
+        "schema_version": "1",
+        "loader": "torchscript",
+        "input_channels": 1,
+        "input_size": [256, 256],
+        "patch_size": [256, 256],
+        "stride": [128, 128],
+        "tiling_padding": "reflect",
+        "overlap_fusion": "uniform",
+        "bottom_crop_px": 130,
+        "pixel_scale": 255.0,
+        "mean": [0.0],
+        "std": [1.0],
+        "output_activation": "logits",
+        "threshold_comparison": "gt",
+        "default_threshold": 0.30,
+    }
+    assert entry["metadata"]["status"] == "unavailable"
+    assert entry["metadata"]["default_threshold"] == 0.30
+    assert entry["metadata"]["inference_invalid_bottom_px"] == 130
+
+
+def test_large_model_card_records_export_and_scientific_readiness_limits() -> None:
+    card = (_artifact_root() / "model_cards" / "unet-large-optimized-v1.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "5c5dbcae61f40f8eb1fef27c7b69592a727260898330abc546f7e7a6833035bd" in card
+    assert "007d9a16bf31e5f960160c52eefa938b83feeac2e6c0d7dec9c8670a38626e05" in card
+    assert "State-dict loading: strict" in card
+    assert "`56/56`" in card
+    assert "130 px" in card and "180 px" in card
+    assert "`probability > 0.50`" in card
+    assert all(
+        filename in card
+        for filename in (
+            "NdZn-2.tif",
+            "LaMn-3.tif",
+            "LaMn-1.tif",
+            "BaCo-3.tif",
+            "BaCu-1.tif",
+            "BaCr-3.tif",
+        )
+    )
+    assert "0.7086369503967919" in card
+    assert "0.6023708166699938" in card
+    assert "0.722377672920259" in card
+    assert "0.5654078342317297" in card
+    assert "material-domain sensitivity" in card
+    assert "substantial under-segmentation" in card
+    assert "substantial false positives" in card
+    assert "`min_area_px=512`" in card
+    assert "`151.22873345935727 nm²`" in card
+    assert "`13.87625323135418 nm`" in card
+    assert "GT retention at this candidate was `100%`" in card
+    assert "Macro Composite MAPE" in card
+    assert "`perimeter_neighborhood=8`" in card
+    assert "not sample-level independent" in card
+    assert "cannot be described as scientifically ready" in card
+
+
+def test_large_model_card_records_frozen_independent_test_evidence() -> None:
+    card = (_artifact_root() / "model_cards" / "unet-large-optimized-v1.md").read_text(
+        encoding="utf-8"
+    )
+
+    per_image_metrics = {
+        "SrZr-3": (
+            "0.9392828149931417",
+            "0.8855167317639607",
+            "0.923919927306771",
+            "0.9551652480856273",
+        ),
+        "BaCu-2": (
+            "0.724665460199322",
+            "0.5682159759529292",
+            "0.8119095758655747",
+            "0.654351788772072",
+        ),
+        "PrCu-3": (
+            "0.7520219431319688",
+            "0.602592280363702",
+            "0.7653143163046803",
+            "0.7391834247410116",
+        ),
+    }
+    for sample_id, metrics in per_image_metrics.items():
+        assert sample_id in card
+        assert all(metric in card for metric in metrics)
+
+    assert all(
+        metric in card
+        for metric in (
+            "0.8053234061081441",
+            "0.6854416626935307",
+            "0.8337146064923419",
+            "0.7829001538662369",
+            "0.7734422618347466",
+            "0.630579578741805",
+            "0.8211666401761994",
+            "0.7309604656803299",
+        )
+    )
+    assert "`TP=144660`" in card
+    assert "`FP=31504`" in card
+    assert "`FN=53244`" in card
+    assert "`TN=8101856`" in card
+    assert "top `2048 x 1356 px`" in card
+    assert "bottom 180 px (`y=1356..1536`)" in card
+    assert "`pred_mask.png`" in card and "`test_mask_human`" in card
+    assert "did not repeat inference" in card
+    assert "must not be used to tune" in card
+    assert "under-detection limitation" in card
+    assert "not three sample-level independent" in card
+
+    metadata = _registry_models()["unet-large-optimized-v1"]["metadata"]
+    assert metadata["status"] == "unavailable"

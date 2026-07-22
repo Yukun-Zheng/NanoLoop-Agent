@@ -8,19 +8,94 @@ models:
       version: "1"
       status: unavailable
       supports_box_prompt: false
-      default_threshold: 0.5
-      preprocess_profile: sem-rgb-unit-v1
+      default_threshold: 0.30
+      preprocess_profile: sem-gray-unit-crop-bottom-130-v1
       postprocess_profile: semantic-mask-v1
+      inference_invalid_bottom_px: 130
       applicable_materials: []
       metrics: {}
       metric_context: {}
-      notes: TorchScript U-Net integration seam; checkpoint is supplied separately.
+      notes: Small-particle TorchScript U-Net; external artifact remains unavailable until registered.
       health_error: Model checkpoint is not bundled with this repository.
     adapter_path: app.inference.adapters.unet:UNetAdapter
     weight_path: weights/unet-small-balanced-v1.pt
     weight_sha256: null
     config_path: configs/unet-small-balanced-v1.yaml
     model_card_path: model_cards/unet-small-balanced-v1.md
+    required_modules:
+      - torch
+
+  - metadata:
+      model_id: unet-large-optimized-v1
+      family: unet
+      variant: large_particle
+      quality_tier: balanced
+      version: "1"
+      status: unavailable
+      supports_box_prompt: false
+      default_threshold: 0.50
+      preprocess_profile: sem-gray-unit-crop-bottom-180-v1
+      postprocess_profile: semantic-mask-v1
+      inference_invalid_bottom_px: 180
+      applicable_materials: []
+      metrics:
+        threshold_macro_dice: 0.7086369503967919
+        threshold_macro_iou: 0.6023708166699938
+        threshold_micro_dice: 0.722377672920259
+        threshold_micro_iou: 0.5654078342317297
+        min_area_gt_retention: 1.0
+      metric_context:
+        validation_scope: field_of_view
+        validation_image_count: 6
+        threshold_comparison: gt
+        calibrated_threshold: 0.50
+        calibrated_min_area_px: 512
+        calibrated_min_area_nm2: 151.22873345935727
+        calibrated_min_area_equivalent_diameter_nm: 13.87625323135418
+        watershed_enabled: false
+        fill_holes: true
+        exclude_border: true
+        connectivity: 2
+        perimeter_neighborhood: 8
+        bottom_crop_px: 180
+        scale_nm_per_pixel: 0.5434782608695652
+      notes: Large-particle scientific parameters are calibrated; external asset remains unavailable.
+      health_error: External TorchScript asset is not provided with this repository.
+    adapter_path: app.inference.adapters.unet:UNetAdapter
+    weight_path: weights/unet-large-optimized-v1.pt
+    weight_sha256: null
+    config_path: configs/unet-large-optimized-v1.yaml
+    model_card_path: model_cards/unet-large-optimized-v1.md
+    required_modules:
+      - torch
+
+  - metadata:
+      model_id: unet-agglomerated-specialized-v1
+      family: unet
+      variant: dense_particle
+      quality_tier: balanced
+      version: "1"
+      status: unavailable
+      supports_box_prompt: false
+      default_threshold: null
+      preprocess_profile: sem-gray-p1-p99-crop-bottom-130-v1
+      postprocess_profile: semantic-agglomerate-mask-v1
+      inference_invalid_bottom_px: 130
+      applicable_materials: []
+      metrics: {}
+      metric_context:
+        calibration_status: pending
+        validation_scope: field_of_view
+        validation_image_count: 4
+        independent_test_image_count: 3
+        target_definition: whole_agglomerate
+      notes: Agglomerated U-Net A-stage seam; threshold and min-area calibration are pending.
+      health_error: External TorchScript and validation calibration evidence are not complete.
+    adapter_path: app.inference.adapters.unet:UNetAdapter
+    weight_path: weights/unet-agglomerated-specialized-v1.pt
+    weight_sha256: null
+    config_path: configs/unet-agglomerated-specialized-v1.yaml
+    model_card_path: model_cards/unet-agglomerated-specialized-v1.md
     required_modules:
       - torch
 

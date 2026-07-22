@@ -24,6 +24,7 @@ from app.analysis.instance_artifacts import decode_binary_mask
 from app.analysis.morphometry import MorphometryResult
 from app.analysis.morphometry import measure as measure_particles
 from app.analysis.postprocessing import NormalizedInstance
+from app.analysis.preprocessing import build_analysis_roi
 from app.contracts.analyses import (
     AnalysisJobDTO,
     AnalysisROI,
@@ -119,6 +120,40 @@ def _file_artifact_access_service(
         file_store=file_store,
         keyring=_FILE_TOKEN_V2_TEST_KEYRING,
     )
+
+
+def test_model_bottom_information_bar_is_frozen_outside_scientific_roi() -> None:
+    image = ImageAssetDTO(
+        image_id="img_bottom_bar",
+        job_id="job_1",
+        filename="sample.png",
+        sha256="a" * 64,
+        width=20,
+        height=200,
+        bit_depth=8,
+        sample_id="sample_1",
+        analysis_roi=AnalysisROI(valid_rect=PixelRect(x1=0, y1=0, x2=20, y2=200)),
+    )
+    model = FakeGateway().model.model_copy(update={"inference_invalid_bottom_px": 130})
+
+    analysis_roi = AnalysisApplicationService._apply_model_invalid_bottom(image, model)
+    roi_mask = build_analysis_roi(
+        width=image.width,
+        height=image.height,
+        analysis_roi=analysis_roi,
+        roi_mode=RoiMode.FULL_IMAGE,
+        boxes=[],
+    )
+
+    assert analysis_roi.invalid_rects[-1].model_dump() == {
+        "x1": 0,
+        "y1": 70,
+        "x2": 20,
+        "y2": 200,
+        "reason": "model_bottom_information_bar",
+    }
+    assert int(roi_mask.sum()) == 20 * 70
+    assert not roi_mask[70:].any()
 
 
 class FakeGateway:

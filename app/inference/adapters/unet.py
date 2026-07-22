@@ -11,6 +11,7 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
+from app.contracts.analyses import ROIBox
 from app.contracts.enums import RoiMode
 from app.contracts.inference import SegmentationOutput, SegmentationRequest
 from app.inference.adapters._utils import (
@@ -54,24 +55,30 @@ class UNetAdapter(BaseSegmentationAdapter):
         started = time.perf_counter()
         image = open_rgb(request.image_bytes or request.image_path)
         height, width = image.shape[:2]
+        inference_height = self._inference_height(height)
+        inference_image = self._prepare_inference_image(image[:inference_height])
+        probability = np.zeros((height, width), dtype=np.float32)
         if request.roi_mode == RoiMode.BOXES:
-            probability = np.zeros((height, width), dtype=np.float32)
+            top_probability = np.zeros((inference_height, width), dtype=np.float32)
             for crop in iter_box_crops(
-                image,
-                request.boxes,
+                inference_image,
+                self._clip_boxes_to_inference_height(request.boxes, inference_height),
                 context_px=request.roi_context_px,
             ):
                 paste_box_probability(
-                    probability,
+                    top_probability,
                     self._predict_probability(crop.image),
                     crop,
                 )
         else:
-            probability = self._predict_probability(image)
+            top_probability = self._predict_probability(inference_image)
+        probability[:inference_height] = top_probability
         threshold = request.threshold
         if threshold is None:
             threshold = self.metadata.default_threshold or 0.5
-        binary = remove_small_components(probability >= threshold, request.min_area_px)
+        binary = remove_small_components(
+            self._threshold_probability(probability, threshold), request.min_area_px
+        )
 
         destination = output_dir(request.run_dir, self.metadata.model_id)
         probability_path = destination / "probability.npy"
@@ -85,6 +92,11 @@ class UNetAdapter(BaseSegmentationAdapter):
             probability_path=probability_path,
             binary_mask_path=binary_path,
             model_scores={"foreground_probability_mean": float(probability.mean())},
+            warnings=(
+                ["model_bottom_information_bar_excluded"]
+                if inference_height != height
+                else []
+            ),
             runtime_ms=elapsed_ms,
         )
 
@@ -93,6 +105,19 @@ class UNetAdapter(BaseSegmentationAdapter):
         if tiling is None:
             return self._predict_tile_probability(image)
         patch_height, patch_width, stride_height, stride_width = tiling
+        padding_mode = str(self.config.get("tiling_padding", "none"))
+        original_height, original_width = image.shape[:2]
+        if padding_mode == "reflect":
+            image = self._reflect_pad_to_tiling(
+                image,
+                patch_height=patch_height,
+                patch_width=patch_width,
+                stride_height=stride_height,
+                stride_width=stride_width,
+                pad_to_grid=self._pad_to_tile_grid(),
+            )
+        elif padding_mode != "none":
+            raise ValueError("tiling_padding must be 'none' or 'reflect'")
         height, width = image.shape[:2]
         y_starts = self._tile_starts(height, patch_height, stride_height)
         x_starts = self._tile_starts(width, patch_width, stride_width)
@@ -103,7 +128,7 @@ class UNetAdapter(BaseSegmentationAdapter):
                 y2 = min(y1 + patch_height, height)
                 x2 = min(x1 + patch_width, width)
                 tile_probability = self._predict_tile_probability(image[y1:y2, x1:x2])
-                weight = self._blend_weight(tile_probability.shape)
+                weight = self._fusion_weight(tile_probability.shape)
                 probability_sum[y1:y2, x1:x2] += tile_probability * weight
                 weight_sum[y1:y2, x1:x2] += weight
         if np.any(weight_sum <= 0):  # pragma: no cover - guarded by positive blend weights
@@ -111,7 +136,98 @@ class UNetAdapter(BaseSegmentationAdapter):
         probability = probability_sum / weight_sum
         if not np.isfinite(probability).all():
             raise ValueError("sliding-window inference produced non-finite probabilities")
-        return np.asarray(probability, dtype=np.float32)
+        return np.asarray(probability[:original_height, :original_width], dtype=np.float32)
+
+    @staticmethod
+    def _reflect_pad_to_tiling(
+        image: np.ndarray,
+        *,
+        patch_height: int,
+        patch_width: int,
+        stride_height: int,
+        stride_width: int,
+        pad_to_grid: bool = True,
+    ) -> np.ndarray:
+        height, width = image.shape[:2]
+        target_height = max(height, patch_height)
+        target_width = max(width, patch_width)
+        padding_height = target_height - height
+        padding_width = target_width - width
+        if pad_to_grid:
+            padding_height += (
+                stride_height - (target_height - patch_height) % stride_height
+            ) % stride_height
+            padding_width += (
+                stride_width - (target_width - patch_width) % stride_width
+            ) % stride_width
+        if padding_height == 0 and padding_width == 0:
+            return image
+        if image.ndim not in {2, 3}:
+            raise ValueError("tiled image must be two- or three-dimensional")
+        if (padding_height and height < 2) or (padding_width and width < 2):
+            raise ValueError("reflect padding requires at least two pixels on a padded axis")
+        pad_width = [(0, padding_height), (0, padding_width)]
+        if image.ndim == 3:
+            pad_width.append((0, 0))
+        return np.pad(
+            image,
+            pad_width,
+            mode="reflect",
+        )
+
+    def _fusion_weight(self, shape: tuple[int, ...]) -> np.ndarray:
+        fusion = str(self.config.get("overlap_fusion", "hann"))
+        if fusion == "uniform":
+            if len(shape) != 2 or min(shape) <= 0:
+                raise ValueError("tile probability must be a non-empty two-dimensional array")
+            return np.ones(shape, dtype=np.float64)
+        if fusion == "hann":
+            return self._blend_weight(shape, minimum=self._fusion_weight_floor())
+        raise ValueError("overlap_fusion must be 'hann' or 'uniform'")
+
+    def _pad_to_tile_grid(self) -> bool:
+        value: object = self.config.get("pad_to_tile_grid", True)
+        if not isinstance(value, bool):
+            raise ValueError("pad_to_tile_grid must be a boolean")
+        return value
+
+    def _fusion_weight_floor(self) -> float:
+        value: object = self.config.get("fusion_weight_floor", np.finfo(np.float64).eps)
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            raise ValueError("fusion_weight_floor must be a number in (0, 1]")
+        minimum = float(value)
+        if not 0 < minimum <= 1:
+            raise ValueError("fusion_weight_floor must be a number in (0, 1]")
+        return minimum
+
+    def _inference_height(self, image_height: int) -> int:
+        bottom_crop_px: object = self.config.get("bottom_crop_px", 0)
+        if isinstance(bottom_crop_px, bool) or not isinstance(bottom_crop_px, int):
+            raise ValueError("bottom_crop_px must be a non-negative integer")
+        if bottom_crop_px < 0:
+            raise ValueError("bottom_crop_px must be a non-negative integer")
+        inference_height = image_height - bottom_crop_px
+        if inference_height <= 0:
+            raise ValueError("bottom_crop_px must leave at least one image row for inference")
+        return inference_height
+
+    @staticmethod
+    def _clip_boxes_to_inference_height(
+        boxes: list[ROIBox], inference_height: int
+    ) -> list[ROIBox]:
+        return [
+            box.model_copy(update={"y2": min(box.y2, inference_height)})
+            for box in boxes
+            if box.active and box.y1 < inference_height
+        ]
+
+    def _threshold_probability(self, probability: np.ndarray, threshold: float) -> np.ndarray:
+        comparison = str(self.config.get("threshold_comparison", "gte"))
+        if comparison == "gt":
+            return probability > threshold
+        if comparison == "gte":
+            return probability >= threshold
+        raise ValueError("threshold_comparison must be 'gt' or 'gte'")
 
     def _predict_tile_probability(self, image: np.ndarray) -> np.ndarray:
         height, width = image.shape[:2]
@@ -163,20 +279,52 @@ class UNetAdapter(BaseSegmentationAdapter):
         return starts
 
     @staticmethod
-    def _blend_weight(shape: tuple[int, ...]) -> np.ndarray:
+    def _blend_weight(shape: tuple[int, ...], *, minimum: float) -> np.ndarray:
         if len(shape) != 2 or min(shape) <= 0:
             raise ValueError("tile probability must be a non-empty two-dimensional array")
         height, width = shape
         y = np.hanning(height + 2)[1:-1] if height > 1 else np.ones(1)
         x = np.hanning(width + 2)[1:-1] if width > 1 else np.ones(1)
         weight = np.outer(y, x)
-        return np.maximum(weight, np.finfo(np.float64).eps)
+        return np.maximum(weight, minimum)
+
+    def _prepare_inference_image(self, image: np.ndarray) -> np.ndarray:
+        normalization = str(self.config.get("normalization", "fixed"))
+        if normalization == "fixed":
+            return image
+        if normalization != "percentile":
+            raise ValueError("normalization must be 'fixed' or 'percentile'")
+        if int(self.config.get("input_channels", 3)) != 1:
+            raise ValueError("percentile normalization requires input_channels=1")
+        lower: object = self.config.get("lower_percentile", 1.0)
+        upper: object = self.config.get("upper_percentile", 99.0)
+        if (
+            isinstance(lower, bool)
+            or isinstance(upper, bool)
+            or not isinstance(lower, int | float)
+            or not isinstance(upper, int | float)
+            or not 0 <= float(lower) < float(upper) <= 100
+        ):
+            raise ValueError("percentile bounds must satisfy 0 <= lower < upper <= 100")
+        gray = np.asarray(Image.fromarray(image).convert("L"), dtype=np.float32)
+        low, high = np.percentile(gray, [float(lower), float(upper)])
+        if not np.isfinite(low) or not np.isfinite(high):
+            raise ValueError("percentile normalization produced non-finite bounds")
+        if high <= low:
+            return np.zeros(gray.shape, dtype=np.float32)
+        normalized = np.clip((gray - low) / (high - low), 0.0, 1.0)
+        return np.asarray(normalized, dtype=np.float32)
 
     def _preprocess(self, image: np.ndarray) -> np.ndarray:
         channels = int(self.config.get("input_channels", 3))
         prepared: np.ndarray
         if channels == 1:
-            prepared = np.asarray(Image.fromarray(image).convert("L"), dtype=np.float32)[..., None]
+            if image.ndim == 2:
+                prepared = np.asarray(image, dtype=np.float32)[..., None]
+            else:
+                prepared = np.asarray(Image.fromarray(image).convert("L"), dtype=np.float32)[
+                    ..., None
+                ]
         elif channels == 3:
             prepared = image.astype(np.float32)
         else:
@@ -192,10 +340,18 @@ class UNetAdapter(BaseSegmentationAdapter):
             )
             if channels == 1:
                 prepared = prepared[..., None]
-        prepared /= float(self.config.get("pixel_scale", 255.0))
-        mean = np.asarray(self.config.get("mean", [0.0] * channels), dtype=np.float32)
-        std = np.asarray(self.config.get("std", [1.0] * channels), dtype=np.float32)
-        prepared = (prepared - mean) / std
+        normalization = str(self.config.get("normalization", "fixed"))
+        if normalization == "percentile":
+            if not np.isfinite(prepared).all() or np.any((prepared < 0) | (prepared > 1)):
+                raise ValueError("percentile-normalized input must be finite and in [0, 1]")
+        elif normalization == "fixed":
+            pixel_scale = np.float32(self.config.get("pixel_scale", 255.0))
+            prepared = np.asarray(prepared / pixel_scale, dtype=np.float32)
+            mean = np.asarray(self.config.get("mean", [0.0] * channels), dtype=np.float32)
+            std = np.asarray(self.config.get("std", [1.0] * channels), dtype=np.float32)
+            prepared = (prepared - mean) / std
+        else:
+            raise ValueError("normalization must be 'fixed' or 'percentile'")
         return np.ascontiguousarray(prepared.transpose(2, 0, 1)[None, ...], dtype=np.float32)
 
     def _to_probability(self, raw: Any) -> np.ndarray:
