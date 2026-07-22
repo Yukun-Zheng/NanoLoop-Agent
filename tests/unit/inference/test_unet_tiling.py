@@ -600,6 +600,51 @@ def test_unet_default_threshold_is_exact_and_missing_default_fails_closed(
         assert bool((np.asarray(mask) > 0).all()) is expected_foreground
 
 
+def test_unet_adapter_emits_raw_semantic_mask_without_minimum_area_filtering(
+    tmp_path: Path,
+) -> None:
+    metadata = ModelMetadata(
+        model_id="unet-raw-semantic-mask-contract",
+        family=ModelFamily.UNET,
+        variant=ModelVariant.GENERAL,
+        quality_tier=QualityTier.BALANCED,
+        version="1",
+        status=ModelStatus.READY,
+        supports_box_prompt=False,
+        default_threshold=0.5,
+        preprocess_profile="fixture",
+        postprocess_profile="fixture",
+    )
+    adapter = UNetAdapter(
+        metadata=metadata,
+        weight_path=tmp_path / "external.pt",
+        weight_bytes=b"test-only",
+        config={"bottom_crop_px": 0, "threshold_comparison": "gt"},
+    )
+    adapter._loaded = True
+    adapter._predict_probability = lambda image: np.asarray(
+        [[0.9, 0.1], [0.1, 0.1]], dtype=np.float32
+    )
+    image_bytes = BytesIO()
+    Image.new("L", (2, 2), color=0).save(image_bytes, format="PNG")
+    request = SegmentationRequest(
+        image_id="image-1",
+        image_path=tmp_path / "pinned-image-bytes",
+        image_bytes=image_bytes.getvalue(),
+        run_dir=tmp_path / "run",
+        roi_mode=RoiMode.FULL_IMAGE,
+        min_area_px=512,
+    )
+
+    output = adapter.predict(request)
+
+    with Image.open(output.binary_mask_path) as mask:
+        assert np.array_equal(
+            np.asarray(mask) > 0,
+            np.asarray([[True, False], [False, False]]),
+        )
+
+
 @pytest.mark.parametrize(
     ("config", "message"),
     [

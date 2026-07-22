@@ -24,6 +24,7 @@ CJK_FONT = "Arial Unicode MS"
 
 _PAGE_BREAK_HEADINGS = {
     "1. 阅读方式与今晚必须产出的决策",
+    "12.2 当前主线操作（2026-07-23 起）",
 }
 
 
@@ -39,7 +40,7 @@ def _header_paragraph(paragraph: Paragraph) -> None:
     left.font.size = Pt(8.5)
     left.font.color.rgb = base._rgb(base.MUTED)
     base._set_fonts(left, cjk=CJK_FONT)
-    right = paragraph.add_run("\tv1.0 · 2026-07-18")
+    right = paragraph.add_run("\tv1.0 · updated 2026-07-23")
     right.font.size = Pt(8.5)
     right.font.color.rgb = base._rgb(base.MUTED)
     base._set_fonts(right, cjk=CJK_FONT)
@@ -60,7 +61,7 @@ def _style_guide_paragraphs(doc: DocumentObject) -> None:
         if text == "RAG 与检索功能开发指南 v1.0":
             paragraph.style = doc.styles["NanoLoop Cover Subtitle"]
             paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
-        elif text == "基于现有 yukun 分支的架构决策、真实资产接入、质量评测与团队任务书":
+        elif text == "基于 main 主线的架构决策、真实资产接入、质量评测与团队任务书":
             paragraph.style = doc.styles["NanoLoop Cover Kicker"]
             paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
         if paragraph.style.name == "Source Code":
@@ -99,7 +100,7 @@ def _set_metadata(doc: DocumentObject, timestamp: datetime) -> None:
     base._set_metadata(doc, timestamp)
     props = doc.core_properties
     props.title = "NanoLoop Agent RAG 与检索功能开发指南 v1.0"
-    props.subject = "基于现有 yukun 分支的真实资产接入、检索评测与团队任务书"
+    props.subject = "基于 main 主线的真实资产接入、检索评测与团队任务书"
     props.keywords = "NanoLoop Agent, RAG, retrieval, embedding, FAISS, FTS5, handoff"
     props.comments = "Generated from docs/RAG_RETRIEVAL_DEVELOPMENT_GUIDE.md."
 

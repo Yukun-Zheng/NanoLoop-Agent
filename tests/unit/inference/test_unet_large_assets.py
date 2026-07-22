@@ -1,8 +1,16 @@
 from __future__ import annotations
 
+import hashlib
+import shutil
+from copy import deepcopy
 from pathlib import Path
 
+import pytest
 import yaml
+
+import app.inference.registry as registry_module
+from app.contracts.enums import ModelStatus
+from app.inference.registry import ModelRegistryService
 
 
 def _artifact_root() -> Path:
@@ -55,7 +63,7 @@ def test_large_unet_config_freezes_confirmed_inference_contract() -> None:
     }
 
 
-def test_large_registry_entry_remains_unavailable_with_180_px_invalid_bottom() -> None:
+def test_large_public_registry_remains_unavailable_with_180_px_invalid_bottom() -> None:
     entry = _registry_models()["unet-large-optimized-v1"]
     metadata = entry["metadata"]
 
@@ -91,6 +99,86 @@ def test_large_registry_entry_remains_unavailable_with_180_px_invalid_bottom() -
     assert entry["weight_sha256"] is None
     assert entry["config_path"] == "configs/unet-large-optimized-v1.yaml"
     assert entry["model_card_path"] == "model_cards/unet-large-optimized-v1.md"
+    assert metadata["health_error"] == (
+        "External TorchScript, asset ledger, and machine-readable evidence were not delivered."
+    )
+
+
+def test_large_external_bundle_resolves_relative_assets_and_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _artifact_root()
+    bundle = tmp_path / "external-model-artifacts"
+    (bundle / "weights").mkdir(parents=True)
+    (bundle / "configs").mkdir()
+    (bundle / "model_cards").mkdir()
+    shutil.copy2(
+        source / "configs" / "unet-large-optimized-v1.yaml",
+        bundle / "configs" / "unet-large-optimized-v1.yaml",
+    )
+    shutil.copy2(
+        source / "model_cards" / "unet-large-optimized-v1.md",
+        bundle / "model_cards" / "unet-large-optimized-v1.md",
+    )
+    weight_path = bundle / "weights" / "unet-large-optimized-v1.pt"
+    weight_bytes = b"external-large-torchscript-fixture"
+    weight_path.write_bytes(weight_bytes)
+
+    entry = deepcopy(_registry_models()["unet-large-optimized-v1"])
+    metadata = entry["metadata"]
+    assert isinstance(metadata, dict)
+    metadata["status"] = "ready"
+    metadata.pop("health_error", None)
+    entry["weight_sha256"] = hashlib.sha256(weight_bytes).hexdigest()
+    registry_path = bundle / "registry.yaml"
+    registry_path.write_text(
+        yaml.safe_dump({"schema_version": "1", "models": [entry]}, sort_keys=False),
+        encoding="utf-8",
+    )
+
+    def load_registry() -> ModelRegistryService:
+        return ModelRegistryService(registry_path, snapshot_root=bundle / "snapshots")
+
+    original_find_spec = registry_module.importlib.util.find_spec
+    monkeypatch.setattr(
+        registry_module.importlib.util,
+        "find_spec",
+        lambda name: object() if name == "torch" else original_find_spec(name),
+    )
+    verified = load_registry()
+    registration = verified.get_registration("unet-large-optimized-v1")
+    metadata = verified.get_metadata("unet-large-optimized-v1")
+    assert registration.weight_path == weight_path
+    assert registration.config_path == bundle / "configs" / "unet-large-optimized-v1.yaml"
+    assert registration.model_card_path == bundle / "model_cards" / "unet-large-optimized-v1.md"
+    assert registration.weight_sha256 == hashlib.sha256(weight_bytes).hexdigest()
+    assert metadata.status == ModelStatus.READY
+    assert metadata.health_error is None
+
+    monkeypatch.setattr(
+        registry_module.importlib.util,
+        "find_spec",
+        lambda name: None if name == "torch" else original_find_spec(name),
+    )
+    missing_torch = load_registry().get_metadata("unet-large-optimized-v1")
+    assert missing_torch.status == ModelStatus.UNAVAILABLE
+    assert "optional dependency is missing: torch" in (missing_torch.health_error or "")
+
+    monkeypatch.setattr(
+        registry_module.importlib.util,
+        "find_spec",
+        lambda name: object() if name == "torch" else original_find_spec(name),
+    )
+    weight_path.unlink()
+    missing = load_registry().get_metadata("unet-large-optimized-v1")
+    assert missing.status == ModelStatus.UNAVAILABLE
+    assert "weight file is missing" in (missing.health_error or "")
+
+    weight_path.write_bytes(b"tampered-external-large-torchscript-fixture")
+    mismatched = load_registry().get_metadata("unet-large-optimized-v1")
+    assert mismatched.status == ModelStatus.UNAVAILABLE
+    assert "weight sha256 mismatch" in (mismatched.health_error or "")
 
 
 def test_small_unet_asset_contract_is_unchanged() -> None:

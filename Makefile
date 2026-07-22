@@ -9,18 +9,20 @@ IDENTITY_ARGS ?=
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install lint typecheck test frontend-check openapi migration-check check serve frontend db-upgrade \
-	handoff-doc backup-create backup-verify backup-restore backup-drill docker-build compose-config compose-up \
+.PHONY: help install lint typecheck test frontend-check openapi migration-check check mvp-smoke serve frontend db-upgrade \
+	handoff-doc handoff-doc-v3 backup-create backup-verify backup-restore backup-drill docker-build compose-config compose-up \
 	compose-down compose-logs identity-manage rag-guide-doc
 
 help:
 	@echo "NanoLoop Agent development commands"
 	@echo "  make install          Create .venv and install base + dev dependencies"
 	@echo "  make check            Run Ruff, Mypy, Pytest, and fresh Alembic checks"
+	@echo "  make mvp-smoke        Run the offline engineering-fixture backend loop"
 	@echo "  make serve            Run the local API with reload"
 	@echo "  make frontend         Run the Streamlit workbench"
 	@echo "  make db-upgrade       Upgrade the configured database to Alembic head"
-	@echo "  make handoff-doc      Regenerate the v3 developer handoff DOCX"
+	@echo "  make handoff-doc      Regenerate the current v4.0 developer handoff DOCX"
+	@echo "  make handoff-doc-v3   Regenerate the archived v3 developer handoff DOCX"
 	@echo "  make rag-guide-doc    Regenerate the RAG development guide DOCX"
 	@echo "  make backup-create    Create BACKUP_ARCHIVE (offline writers only)"
 	@echo "  make backup-verify    Verify BACKUP_ARCHIVE and optional BACKUP_CHECKSUM"
@@ -59,6 +61,9 @@ migration-check:
 check:
 	PYTHON_BIN=$(PYTHON_BIN) ./scripts/verify.sh
 
+mvp-smoke:
+	$(PYTHON_BIN) scripts/mvp_fixture_smoke.py
+
 serve:
 	$(PYTHON_BIN) -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload --no-proxy-headers
 
@@ -69,6 +74,9 @@ db-upgrade:
 	$(PYTHON_BIN) -m alembic -c alembic.ini upgrade head
 
 handoff-doc:
+	$(PYTHON_BIN) -m scripts.build_v4_handoff_doc
+
+handoff-doc-v3:
 	$(PYTHON_BIN) scripts/build_v3_handoff_doc.py
 
 rag-guide-doc:

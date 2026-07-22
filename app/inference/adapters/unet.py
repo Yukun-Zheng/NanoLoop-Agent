@@ -20,7 +20,6 @@ from app.inference.adapters._utils import (
     open_rgb,
     output_dir,
     paste_box_probability,
-    remove_small_components,
     save_binary_mask,
 )
 from app.inference.adapters.base import BaseSegmentationAdapter
@@ -91,15 +90,11 @@ class UNetAdapter(BaseSegmentationAdapter):
             thresholded = np.asarray(
                 apply_box_roi(thresholded, effective_boxes), dtype=bool
             )
-        binary = remove_small_components(
-            thresholded, request.min_area_px
-        )
-
         destination = output_dir(request.run_dir, self.metadata.model_id)
         probability_path = destination / "probability.npy"
         binary_path = destination / "binary_mask.png"
         np.save(probability_path, probability.astype(np.float32), allow_pickle=False)
-        save_binary_mask(binary_path, binary)
+        save_binary_mask(binary_path, thresholded)
         elapsed_ms = max(0, round((time.perf_counter() - started) * 1000))
         return SegmentationOutput(
             width=width,

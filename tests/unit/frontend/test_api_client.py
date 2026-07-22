@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 from collections.abc import Callable, Iterator
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -167,7 +168,7 @@ def test_api_key_is_sent_for_json_multipart_and_artifact_downloads() -> None:
     http_client = httpx.Client(transport=httpx.MockTransport(handler))
     api_key = "client-test-key_123"
     client = NanoLoopApiClient(
-        "http://backend.test",
+        "https://backend.test",
         api_key=api_key,
         client=http_client,
         request_id_factory=lambda: "web_authenticated",
@@ -181,7 +182,7 @@ def test_api_key_is_sent_for_json_multipart_and_artifact_downloads() -> None:
         client.download_artifact("/api/v1/files/signed.token")
         client._send(
             "GET",
-            "http://backend.test/api/v1/health",
+            "https://backend.test/api/v1/health",
             request_id="web_internal_header",
             headers={"x-api-key": "must-not-win"},
             timeout=1.0,
@@ -212,9 +213,43 @@ def test_absent_api_key_does_not_add_authentication_header(api_key: str | None) 
     assert "x-api-key" not in requests[0].headers
 
 
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+        "http://127.42.0.9:8000",
+        "http://[::1]:8000",
+    ],
+)
+def test_api_key_allows_plain_http_only_for_loopback_hosts(base_url: str) -> None:
+    client = NanoLoopApiClient(base_url, api_key="loopback-development-key")
+    client.close()
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "http://10.0.0.5:8000",
+        "http://backend.test",
+        "http://0.0.0.0:8000",
+    ],
+)
+def test_api_key_rejects_plain_http_for_non_loopback_hosts(base_url: str) -> None:
+    secret = "must-not-leak-remote-key"
+    with pytest.raises(ValueError, match="require HTTPS") as exc_info:
+        NanoLoopApiClient(base_url, api_key=secret)
+    assert secret not in str(exc_info.value)
+
+
+def test_api_key_allows_https_for_remote_host() -> None:
+    client = NanoLoopApiClient("https://backend.test", api_key="remote-shared-key")
+    client.close()
+
+
 def test_api_key_never_appears_in_client_or_validation_error_text() -> None:
     api_key = "repr-secret-key"
-    client = NanoLoopApiClient("http://backend.test", api_key=api_key)
+    client = NanoLoopApiClient("https://backend.test", api_key=api_key)
     try:
         assert api_key not in str(client)
         assert api_key not in repr(client)
@@ -223,7 +258,7 @@ def test_api_key_never_appears_in_client_or_validation_error_text() -> None:
 
     invalid_key = "invalid-secret\nvalue"
     with pytest.raises(ValueError) as exc_info:
-        NanoLoopApiClient("http://backend.test", api_key=invalid_key)
+        NanoLoopApiClient("https://backend.test", api_key=invalid_key)
     assert invalid_key not in str(exc_info.value)
 
 
@@ -235,7 +270,7 @@ def test_api_key_never_appears_in_transport_error_text_or_repr() -> None:
 
     http_client = httpx.Client(transport=httpx.MockTransport(handler))
     client = NanoLoopApiClient(
-        "http://backend.test",
+        "https://backend.test",
         api_key=api_key,
         client=http_client,
         request_id_factory=lambda: "web_secret_transport",
@@ -281,9 +316,9 @@ def test_streamlit_client_cache_uses_only_api_key_fingerprint(
     )
     first_api_key = "first-cache-secret"
     monkeypatch.setenv("NANOLOOP_API_KEY", first_api_key)
-    monkeypatch.setenv("NANOLOOP_API_BASE_URL", "http://backend.test")
+    monkeypatch.setenv("NANOLOOP_API_BASE_URL", "https://backend.test")
     state: dict[str, Any] = {
-        "api_base_url": "http://backend.test",
+        "api_base_url": "https://backend.test",
         "api_timeout_seconds": 17.0,
     }
 
@@ -294,7 +329,7 @@ def test_streamlit_client_cache_uses_only_api_key_fingerprint(
     assert len(created) == 1
     assert created[0].api_key == first_api_key
     fingerprint = hashlib.sha256(first_api_key.encode()).hexdigest()
-    assert state["_api_client_key"] == ("http://backend.test", 17.0, fingerprint)
+    assert state["_api_client_key"] == ("https://backend.test", 17.0, fingerprint)
     assert first_api_key not in repr(state["_api_client_key"])
 
     second_api_key = "rotated-cache-secret"
@@ -670,3 +705,389 @@ def test_injected_http_client_is_not_closed_by_wrapper() -> None:
 
     assert not http_client.is_closed
     http_client.close()
+
+
+# ---------------------------------------------------------------------------
+# 429 Retry logic tests
+#
+# Note: The project uses httpx.MockTransport (built into httpx) rather than the
+# ``responses`` library, because the HTTP client is httpx, not requests.
+# MockTransport provides the same capability — intercepting HTTP requests and
+# returning canned responses — without an external dependency.
+# ---------------------------------------------------------------------------
+
+
+def _rate_limited_response(
+    request: httpx.Request,
+    *,
+    retry_after: str | None = "0",
+) -> httpx.Response:
+    """Build a 429 RATE_LIMITED error response matching the backend envelope."""
+    request_id = request.headers["x-request-id"]
+    headers: dict[str, str] = {"X-Request-ID": request_id}
+    if retry_after is not None:
+        headers["Retry-After"] = retry_after
+    return httpx.Response(
+        429,
+        headers=headers,
+        json={
+            "request_id": request_id,
+            "status": "error",
+            "data": None,
+            "error": {
+                "code": "RATE_LIMITED",
+                "message": "请求过于频繁，已被限流",
+                "retryable": True,
+            },
+        },
+    )
+
+
+def test_429_response_triggers_retry_until_success() -> None:
+    """429 twice then 200 — client should retry and succeed on third attempt."""
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        if call_count <= 2:
+            return _rate_limited_response(request, retry_after="0")
+        return _success_response(request)
+
+    http_client = httpx.Client(transport=httpx.MockTransport(handler))
+    client = NanoLoopApiClient(
+        "http://backend.test",
+        client=http_client,
+        max_retries=2,
+        default_retry_delay=0.0,
+        request_id_factory=lambda: "web_429_retry",
+    )
+    try:
+        result = client.health()
+    finally:
+        http_client.close()
+
+    assert result.status == "success"
+    assert call_count == 3  # initial + 2 retries
+
+
+def test_429_response_without_retry_after_header_uses_default_delay() -> None:
+    """429 without Retry-After header should still retry using default delay."""
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return _rate_limited_response(request, retry_after=None)
+        return _success_response(request)
+
+    http_client = httpx.Client(transport=httpx.MockTransport(handler))
+    client = NanoLoopApiClient(
+        "http://backend.test",
+        client=http_client,
+        max_retries=2,
+        default_retry_delay=0.0,
+        request_id_factory=lambda: "web_429_no_header",
+    )
+    try:
+        result = client.health()
+    finally:
+        http_client.close()
+
+    assert result.status == "success"
+    assert call_count == 2  # initial 429 + 1 retry success
+
+
+def test_429_response_exhausts_retries_and_raises() -> None:
+    """Always 429 — client should exhaust retries and raise ApiClientError."""
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        return _rate_limited_response(request, retry_after="0")
+
+    http_client = httpx.Client(transport=httpx.MockTransport(handler))
+    client = NanoLoopApiClient(
+        "http://backend.test",
+        client=http_client,
+        max_retries=2,
+        default_retry_delay=0.0,
+        request_id_factory=lambda: "web_429_exhaust",
+    )
+    try:
+        with pytest.raises(ApiClientError) as exc_info:
+            client.health()
+    finally:
+        http_client.close()
+
+    assert exc_info.value.status_code == 429
+    assert exc_info.value.code == "RATE_LIMITED"
+    assert exc_info.value.retryable is True
+    assert call_count == 3  # initial + 2 retries, all 429
+
+
+def test_429_retry_respects_retry_after_header_value() -> None:
+    """Retry-After supports delta seconds, HTTP dates, and a bounded delay."""
+    from frontend.api_client import _parse_retry_after
+
+    assert _parse_retry_after("5", default=3.0) == 5.0
+    assert _parse_retry_after("0", default=3.0) == 0.0
+    assert _parse_retry_after(None, default=3.0) == 3.0
+    assert _parse_retry_after("not-a-number", default=3.0) == 3.0
+    assert _parse_retry_after("", default=7.0) == 7.0
+    assert _parse_retry_after("600", default=3.0) == 30.0
+    assert _parse_retry_after("inf", default=3.0) == 3.0
+
+    now = datetime(2026, 7, 23, 0, 0, tzinfo=UTC)
+    retry_at = now + timedelta(seconds=12)
+    assert (
+        _parse_retry_after(
+            retry_at.strftime("%a, %d %b %Y %H:%M:%S GMT"),
+            default=3.0,
+            now=now,
+        )
+        == 12.0
+    )
+
+
+def test_429_write_request_is_not_automatically_replayed() -> None:
+    """A rate-limited upload is surfaced once instead of duplicating a write."""
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return _rate_limited_response(request, retry_after="7")
+
+    http_client = httpx.Client(transport=httpx.MockTransport(handler))
+    client = NanoLoopApiClient(
+        "http://backend.test",
+        client=http_client,
+        max_retries=2,
+        default_retry_delay=0.0,
+        request_id_factory=lambda: "web_429_write",
+    )
+    try:
+        with pytest.raises(ApiClientError) as exc_info:
+            client.create_analysis(
+                [UploadPart("image.tif", b"image-bytes", "image/tiff")],
+                {
+                    "job_name": "do not replay",
+                    "images": [{"filename": "image.tif", "sample_id": "s1"}],
+                },
+            )
+    finally:
+        http_client.close()
+
+    assert len(requests) == 1
+    assert requests[0].method == "POST"
+    assert exc_info.value.status_code == 429
+    assert exc_info.value.retry_after_seconds == 7.0
+
+
+def test_final_429_uses_current_retry_after_header() -> None:
+    """The surfaced error reports the final response's current delay value."""
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        return _rate_limited_response(request, retry_after=str(call_count))
+
+    http_client = httpx.Client(transport=httpx.MockTransport(handler))
+    client = NanoLoopApiClient(
+        "http://backend.test",
+        client=http_client,
+        max_retries=1,
+        default_retry_delay=0.0,
+        request_id_factory=lambda: "web_429_final_header",
+    )
+    try:
+        with pytest.raises(ApiClientError) as exc_info:
+            client.health()
+    finally:
+        http_client.close()
+
+    assert call_count == 2
+    assert exc_info.value.retry_after_seconds == 2.0
+
+
+def test_non_429_error_does_not_trigger_retry() -> None:
+    """503 should not retry — only 429 triggers the retry loop."""
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        request_id = request.headers["x-request-id"]
+        return httpx.Response(
+            503,
+            headers={"X-Request-ID": request_id},
+            json={
+                "request_id": request_id,
+                "status": "error",
+                "data": None,
+                "error": {
+                    "code": "SERVICE_UNAVAILABLE",
+                    "message": "服务不可用",
+                    "retryable": True,
+                },
+            },
+        )
+
+    http_client = httpx.Client(transport=httpx.MockTransport(handler))
+    client = NanoLoopApiClient(
+        "http://backend.test",
+        client=http_client,
+        max_retries=2,
+        default_retry_delay=0.0,
+        request_id_factory=lambda: "web_503_no_retry",
+    )
+    try:
+        with pytest.raises(ApiClientError) as exc_info:
+            client.health()
+    finally:
+        http_client.close()
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.code == "SERVICE_UNAVAILABLE"
+    assert call_count == 1  # no retries for 503
+
+
+def test_upload_timeout_default_is_300_seconds() -> None:
+    """Verify the default upload timeout is 300s (upgraded from 120s)."""
+    client = NanoLoopApiClient("http://backend.test")
+    try:
+        # httpx.Timeout stores the read timeout in .read
+        assert client._upload_timeout.read == 300.0
+    finally:
+        client.close()
+
+
+def test_create_analysis_accepts_timeout_override() -> None:
+    """Verify create_analysis accepts a custom timeout parameter."""
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return _success_response(request)
+
+    http_client = httpx.Client(transport=httpx.MockTransport(handler))
+    client = NanoLoopApiClient(
+        "http://backend.test",
+        client=http_client,
+        request_id_factory=lambda: "web_upload_override",
+    )
+    custom_timeout = httpx.Timeout(42.0)
+    try:
+        client.create_analysis(
+            [UploadPart("image.tif", b"image-bytes", "image/tiff")],
+            {"job_name": "test", "images": [{"filename": "image.tif", "sample_id": "s1"}]},
+            timeout=custom_timeout,
+        )
+    finally:
+        http_client.close()
+
+    assert len(requests) == 1
+    assert requests[0].extensions["timeout"]["read"] == 42.0
+
+
+# ---------------------------------------------------------------------------
+# page=null citation rendering tests
+# ---------------------------------------------------------------------------
+
+
+class _RecordingStreamlit:
+    """Minimal mock that captures all streamlit method calls for renderer tests."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
+
+    def __getattr__(self, name: str) -> Any:
+        def _method(*args: Any, **kwargs: Any) -> _RecordingStreamlit:
+            self.calls.append((name, args, kwargs))
+            return self  # enables ``with streamlit.expander(...)`` chaining
+
+        return _method
+
+    def __enter__(self) -> _RecordingStreamlit:
+        return self
+
+    def __exit__(self, *args: object) -> bool:
+        return False
+
+
+def test_render_query_response_with_null_page_citation_does_not_crash() -> None:
+    """render_query_response must not crash when a citation has page=None."""
+    from frontend.components import render_query_response
+
+    st = _RecordingStreamlit()
+    response = {
+        "query_type": "mixed",
+        "answer": "TiO2 平均粒径约 45 nm。",
+        "data_evidence": [],
+        "citations": [
+            {
+                "citation_id": "cit_001",
+                "doc_id": "doc_001",
+                "title": "Test Paper",
+                "page": None,  # Core test case: page is null
+                "chunk_id": "chunk_001",
+                "excerpt": "Test excerpt",
+                "retrieval_score": 0.92,
+                "citation_text": "Author et al., 2023.",
+            },
+            {
+                "citation_id": "cit_002",
+                "doc_id": "doc_002",
+                "title": "Another Paper",
+                "page": 42,
+                "chunk_id": "chunk_002",
+                "excerpt": "Another excerpt",
+                "retrieval_score": 0.85,
+            },
+        ],
+        "tool_calls": [],
+        "confidence": "high",
+        "outcome_code": "OK",
+    }
+
+    # Must not raise
+    render_query_response(st, response)
+
+    # Verify expander headings: the page=None citation should show "全文引用"
+    expander_headings = [args[0] for name, args, _ in st.calls if name == "expander" and args]
+    assert any("全文引用" in h for h in expander_headings), (
+        f"Expected '全文引用' in a citation expander heading, got: {expander_headings}"
+    )
+    # The page=42 citation should show "第 42 页"
+    assert any("第 42 页" in h for h in expander_headings), (
+        f"Expected '第 42 页' in a citation expander heading, got: {expander_headings}"
+    )
+
+
+def test_render_query_response_insufficient_evidence_empty_citations() -> None:
+    """When outcome_code=INSUFFICIENT_EVIDENCE and citations is empty, show '未返回材料知识引用'."""
+    from frontend.components import render_query_response
+
+    st = _RecordingStreamlit()
+    response = {
+        "query_type": "auto",
+        "answer": "证据不足，无法回答。",
+        "data_evidence": [],
+        "citations": [],
+        "tool_calls": [],
+        "confidence": "low",
+        "outcome_code": "INSUFFICIENT_EVIDENCE",
+        "limitations": ["未找到相关文献"],
+    }
+
+    # Must not raise
+    render_query_response(st, response)
+
+    # Verify "未返回材料知识引用" appears in an info call
+    info_messages = [args[0] for name, args, _ in st.calls if name == "info" and args]
+    assert any("未返回材料知识引用" in msg for msg in info_messages), (
+        f"Expected '未返回材料知识引用' in info messages, got: {info_messages}"
+    )

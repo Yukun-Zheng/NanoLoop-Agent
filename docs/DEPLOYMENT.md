@@ -4,6 +4,8 @@
 
 当前正式支持的拓扑是单台主机上的一个 API 容器、一个 Streamlit 容器、SQLite WAL 和本地命名卷。API 容器固定单 Uvicorn worker，内部分析线程数由 `ANALYSIS_WORKER_COUNT` 控制。不要用增加 Uvicorn worker 的方式提高模型并发。
 
+当前部署基线为最新全绿 `main`，五人集成快照为 `bfb48d4`，发布等级是 **M1 工程 MVP / 内部 Alpha**。默认公开资产目录中五个模型均为 `unavailable`；示例 smoke fixture 仍需替换为合法真实数据，正式 RAG 语料与固定 embedding 尚未交付。基础设施可启动不等于科学闭环已经验收；里程碑与真实资产门槛见 [v4.0 协同开发文档](NanoLoop_Agent_协同开发规格与接口总文档_v4.0.md)。
+
 默认端口只发布到 `127.0.0.1`。API 依据 `TRUSTED_HOSTS` 拒绝异常 Host，并依据
 `CORS_ALLOW_ORIGINS`/同站 fetch metadata 保护浏览器写请求。`AUTH_MODE` 支持
 `auto|disabled|shared_key|principal`：`auto` 在设置 `NANOLOOP_API_KEY` 时保持旧共享门禁，
@@ -123,10 +125,12 @@ docker compose config --quiet
 
 容器入口会执行 `alembic upgrade head`，失败时不会启动 API。回滚应用镜像前必须确认旧版本理解当前数据库 schema；不可直接回滚数据库文件。迁移脚本在 CI 中执行 upgrade → downgrade → upgrade 和 ORM 漂移检查。
 
-`main` 基线的 [GitHub Actions run 29625213698](https://github.com/Yukun-Zheng/NanoLoop-Agent/actions/runs/29625213698)
-已全绿，并真实构建、启动和健康检查 API 与 frontend 两个容器。本机此前拉取 Docker Hub 基础镜像
-超时，所以没有等价的本机构建成功证据；CI 成功证明仓库容器链路可运行，但不替代目标主机的卷权限、
-备份恢复、外部资产、容量和长期运行验收。每个待发布提交仍须通过自己的 CI，不能沿用历史 run 结论。
+合并前历史代码快照 `16456a3` 的
+[GitHub Actions run 29848825904](https://github.com/Yukun-Zheng/NanoLoop-Agent/actions/runs/29848825904)
+已全绿，并真实构建、启动和健康检查 API/frontend 双容器，完成离线备份、fresh-root 恢复和恢复后
+服务检查。本机此前拉取 Docker Hub 基础镜像超时，所以没有等价的本机构建成功证据；CI 成功证明仓库
+工程链路可运行，但不替代目标主机的卷权限、外部资产、容量、真实 RPO/RTO 和长期运行验收。每个待
+发布提交仍须通过自己的 CI，不能沿用历史 run 结论。
 
 ## 外部资产
 

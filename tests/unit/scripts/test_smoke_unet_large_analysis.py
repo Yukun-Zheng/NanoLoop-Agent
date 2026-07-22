@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import csv
+import hashlib
+import io
+import json
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -8,6 +13,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
+from app.contracts.analyses import RunConfiguration
 from app.contracts.enums import (
     DevicePreference,
     ModelFamily,
@@ -187,6 +193,117 @@ def _database(output_root: Path) -> Database:
     return database
 
 
+def _execute_fake_smoke(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[dict[str, Any], LocalFileStore, Path]:
+    monkeypatch.setattr(smoke_module, "IMAGE_WIDTH", 80)
+    monkeypatch.setattr(smoke_module, "IMAGE_HEIGHT", 240)
+    image_dir = tmp_path / "test-images"
+    output_root = tmp_path / "smoke-output"
+    registry_path = tmp_path / "private-registry.yaml"
+    output_root.mkdir()
+    registry_path.write_text("models: []\n", encoding="utf-8")
+    _write_test_images(image_dir)
+    database = _database(output_root)
+    gateway = FakeGateway(width=80, height=240)
+    file_store = LocalFileStore(
+        StoragePaths(output_root / "artifacts"),
+        max_upload_bytes=max((image_dir / filename).stat().st_size for filename in TEST_FILENAMES),
+    )
+    with database.session() as session:
+        session.add(
+            ModelRegistryRecord(
+                model_id=gateway.model.model_id,
+                family=gateway.model.family.value,
+                variant=gateway.model.variant.value,
+                quality_tier=gateway.model.quality_tier.value,
+                version=gateway.model.version,
+                adapter=gateway.model.adapter_path or ADAPTER_PATH,
+                status=ModelStatus.READY.value,
+            )
+        )
+    try:
+        result = execute_analyses(
+            SmokeParameters(image_dir, registry_path, output_root),
+            load_calibrated_analysis(_config(width=80, height=240), gateway.model),
+            database=database,
+            file_store=file_store,
+            gateway=gateway,
+        )
+    finally:
+        database.dispose()
+    assert len(gateway.requests) == 3
+    return result, file_store, output_root
+
+
+def _configuration(run: dict[str, Any]) -> RunConfiguration:
+    return smoke_module._load_contract_artifact(
+        Path(str(run["artifacts"]["run_config_path"])),
+        RunConfiguration,
+    )
+
+
+def _validate_run_chain(
+    run: dict[str, Any],
+    *,
+    file_store: LocalFileStore,
+    output_root: Path,
+) -> None:
+    smoke_module._validate_canonical_chain(
+        artifacts=run["artifacts"],
+        configuration=_configuration(run),
+        width=80,
+        height=240,
+        sample_id=str(run["sample_id"]),
+        run_id=str(run["run_id"]),
+        output_root=output_root,
+        file_store=file_store,
+    )
+
+
+def _rewrite_particles_csv(path: Path, field: str, value: str) -> None:
+    with path.open("r", encoding="utf-8-sig", newline="") as stream:
+        rows = list(csv.DictReader(stream))
+    assert rows
+    rows[0][field] = value
+    with path.open("w", encoding="utf-8-sig", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _zip_members(path: Path) -> dict[str, bytes]:
+    with zipfile.ZipFile(path) as archive:
+        return {name: archive.read(name) for name in archive.namelist()}
+
+
+def _zip_bytes(members: dict[str, bytes]) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name, payload in members.items():
+            archive.writestr(name, payload)
+    return buffer.getvalue()
+
+
+def _replace_export_manifest(members: dict[str, bytes], manifest: dict[str, Any]) -> None:
+    members["export_manifest.json"] = (
+        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8") + b"\n"
+    )
+
+
+def _selection_sha256(records: list[dict[str, Any]]) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            records,
+            ensure_ascii=False,
+            sort_keys=True,
+            allow_nan=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
 def test_loads_all_scientific_parameters_from_large_config() -> None:
     gateway = FakeGateway()
 
@@ -214,52 +331,48 @@ def test_rejects_internally_inconsistent_calibrated_config() -> None:
         load_calibrated_analysis(config, gateway.model)
 
 
+def test_report_loader_removes_only_file_schema_metadata(tmp_path: Path) -> None:
+    path = tmp_path / "image_summary.json"
+    payload = {
+        "schema_version": "1.0",
+        "run_id": "run_1",
+        "particle_count": 1,
+        "roi_area_px": 100,
+        "number_density_px2": 0.01,
+        "number_density_um2": 1.0,
+        "mean_equivalent_diameter_px": 2.0,
+        "mean_equivalent_diameter_nm": 3.0,
+        "coverage_ratio": 0.1,
+        "perimeter_density_px": 0.2,
+        "perimeter_density_um": 4.0,
+        "quality_status": "PASS",
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    summary = smoke_module._load_report_artifact(
+        path,
+        smoke_module.ImageSummaryDTO,
+        artifact="image_summary.json",
+        context="sample=test, run=run_1",
+    )
+
+    assert summary.run_id == "run_1"
+    assert summary.particle_count == 1
+    assert json.loads(path.read_text(encoding="utf-8"))["schema_version"] == "1.0"
+
+
 def test_three_full_image_runs_freeze_config_and_exclude_bottom_roi(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(smoke_module, "IMAGE_WIDTH", 80)
-    monkeypatch.setattr(smoke_module, "IMAGE_HEIGHT", 240)
-    image_dir = tmp_path / "test-images"
-    output_root = tmp_path / "smoke-output"
-    registry_path = tmp_path / "private-registry.yaml"
-    output_root.mkdir()
-    registry_path.write_text("models: []\n", encoding="utf-8")
-    _write_test_images(image_dir)
-    database = _database(output_root)
-    gateway = FakeGateway(width=80, height=240)
-    with database.session() as session:
-        session.add(
-            ModelRegistryRecord(
-                model_id=gateway.model.model_id,
-                family=gateway.model.family.value,
-                variant=gateway.model.variant.value,
-                quality_tier=gateway.model.quality_tier.value,
-                version=gateway.model.version,
-                adapter=gateway.model.adapter_path or ADAPTER_PATH,
-                status=ModelStatus.READY.value,
-            )
-        )
-    try:
-        result = execute_analyses(
-            SmokeParameters(image_dir, registry_path, output_root),
-            load_calibrated_analysis(_config(width=80, height=240), gateway.model),
-            database=database,
-            file_store=LocalFileStore(
-                StoragePaths(output_root / "artifacts"),
-                max_upload_bytes=max(
-                    (image_dir / filename).stat().st_size for filename in TEST_FILENAMES
-                ),
-            ),
-            gateway=gateway,
-        )
-    finally:
-        database.dispose()
+    result, file_store, output_root = _execute_fake_smoke(tmp_path, monkeypatch)
 
     assert result["test_images"] == list(TEST_FILENAMES)
     assert "no test masks were read" in result["test_scope"]
     assert len(result["runs"]) == 3
-    assert len(gateway.requests) == 3
+    assert Path(result["export_path"]).is_file()
+    assert result["export_sha256"] == file_store.calculate_sha256(Path(result["export_path"]))
+    assert result["export_manifest"]["job_id"] == result["job_id"]
     for run in result["runs"]:
         assert run["frozen_inference"] == {
             "threshold": 0.50,
@@ -303,6 +416,221 @@ def test_three_full_image_runs_freeze_config_and_exclude_bottom_roi(
             "probability_path",
         ):
             assert run["artifacts"][artifact] is not None
+        assert set(run["canonical_artifact_identities"]) == {
+            "pred_mask_path",
+            "probability_path",
+            "instances_path",
+            "particles_csv_path",
+            "overlay_path",
+            "labeled_particles_path",
+            "image_summary_path",
+            "quality_report_path",
+            "execution_provenance_path",
+            "run_config_path",
+            "transform_path",
+        }
+        _validate_run_chain(run, file_store=file_store, output_root=output_root)
+
+
+def test_rejects_instances_union_that_differs_from_prediction_mask(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result, file_store, output_root = _execute_fake_smoke(tmp_path, monkeypatch)
+    run = result["runs"][0]
+    path = Path(str(run["artifacts"]["pred_mask_path"]))
+    with Image.open(path) as image:
+        pixels = np.asarray(image).copy()
+    pixels[0, 0] = 255
+    Image.fromarray(pixels).save(path)
+
+    with pytest.raises(RuntimeError, match=r"instances\.json union differs from pred_mask\.png"):
+        _validate_run_chain(run, file_store=file_store, output_root=output_root)
+
+
+def test_rejects_invalid_instances_rle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result, file_store, output_root = _execute_fake_smoke(tmp_path, monkeypatch)
+    run = result["runs"][0]
+    path = Path(str(run["artifacts"]["instances_path"]))
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["instances"][0]["mask"] = {
+        "encoding": "flat_rle_v1",
+        "order": "row_major",
+        "starts": [80 * 240 - 1],
+        "lengths": [2],
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="mask RLE is invalid"):
+        _validate_run_chain(run, file_store=file_store, output_root=output_root)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("instance_index", "999", "instance_index does not match instances.json"),
+        ("bbox_x2", "69", "bbox differs from instances.json"),
+        ("area_px", "901", "area_px differs from instances.json"),
+    ],
+)
+def test_rejects_particles_csv_instance_identity_mismatches(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    value: str,
+    message: str,
+) -> None:
+    result, file_store, output_root = _execute_fake_smoke(tmp_path, monkeypatch)
+    run = result["runs"][0]
+    _rewrite_particles_csv(Path(str(run["artifacts"]["particles_csv_path"])), field, value)
+
+    with pytest.raises(RuntimeError, match=message):
+        _validate_run_chain(run, file_store=file_store, output_root=output_root)
+
+
+def test_rejects_summary_that_differs_from_particles_csv(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result, file_store, output_root = _execute_fake_smoke(tmp_path, monkeypatch)
+    run = result["runs"][0]
+    path = Path(str(run["artifacts"]["image_summary_path"]))
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["particle_count"] += 1
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match=r"image_summary\.json\.particle_count"):
+        _validate_run_chain(run, file_store=file_store, output_root=output_root)
+
+
+def test_rejects_quality_status_that_differs_from_summary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result, file_store, output_root = _execute_fake_smoke(tmp_path, monkeypatch)
+    run = result["runs"][0]
+    path = Path(str(run["artifacts"]["quality_report_path"]))
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["status"] = "WARN" if payload["status"] != "WARN" else "PASS"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="quality_status differs"):
+        _validate_run_chain(run, file_store=file_store, output_root=output_root)
+
+
+def test_rejects_noncanonical_quality_metric(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result, file_store, output_root = _execute_fake_smoke(tmp_path, monkeypatch)
+    run = result["runs"][0]
+    path = Path(str(run["artifacts"]["quality_report_path"]))
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["metrics"]["foreground_ratio"] = 0.123
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match=r"quality_report\.json\.foreground_ratio differs"):
+        _validate_run_chain(run, file_store=file_store, output_root=output_root)
+
+
+def _canonical_member_path(
+    run: dict[str, Any],
+    *,
+    key: str,
+    file_store: LocalFileStore,
+    job_id: str,
+) -> str:
+    return Path(str(run["artifacts"][key])).relative_to(file_store.paths.job_dir(job_id)).as_posix()
+
+
+def test_rejects_export_missing_canonical_member(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result, file_store, _ = _execute_fake_smoke(tmp_path, monkeypatch)
+    run = result["runs"][0]
+    member = _canonical_member_path(
+        run,
+        key="instances_path",
+        file_store=file_store,
+        job_id=result["job_id"],
+    )
+    members = _zip_members(Path(result["export_path"]))
+    manifest = json.loads(members["export_manifest.json"])
+    members.pop(member)
+    manifest["files"] = [record for record in manifest["files"] if record["path"] != member]
+    manifest["selection_sha256"] = _selection_sha256(manifest["files"])
+    _replace_export_manifest(members, manifest)
+    validated = smoke_module.validate_export_zip(
+        _zip_bytes(members),
+        expected_job_id=result["job_id"],
+        expected_run_ids={str(item["run_id"]) for item in result["runs"]},
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="manifest SHA differs from canonical artifact instances_path",
+    ):
+        smoke_module._validate_export_canonical_artifacts(
+            validated,
+            runs=result["runs"],
+            file_store=file_store,
+            job_id=result["job_id"],
+        )
+
+
+def test_rejects_export_manifest_sha_that_differs_from_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result, file_store, _ = _execute_fake_smoke(tmp_path, monkeypatch)
+    run = result["runs"][0]
+    member = _canonical_member_path(
+        run,
+        key="particles_csv_path",
+        file_store=file_store,
+        job_id=result["job_id"],
+    )
+    members = _zip_members(Path(result["export_path"]))
+    manifest = json.loads(members["export_manifest.json"])
+    next(record for record in manifest["files"] if record["path"] == member)["sha256"] = "0" * 64
+    _replace_export_manifest(members, manifest)
+
+    with pytest.raises(ValueError, match="manifest hash does not match ZIP member"):
+        smoke_module.validate_export_zip(
+            _zip_bytes(members),
+            expected_job_id=result["job_id"],
+            expected_run_ids={str(item["run_id"]) for item in result["runs"]},
+        )
+
+
+def test_rejects_tampered_export_member(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result, file_store, _ = _execute_fake_smoke(tmp_path, monkeypatch)
+    run = result["runs"][0]
+    member = _canonical_member_path(
+        run,
+        key="image_summary_path",
+        file_store=file_store,
+        job_id=result["job_id"],
+    )
+    members = _zip_members(Path(result["export_path"]))
+    members[member] = b"tampered"
+
+    with pytest.raises(
+        ValueError,
+        match=r"manifest size does not match ZIP member|manifest hash",
+    ):
+        smoke_module.validate_export_zip(
+            _zip_bytes(members),
+            expected_job_id=result["job_id"],
+            expected_run_ids={str(item["run_id"]) for item in result["runs"]},
+        )
 
 
 @pytest.mark.parametrize("kind", ["existing", "repository"])

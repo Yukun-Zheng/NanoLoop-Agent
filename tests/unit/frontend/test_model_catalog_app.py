@@ -56,8 +56,7 @@ def test_selected_unavailable_model_shows_full_details_and_is_not_runnable() -> 
     ]
     assert any("Model checkpoint is not bundled." in str(item.value) for item in app.error)
     assert any(
-        "Checkpoint is supplied by the model owner." in str(item.value)
-        for item in app.markdown
+        "Checkpoint is supplied by the model owner." in str(item.value) for item in app.markdown
     )
     run_selector = next(
         widget for widget in app.multiselect if widget.label == "已确认的就绪模型（1–3 个）"

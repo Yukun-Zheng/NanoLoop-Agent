@@ -16,13 +16,17 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
+from app.analysis.morphometry import measure
+from app.analysis.postprocessing import NormalizedInstance, normalize_semantic_mask_detailed
+from app.contracts.analysis_config import MorphometryConfig, PostprocessProfile
+
 MODEL_ID = "unet-large-optimized-v1"
 MODEL_VERSION = "1"
 ADAPTER_PATH = "app.inference.adapters.unet:UNetAdapter"
 TORCHSCRIPT_SHA256 = "007d9a16bf31e5f960160c52eefa938b83feeac2e6c0d7dec9c8670a38626e05"
 CONFIG_SHA256 = "4e48c75d960faaa17868f0318da5526a6ba72211396ec106c2e57ce7eecc8856"
 MODEL_CARD_SHA256 = "bac2eacbc3569cc24e76aa90edf4a00ed1cfd7149180bf07113a4e905e2d7bfc"
-ADAPTER_SHA256 = "536ba2ef6f32c97b34b21cfefdfcd7b09f3680c93c63def78180f10dd021091c"
+ADAPTER_SHA256 = "6055db452f0a78a0352732d66ea3436f16a558cf19d1a6f022a78627136dfab6"
 TEST_FILENAMES = ("SrZr-3.tif", "BaCu-2.tif", "PrCu-3.tif")
 IMAGE_WIDTH = 2048
 IMAGE_HEIGHT = 1536
@@ -41,6 +45,7 @@ class EvaluationParameters:
     analysis_output_root: Path
     mask_dir: Path
     output_root: Path
+    tolerance_policy_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -73,6 +78,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--analysis-output-root", required=True, type=Path)
     parser.add_argument("--mask-dir", required=True, type=Path)
     parser.add_argument("--output-root", required=True, type=Path)
+    parser.add_argument("--tolerance-policy", type=Path)
     return parser
 
 
@@ -109,6 +115,7 @@ def _validated_parameters(namespace: argparse.Namespace) -> EvaluationParameters
         analysis_output_root=analysis_output_root,
         mask_dir=mask_dir,
         output_root=_validate_output_root(namespace.output_root),
+        tolerance_policy_path=namespace.tolerance_policy,
     )
 
 
@@ -509,6 +516,345 @@ def _micro(metrics: Sequence[ConfusionMetrics]) -> ConfusionMetrics:
     )
 
 
+_TOLERANCE_FIELDS = (
+    ("instance_precision", "minimum_instance_precision", "gte"),
+    ("instance_recall", "minimum_instance_recall", "gte"),
+    ("instance_f1", "minimum_instance_f1", "gte"),
+    ("count_absolute_error", "maximum_count_absolute_error", "lte"),
+    ("count_relative_error", "maximum_count_relative_error", "lte"),
+    ("mean_area_relative_error", "maximum_mean_area_relative_error", "lte"),
+    (
+        "mean_equivalent_diameter_relative_error",
+        "maximum_mean_equivalent_diameter_relative_error",
+        "lte",
+    ),
+    ("number_density_relative_error", "maximum_number_density_relative_error", "lte"),
+    (
+        "perimeter_density_relative_error",
+        "maximum_perimeter_density_relative_error",
+        "lte",
+    ),
+)
+_ZERO_GT_COUNT_RULE = "relative_error_denominator_is_maximum_of_gt_count_and_one"
+
+
+def _require_finite_number(value: object, *, field: str, minimum: float | None = None) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{field} must be a number")
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(f"{field} must be finite")
+    if minimum is not None and number < minimum:
+        raise ValueError(f"{field} must be at least {minimum}")
+    return number
+
+
+def _load_tolerance_policy(path: Path | None) -> tuple[dict[str, Any], Path, str]:
+    if path is None:
+        raise ValueError("tolerance-policy is required; no scientific tolerance defaults exist")
+    resolved = path.expanduser().resolve(strict=True)
+    payload = _load_json(resolved)
+    if payload.get("schema_version") != "1":
+        raise ValueError("tolerance-policy schema_version must be '1'")
+    for field in ("policy_id", "policy_version"):
+        if not isinstance(payload.get(field), str) or not payload[field].strip():
+            raise ValueError(f"tolerance-policy {field} must be a non-empty string")
+    matching = _mapping(payload.get("instance_matching"), field="instance_matching", path=resolved)
+    if matching.get("metric") != "mask_iou":
+        raise ValueError("tolerance-policy instance_matching.metric must be mask_iou")
+    matching_threshold = _require_finite_number(
+        matching.get("mask_iou_threshold"),
+        field="tolerance-policy instance_matching.mask_iou_threshold",
+        minimum=0.0,
+    )
+    if matching_threshold == 0.0:
+        raise ValueError("tolerance-policy instance_matching.mask_iou_threshold must be positive")
+    if matching_threshold > 1.0:
+        raise ValueError("tolerance-policy instance_matching.mask_iou_threshold must be at most 1")
+    tolerances = _mapping(
+        payload.get("per_image_tolerances"), field="per_image_tolerances", path=resolved
+    )
+    for _, field, operator in _TOLERANCE_FIELDS:
+        value = _require_finite_number(
+            tolerances.get(field),
+            field=f"tolerance-policy per_image_tolerances.{field}",
+            minimum=0.0,
+        )
+        if operator == "gte" and value > 1.0:
+            raise ValueError(f"tolerance-policy per_image_tolerances.{field} must be at most 1")
+    if payload.get("ground_truth_count_zero_rule") != _ZERO_GT_COUNT_RULE:
+        raise ValueError(
+            "tolerance-policy ground_truth_count_zero_rule must be "
+            f"{_ZERO_GT_COUNT_RULE}"
+        )
+    return payload, resolved, _sha256(resolved)
+
+
+def _mask_iou(prediction: np.ndarray, truth: np.ndarray) -> float:
+    intersection = int(np.count_nonzero(prediction & truth))
+    union = int(np.count_nonzero(prediction | truth))
+    return float(intersection / union) if union else 0.0
+
+
+def _match_instances(
+    prediction_instances: Sequence[NormalizedInstance],
+    truth_instances: Sequence[NormalizedInstance],
+    *,
+    iou_threshold: float,
+) -> list[dict[str, float | int]]:
+    candidates: dict[int, list[tuple[float, int, int]]] = {}
+    for prediction_position, prediction in enumerate(prediction_instances):
+        for truth_position, truth in enumerate(truth_instances):
+            iou = _mask_iou(prediction.mask, truth.mask)
+            if iou >= iou_threshold:
+                candidates.setdefault(prediction_position, []).append(
+                    (iou, truth.instance_index, truth_position)
+                )
+    for options in candidates.values():
+        options.sort(key=lambda item: (-item[0], item[1]))
+
+    truth_to_prediction: dict[int, int] = {}
+    selected: dict[int, tuple[int, float]] = {}
+
+    def augment(prediction_position: int, visited_truth: set[int]) -> bool:
+        for iou, _truth_index, truth_position in candidates.get(prediction_position, []):
+            if truth_position in visited_truth:
+                continue
+            visited_truth.add(truth_position)
+            incumbent = truth_to_prediction.get(truth_position)
+            if incumbent is not None and not augment(incumbent, visited_truth):
+                continue
+            truth_to_prediction[truth_position] = prediction_position
+            selected[prediction_position] = (truth_position, iou)
+            return True
+        return False
+
+    prediction_order = sorted(
+        range(len(prediction_instances)),
+        key=lambda position: prediction_instances[position].instance_index,
+    )
+    for prediction_position in prediction_order:
+        augment(prediction_position, set())
+
+    return [
+        {
+            "prediction_instance_index": prediction_instances[prediction_position].instance_index,
+            "ground_truth_instance_index": truth_instances[truth_position].instance_index,
+            "iou": iou,
+        }
+        for prediction_position, (truth_position, iou) in sorted(
+            selected.items(),
+            key=lambda item: prediction_instances[item[0]].instance_index,
+        )
+    ]
+
+
+def _relative_error(prediction: float | None, truth: float | None) -> float | None:
+    if prediction is None or truth is None or truth == 0.0:
+        return None
+    return float(abs(prediction - truth) / abs(truth))
+
+
+def _instances_for_evaluation(
+    mask: np.ndarray,
+    *,
+    roi_mask: np.ndarray,
+    profile: PostprocessProfile,
+) -> list[NormalizedInstance]:
+    return normalize_semantic_mask_detailed(mask, roi_mask=roi_mask, profile=profile).instances
+
+
+def compute_scientific_metrics(
+    prediction: np.ndarray,
+    truth: np.ndarray,
+    *,
+    profile: PostprocessProfile,
+    morphometry: MorphometryConfig,
+    scale_nm_per_pixel: float,
+    iou_threshold: float,
+    sample_id: str,
+) -> dict[str, Any]:
+    if prediction.shape != truth.shape:
+        raise ValueError("prediction and truth shapes differ")
+    roi_mask = np.ones(prediction.shape, dtype=bool)
+    prediction_instances = _instances_for_evaluation(
+        prediction, roi_mask=roi_mask, profile=profile
+    )
+    # The frozen prediction threshold/min-area policy is part of the model under
+    # evaluation. It must never erase human GT before recall and morphometry are
+    # measured. This matches the calibration contract, which always measures GT
+    # with min_area_px=0 and reports candidate-filtered retention separately.
+    truth_profile = profile.model_copy(update={"min_area_px": 0})
+    truth_instances = _instances_for_evaluation(
+        truth,
+        roi_mask=roi_mask,
+        profile=truth_profile,
+    )
+    prediction_measurement = measure(
+        run_id=f"evaluation-{sample_id}-prediction",
+        instances=prediction_instances,
+        roi_mask=roi_mask,
+        scale_nm_per_pixel=scale_nm_per_pixel,
+        config=morphometry,
+    )
+    truth_measurement = measure(
+        run_id=f"evaluation-{sample_id}-ground-truth",
+        instances=truth_instances,
+        roi_mask=roi_mask,
+        scale_nm_per_pixel=scale_nm_per_pixel,
+        config=morphometry,
+    )
+    matches = _match_instances(
+        prediction_instances, truth_instances, iou_threshold=iou_threshold
+    )
+    prediction_count = len(prediction_instances)
+    truth_count = len(truth_instances)
+    matched_count = len(matches)
+    false_positive_count = prediction_count - matched_count
+    false_negative_count = truth_count - matched_count
+    prediction_summary = prediction_measurement.image_summary
+    truth_summary = truth_measurement.image_summary
+    prediction_mean_area = (
+        float(np.mean([particle.area_px for particle in prediction_measurement.particles]))
+        if prediction_measurement.particles
+        else None
+    )
+    truth_mean_area = (
+        float(np.mean([particle.area_px for particle in truth_measurement.particles]))
+        if truth_measurement.particles
+        else None
+    )
+    has_ground_truth_particles = truth_count > 0
+    return {
+        "instance_matching": {
+            "rule": "one_to_one_maximum_cardinality_mask_iou",
+            "iou_threshold": iou_threshold,
+            "prediction_min_area_px": profile.min_area_px,
+            "ground_truth_min_area_px": 0,
+            "prediction_count": prediction_count,
+            "ground_truth_count": truth_count,
+            "matched_count": matched_count,
+            "false_positive_count": false_positive_count,
+            "false_negative_count": false_negative_count,
+            "precision": _ratio(matched_count, prediction_count),
+            "recall": _ratio(matched_count, truth_count),
+            "f1": _ratio(
+                2 * matched_count,
+                2 * matched_count + false_positive_count + false_negative_count,
+            ),
+            "matches": matches,
+        },
+        "count": {
+            "prediction_count": prediction_count,
+            "ground_truth_count": truth_count,
+            "absolute_error": abs(prediction_count - truth_count),
+            "relative_error": float(abs(prediction_count - truth_count) / max(truth_count, 1)),
+            "zero_ground_truth_rule": _ZERO_GT_COUNT_RULE,
+        },
+        "morphometry": {
+            "mean_area_px_prediction": prediction_mean_area,
+            "mean_area_px_ground_truth": truth_mean_area,
+            "mean_area_absolute_error_px": (
+                abs(prediction_mean_area - truth_mean_area)
+                if prediction_mean_area is not None and truth_mean_area is not None
+                else None
+            ),
+            "mean_area_relative_error": _relative_error(prediction_mean_area, truth_mean_area),
+            "mean_equivalent_diameter_px_prediction": (
+                prediction_summary.mean_equivalent_diameter_px
+            ),
+            "mean_equivalent_diameter_px_ground_truth": (
+                truth_summary.mean_equivalent_diameter_px
+            ),
+            "mean_equivalent_diameter_absolute_error_px": (
+                abs(
+                    prediction_summary.mean_equivalent_diameter_px
+                    - truth_summary.mean_equivalent_diameter_px
+                )
+                if prediction_summary.mean_equivalent_diameter_px is not None
+                and truth_summary.mean_equivalent_diameter_px is not None
+                else None
+            ),
+            "mean_equivalent_diameter_relative_error": _relative_error(
+                prediction_summary.mean_equivalent_diameter_px,
+                truth_summary.mean_equivalent_diameter_px,
+            ),
+            "number_density_um2_prediction": prediction_summary.number_density_um2,
+            "number_density_um2_ground_truth": truth_summary.number_density_um2,
+            "number_density_relative_error": _relative_error(
+                prediction_summary.number_density_um2,
+                truth_summary.number_density_um2,
+            ),
+            "perimeter_density_um_prediction": prediction_summary.perimeter_density_um,
+            "perimeter_density_um_ground_truth": truth_summary.perimeter_density_um,
+            "perimeter_density_relative_error": _relative_error(
+                prediction_summary.perimeter_density_um,
+                truth_summary.perimeter_density_um,
+            ),
+            "not_evaluable_reason": (
+                "ground_truth_count_zero" if not has_ground_truth_particles else None
+            ),
+        },
+    }
+
+
+def _scientific_metric_values(metrics: Mapping[str, Any]) -> dict[str, float | None]:
+    matching = _mapping(
+        metrics.get("instance_matching"), field="instance_matching", path=Path("metrics")
+    )
+    count = _mapping(metrics.get("count"), field="count", path=Path("metrics"))
+    morphometry = _mapping(metrics.get("morphometry"), field="morphometry", path=Path("metrics"))
+    return {
+        "instance_precision": float(matching["precision"]),
+        "instance_recall": float(matching["recall"]),
+        "instance_f1": float(matching["f1"]),
+        "count_absolute_error": float(count["absolute_error"]),
+        "count_relative_error": float(count["relative_error"]),
+        "mean_area_relative_error": morphometry["mean_area_relative_error"],
+        "mean_equivalent_diameter_relative_error": morphometry[
+            "mean_equivalent_diameter_relative_error"
+        ],
+        "number_density_relative_error": morphometry["number_density_relative_error"],
+        "perimeter_density_relative_error": morphometry["perimeter_density_relative_error"],
+    }
+
+
+def _evaluate_tolerances(
+    metrics: Mapping[str, Any], policy: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    values = _scientific_metric_values(metrics)
+    tolerances = _mapping(
+        policy.get("per_image_tolerances"), field="per_image_tolerances", path=Path("policy")
+    )
+    failures: list[dict[str, Any]] = []
+    for metric, tolerance_field, operator in _TOLERANCE_FIELDS:
+        observed = values[metric]
+        tolerance = float(tolerances[tolerance_field])
+        if observed is None:
+            failures.append(
+                {
+                    "metric": metric,
+                    "operator": ">=" if operator == "gte" else "<=",
+                    "observed": None,
+                    "tolerance": tolerance,
+                    "reason_code": "METRIC_NOT_EVALUABLE",
+                }
+            )
+            continue
+        passed = observed >= tolerance if operator == "gte" else observed <= tolerance
+        if not passed:
+            failures.append(
+                {
+                    "metric": metric,
+                    "operator": ">=" if operator == "gte" else "<=",
+                    "observed": observed,
+                    "tolerance": tolerance,
+                    "reason_code": "TOLERANCE_NOT_MET",
+                }
+            )
+    return failures
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -551,11 +897,62 @@ def _write_csv(
         writer.writerow({"scope": "micro_average", **asdict(micro)})
 
 
+def _write_scientific_metrics_csv(path: Path, per_image: Sequence[dict[str, Any]]) -> None:
+    columns = (
+        "sample_id",
+        "overall_status",
+        "instance_precision",
+        "instance_recall",
+        "instance_f1",
+        "prediction_count",
+        "ground_truth_count",
+        "count_absolute_error",
+        "count_relative_error",
+        "mean_area_relative_error",
+        "mean_equivalent_diameter_relative_error",
+        "number_density_relative_error",
+        "perimeter_density_relative_error",
+    )
+    with path.open("w", encoding="utf-8", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=columns)
+        writer.writeheader()
+        for item in per_image:
+            scientific = _mapping(
+                item["scientific_metrics"], field="scientific_metrics", path=Path("result")
+            )
+            matching = _mapping(
+                scientific["instance_matching"], field="instance_matching", path=Path("result")
+            )
+            count = _mapping(scientific["count"], field="count", path=Path("result"))
+            writer.writerow(
+                {
+                    "sample_id": item["sample_id"],
+                    "overall_status": item["tolerance_assessment"]["status"],
+                    "instance_precision": matching["precision"],
+                    "instance_recall": matching["recall"],
+                    "instance_f1": matching["f1"],
+                    "prediction_count": count["prediction_count"],
+                    "ground_truth_count": count["ground_truth_count"],
+                    **_scientific_metric_values(scientific),
+                }
+            )
+
+
+def _write_failure_cases_csv(path: Path, failures: Sequence[dict[str, Any]]) -> None:
+    columns = ("sample_id", "metric", "operator", "observed", "tolerance", "reason_code")
+    with path.open("w", encoding="utf-8", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=columns)
+        writer.writeheader()
+        writer.writerows(failures)
+
+
 def run_evaluation(parameters: EvaluationParameters) -> dict[str, Any]:
+    policy, policy_path, policy_sha256 = _load_tolerance_policy(parameters.tolerance_policy_path)
     parameters = EvaluationParameters(
         parameters.analysis_output_root.expanduser().resolve(),
         parameters.mask_dir.expanduser().resolve(),
         _validate_output_root(parameters.output_root),
+        policy_path,
     )
     if not parameters.analysis_output_root.is_dir() or not parameters.mask_dir.is_dir():
         raise ValueError("analysis-output-root and mask-dir must be existing directories")
@@ -568,8 +965,11 @@ def run_evaluation(parameters: EvaluationParameters) -> dict[str, Any]:
             ConfusionMetrics,
             dict[str, Any],
             dict[str, Any],
+            PostprocessProfile,
+            MorphometryConfig,
         ]
     ] = []
+    frozen_scientific_configuration: tuple[PostprocessProfile, MorphometryConfig] | None = None
     for filename in TEST_FILENAMES:
         sample_id = Path(filename).stem
         inputs = located[sample_id]
@@ -585,6 +985,17 @@ def run_evaluation(parameters: EvaluationParameters) -> dict[str, Any]:
             inputs.execution_provenance_path,
             run_config=run_config,
         )
+        postprocess = PostprocessProfile.model_validate(run_config["resolved_postprocess"])
+        morphometry = MorphometryConfig.model_validate(run_config["resolved_morphometry"])
+        current_scientific_configuration = (postprocess, morphometry)
+        if (
+            frozen_scientific_configuration is not None
+            and current_scientific_configuration != frozen_scientific_configuration
+        ):
+            raise ValueError(
+                "frozen scientific configuration differs between independent test runs"
+            )
+        frozen_scientific_configuration = current_scientific_configuration
         prediction = _load_foreground(
             inputs.prediction_path,
             sample_id=sample_id,
@@ -593,18 +1004,47 @@ def run_evaluation(parameters: EvaluationParameters) -> dict[str, Any]:
         )
         truth = _load_foreground(inputs.truth_path, sample_id=sample_id, kind="truth")
         metrics = compute_metrics(prediction, truth)
-        prepared.append((inputs, prediction, truth, metrics, run_config, execution))
+        prepared.append(
+            (inputs, prediction, truth, metrics, run_config, execution, postprocess, morphometry)
+        )
 
     parameters.output_root.mkdir(parents=True, exist_ok=False)
     per_image: list[dict[str, Any]] = []
-    for inputs, prediction, truth, metrics, run_config, execution in prepared:
+    all_failures: list[dict[str, Any]] = []
+    for (
+        inputs,
+        prediction,
+        truth,
+        metrics,
+        run_config,
+        execution,
+        postprocess,
+        morphometry,
+    ) in prepared:
         review_path = parameters.output_root / f"{inputs.sample_id}_gt_pred_error.png"
         _write_review(review_path, truth=truth, prediction=prediction)
+        scientific_metrics = compute_scientific_metrics(
+            prediction,
+            truth,
+            profile=postprocess,
+            morphometry=morphometry,
+            scale_nm_per_pixel=SCALE_NM_PER_PIXEL,
+            iou_threshold=float(policy["instance_matching"]["mask_iou_threshold"]),
+            sample_id=inputs.sample_id,
+        )
+        failures = _evaluate_tolerances(scientific_metrics, policy)
+        annotated_failures = [{"sample_id": inputs.sample_id, **failure} for failure in failures]
+        all_failures.extend(annotated_failures)
         per_image.append(
             {
                 "sample_id": inputs.sample_id,
                 "filename": inputs.filename,
                 "metrics": asdict(metrics),
+                "scientific_metrics": scientific_metrics,
+                "tolerance_assessment": {
+                    "status": "PASS" if not failures else "FAIL",
+                    "failures": failures,
+                },
                 "input_provenance": {
                     "prediction_path": str(inputs.prediction_path),
                     "prediction_sha256": _sha256(inputs.prediction_path),
@@ -676,9 +1116,16 @@ def run_evaluation(parameters: EvaluationParameters) -> dict[str, Any]:
             },
             "zero_denominator_convention": "metric equals 1.0 when its denominator is zero",
         },
+        "tolerance_policy": {
+            "path": str(policy_path),
+            "sha256": policy_sha256,
+            "content": policy,
+        },
         "per_image": per_image,
         "macro_average": macro,
         "micro_average": asdict(micro),
+        "overall_status": "PASS" if not all_failures else "FAIL",
+        "failures": all_failures,
         "review_image_legend": {
             "layout": "ground truth | prediction | error",
             "error_colors": {
@@ -706,6 +1153,8 @@ def run_evaluation(parameters: EvaluationParameters) -> dict[str, Any]:
         encoding="utf-8",
     )
     _write_csv(parameters.output_root / "metrics.csv", per_image, macro, micro)
+    _write_scientific_metrics_csv(parameters.output_root / "scientific-metrics.csv", per_image)
+    _write_failure_cases_csv(parameters.output_root / "failure-cases.csv", all_failures)
     return result
 
 
@@ -724,7 +1173,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 1
     print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
-    return 0
+    return 0 if result["overall_status"] == "PASS" else 2
 
 
 if __name__ == "__main__":

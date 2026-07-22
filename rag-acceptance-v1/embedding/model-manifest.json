@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "status": "candidate_unverified",
+  "model": "BAAI/bge-small-zh-v1.5",
+  "revision": null,
+  "dimension": 512,
+  "normalize": true,
+  "max_length": 512,
+  "pooling": "mean",
+  "license": null,
+  "license_url": null,
+  "local_dir": null,
+  "tree_sha256": null,
+  "size_bytes": null,
+  "resource": {
+    "device": "cpu",
+    "memory_mb": null,
+    "cold_start_seconds": null
+  },
+  "verified_by": null,
+  "verified_at": null,
+  "verified": false,
+  "notes": "This is a model candidate, not a delivered snapshot. Runtime loading must remain local-files-only."
+}

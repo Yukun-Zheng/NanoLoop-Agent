@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib
+import os
+import stat
 from pathlib import Path
 from threading import Event, Thread
 
@@ -227,6 +229,8 @@ def test_snapshot_path_swap_during_load_cannot_change_pinned_weight_bytes(
                     observed.append(self.weight_bytes)
                     super().load(device)
                 finally:
+                    if os.name == "nt":
+                        target.chmod(stat.S_IWRITE)
                     target.unlink()
                     backup.replace(target)
 

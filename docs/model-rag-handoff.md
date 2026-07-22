@@ -1,7 +1,9 @@
 # 模型与 RAG 后续接入交接
 
-本文面向后续模型、语料与 RAG 开发者。公共 DTO、REST 路径和持久化约束以当前
-`app/contracts`、OpenAPI 与 ADR 为准；本交接不授权通过伪造 ready 状态、测试输出或引用来绕过验收。
+本文是 v4.0 的模型/RAG 专项合同，事实基线为最新全绿 `main`，五人集成快照为 `bfb48d4`；人员任务、依赖顺序和里程碑以
+[v4.0 协同开发文档](NanoLoop_Agent_协同开发规格与接口总文档_v4.0.md) 为准。公共 DTO、REST 路径和
+持久化约束以当前 `app/contracts`、OpenAPI 与 ADR 为准；本交接不授权通过伪造 ready 状态、测试输出
+或引用来绕过验收。
 
 ## 1. 当前真实状态
 
@@ -29,8 +31,10 @@
   `/app/data/model-snapshots`。它是按权重 SHA-256 寻址的运行时派生存储，不应提交 Git；备份、
   容量与清理策略需要与原始模型资产一起纳入运维设计。
 - API 健康检查会核对 `alembic_version` 与仓库 migration head；接入部署不能用“数据库可连接”
-  覆盖 stale/missing revision。当前 Compose 配置可解析，但本轮 Docker image build 因拉取
-  Docker Hub 基础镜像超时未完成，不得将镜像构建写为已验收。
+  覆盖 stale/missing revision。本机曾因 Docker Hub 拉取超时而未得到等价构建证据；但
+  合并前历史快照 `16456a3` 的 [GitHub Actions run 29848825904](https://github.com/Yukun-Zheng/NanoLoop-Agent/actions/runs/29848825904)
+  已完成 API/frontend 镜像构建、非 root 启动和备份恢复 smoke。目标 GPU、真实模型与 RAG 资产仍须
+  独立验收。
 
 ## 2. 模型接入合同
 

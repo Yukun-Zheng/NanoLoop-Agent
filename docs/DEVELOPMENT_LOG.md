@@ -3,9 +3,10 @@
 本文件按时间追加 NanoLoop Agent 的可追溯开发批次。代码事实、自动化测试和 GitHub CI 是完成状态
 的最终依据；日志只记录范围、证据、风险与下一步，不把计划写成已经实现。
 
-每个批次至少记录：时间、分支/提交、范围、验证、外部阻塞、未完成项和发布状态。开发期间统一在
-`yukun` 分支累计经过本地门禁的相关改动；按可审阅批次推送，不逐文件推送，也不长期只保留在本地。
-除非项目负责人明确要求，`yukun` 不合入 `main`。
+每个批次至少记录：时间、分支/提交、范围、验证、外部阻塞、未完成项和发布状态。自 2026-07-23
+主线迁移起，`main` 是唯一长期分支；所有人从最新全绿 `origin/main` 新建短期功能分支，通过 PR
+合回 `main`，不得直接向 `main` 推送。按可审阅批次推送，不逐文件推送，也不长期只保留在本地。
+下文出现的 `yukun` 是迁移前历史事实，不再构成当前操作指令。
 
 ## 2026-07-18 13:19 +08:00 — 离线备份/恢复基线进入 main
 
@@ -354,3 +355,94 @@
   资产授权、固定独立集及真实 `upload -> Gateway -> Analysis -> report/export` 闭环前，不宣称为可演示
   的纳米颗粒分析 MVP 或科学测量 MVP。后续补交格式与验收步骤见
   `docs/developer_handoffs/guo-jinghao-ab-delivery-audit-2026-07-21.md`。
+
+## 2026-07-22 01:46 +08:00 — v4.0 协作交接与 GitHub 文档入口更新
+
+- 事实基线：v4.0 冻结在 `yukun@16456a30d63e42eda0e1d4b09ac0e7c223b3fd82`；
+  [GitHub Actions run 29848825904](https://github.com/Yukun-Zheng/NanoLoop-Agent/actions/runs/29848825904)
+  全绿，覆盖 Ruff、严格 Mypy、OpenAPI/Alembic、Python 3.11/3.12 的 1098 项 Pytest、六页
+  Streamlit、API/frontend 双容器构建与非 root 启动，以及备份恢复链路。
+- 文档发布：新增 v4.0 Markdown、DOCX、可重复构建脚本和文档索引；README、开发指南、需求追踪、
+  模型/RAG 交接、部署与生产就绪说明统一指向 v4.0。`make handoff-doc` 改为生成当前 v4.0，
+  `make handoff-doc-v3` 仅用于历史文档。
+- 阶段结论：当前仍为 M1 工程 MVP / 内部 Alpha。FR 汇总保持 `implemented 10 / partial 3 /
+  external-blocked 1`；五个登记模型均为 `unavailable`，正式 RAG 语料、固定 embedding、真实向量
+  重启验收和无降级 E2E 尚未完成。
+- 当前分工：郭境濠 A+B；黄睿健 C；徐皓彬 D；杨雨宁 E；姚承志 F-学习岗；郑煜坤负责契约、
+  集成、科学签字与发布。新增 PR 模板，要求交付者记录基线、单一行为切片、合同影响、外部资产、
+  实际测试、未验证项、风险、回滚和下一责任人。
+- v4.0 主线：先完成至少一个真实模型、固定独立 SEM/GT、合法语料、固定 embedding、真实引用和
+  无降级闭环；ASR、SAM2 深化、本地生成式 LLM、爬虫和前端重写暂缓。v3.0、RAG v1.0 中的旧
+  时间表和旧人员分工仅保留为历史记录。
+
+## 2026-07-22 20:17 +08:00 — Large U-Net PR 解冲突、资产状态复核与 checkpoint 勘误
+
+- PR 修复：[PR #5](https://github.com/Yukun-Zheng/NanoLoop-Agent/pull/5) 原先错误地以较旧的
+  `main` 为 base，导致 GitHub 展示大量冲突；已改为项目约定的 `yukun`。当前 PR 保持开放、未由
+  集成人代为合并，head 为 `feat/a-real-unet-large-v1@8314e0a`，状态为 `MERGEABLE / CLEAN`。
+- 代码复核：保留郭境濠移除 Adapter 内 `min_area_px` 统计后处理的正确边界；修正公开 registry
+  在未收到权重时误标 `ready` 的问题。公开 Large U-Net 继续 `unavailable`，私有测试只在临时
+  registry 中注入 fixture SHA 与 `ready`，因此不会把“代码接缝可测”误报为“真实模型资产已交付”。
+- PR 验证：[GitHub Actions run 29915725707](https://github.com/Yukun-Zheng/NanoLoop-Agent/actions/runs/29915725707)
+  全绿，覆盖 Ruff/严格 Mypy/迁移、Python 3.11/3.12 测试和 CPU 容器冒烟；本地完整 `make check`
+  通过 1100 项 Pytest，另有 33 项 Large U-Net 资产/tiling/smoke 窄测试通过。
+- checkpoint 勘误：历史 v3.0 中“不提交 checkpoint / 权重”的意思是“不进入公开 Git”，不是
+  “不用交给项目”。checkpoint / 可部署 `.pt` 是 A 模块必交资产，必须通过私有服务器、受控网盘
+  或线下介质实际交给项目负责人，并附 SHA-256、config、model card、许可、split/GT、环境和真实
+  smoke 证据；项目负责人实际收到并复核前，公开 registry 不得标记 `ready`。当前 v4.0、郭境濠
+  handoff、文档索引和 PR 模板已统一这一口径。
+- 后端交接复核：黄睿健提供的本地 `http://127.0.0.1:8000`、`/api/v1`、`X-API-Key`、HTTPS 与
+  轮换建议已由 README、部署文档和 v4.0 覆盖，无需把旧 `MVP_BACKEND_HANDOFF.md` 升格为当前
+  权威文档。仓库可确认默认 `AUTH_MODE=auto` 且无 Key 时关闭鉴权；实际环境是否配置 Key 仍需部署
+  时检查，正式共享 Key 联调应显式使用 `AUTH_MODE=shared_key`。
+
+## 2026-07-23 02:57 +08:00 — 五人交付审计、冲突消解与完整协作基线合入
+
+- 后端 C：黄睿健旧基线 PR #7 由 [PR #11](https://github.com/Yukun-Zheng/NanoLoop-Agent/pull/11)
+  解冲突替代并以 `137bb050` 合入。整合保留当前 principal/tenant 鉴权、FileToken v2、pinned-path
+  安全和模型合同，同时纳入确定性联调 fixture、显式导出白名单及存储/备份可移植性。原生 Windows
+  运行、目标服务器、最终 HTTPS Base URL 和 Key 交付仍未验收。
+- A+B：郭境濠 [PR #10](https://github.com/Yukun-Zheng/NanoLoop-Agent/pull/10) 在集成审查中修复五处
+  P1：错误 adapter SHA、人工 GT 被模型最小面积过滤、零 IoU 假匹配、不可评估指标假通过及贪心
+  匹配漏配；另让 gate 失败返回非零退出码。最终以 `1bf96cb2` 合入，
+  [Actions run 29946240643](https://github.com/Yukun-Zheng/NanoLoop-Agent/actions/runs/29946240643)
+  四项全绿。旧 `a40...` evidence 不得改标签复用，必须基于当前 `6055...` adapter 与真实私有资产重跑。
+- RAG D：徐皓彬旧基线 PR #8 的完成度说法被纠正，由
+  [PR #12](https://github.com/Yukun-Zheng/NanoLoop-Agent/pull/12) 以 `51e861b7` 合入失败关闭的候选/验收
+  脚手架。当前事实是 17 个候选、0 个 `ACCEPT_FULLTEXT`、32 道草案题、无固定 embedding；runtime
+  文档身份/SHA/许可/状态、成功响应、health、重启映射和最终覆盖均纳入验收，真实全文、索引和观测
+  结果仍需受控外部资产。
+- 前端 E：杨雨宁旧基线 PR #9 由 [PR #13](https://github.com/Yukun-Zheng/NanoLoop-Agent/pull/13)
+  解冲突替代并以 `b2836ddd` 合入。除六页前端、错误/降级状态、RAG 展示、可访问性和联调脚本外，
+  最终审查还要求远程 API Key 流量使用 HTTPS、写请求/上传不得自动重放、真实 Key 只读环境变量，
+  并修复 Streamlit 1.45 兼容和无效重试按钮。
+- 组合态回归：#11 的安全导出白名单与 #10 的科学 artifact 要求合并后，`probability.npy` 未进入
+  snapshot-free export，导致 12 个 Large smoke 测试在 SHA 前置校验处失败。修复只把该 canonical
+  证据加入白名单并证明任意 worker residue 仍被排除，没有放宽 fail-closed 校验。最终本地完整
+  `make check` 为 1276 passed / 22 skipped（21 项缺 Playwright、1 项无 live backend），严格 Mypy
+  124 个源文件、六页 Streamlit 和 Alembic 往返/漂移全绿；
+  [Actions run 29948525202](https://github.com/Yukun-Zheng/NanoLoop-Agent/actions/runs/29948525202)
+  的 Ruff/Mypy/迁移、Python 3.11、Python 3.12 和 CPU 容器冒烟全部通过。
+- PR 收束：冲突的 #7、#8、#9 已分别注明由 #11、#12、#13 替代后关闭，贡献者共同作者署名保留；
+  fork 分支保留追溯，集成人临时分支在合入后删除。姚承志的 FunASR 仍为隔离 POC；可开始资产
+  台账、结构/hash/许可/dry-run，但完整模型/RAG 验收必须等待真实包。
+- 动态交接：新增
+  [五人集成状态与下一步](developer_handoffs/team-integration-status-2026-07-23.md)，明确每人的完成项、
+  未完成项、依赖顺序和可执行交付条件。当前仍为 M1 工程 MVP / 内部 Alpha，不因代码脚手架全绿而
+  宣称真实模型、RAG、部署或无降级 E2E 已完成。
+
+## 2026-07-23 03:26 +08:00 — 主线统一到 main 并退役 yukun
+
+- 决策：`main` 成为唯一长期开发与集成基线。后续所有开发者都从最新全绿 `origin/main` 创建短期
+  `feat/*`、`fix/*`、`docs/*` 或 `chore/*` 分支，通过 PR 合回 `main`；不得直接向 `main` 推送，也
+  不再创建个人长期集成分支。
+- 历史核验：迁移前 `main@277c057` 的 tree 与 `yukun@16456a3` 完全相同；`main` 的唯一独有提交是
+  早期成果的 squash，不包含需要单独保留的新内容。两条历史先以双父提交安全连接，最终树明确采用
+  已完成五人集成和文档更新的最新 `yukun` 树，避免普通三方合并产生的伪冲突覆盖新实现。
+- 仓库同步：README、CI push 触发、PR 模板、开发指南、v4.0、RAG 指南、实名交接和动态进度统一改为
+  `origin/main` → 短期功能分支 → PR 到 `main`；历史日志、接收审计和资产 ledger 中的旧分支/commit
+  仍按原事实保留。
+- 发布顺序：迁移批次经完整本地门禁和 GitHub Actions 后合入 `main`；确认 `main` 包含原 `yukun`
+  全部历史与最终树、默认分支仍为 `main` 且 push CI 全绿后，删除远端 `yukun`。
+- 状态边界：本次只统一 Git 主线和协作文档，不改变 M1 能力判断；真实 checkpoint、固定 SEM/GT、
+  正式 RAG 语料/embedding、目标部署和无降级 E2E 仍按 v4.0 的外部资产门槛推进。
