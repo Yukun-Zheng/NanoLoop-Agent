@@ -76,9 +76,17 @@ def _response_payload(response: httpx.Response, *, operation: str) -> tuple[str,
     if not isinstance(payload, dict):
         raise AcceptanceRunError(f"{operation} returned a non-object envelope")
     request_id = payload.get("request_id")
+    status = payload.get("status")
     data = payload.get("data")
+    error = payload.get("error")
     if not isinstance(request_id, str) or not request_id:
         raise AcceptanceRunError(f"{operation} response is missing request_id")
+    expected_status = "accepted" if response.status_code == 202 else "success"
+    if status != expected_status or error is not None:
+        raise AcceptanceRunError(
+            f"{operation} returned an invalid success envelope: "
+            f"expected status={expected_status!r} and error=null"
+        )
     if not isinstance(data, dict):
         raise AcceptanceRunError(f"{operation} response is missing object data")
     return request_id, cast(dict[str, Any], data)
@@ -90,28 +98,25 @@ def fetch_health(client: HttpClient, api_base: str) -> dict[str, Any]:
     return {"request_id": request_id, "data": data}
 
 
-def _existing_document(response: httpx.Response) -> tuple[str, str] | None:
-    if response.status_code != 409:
-        return None
-    try:
-        payload = response.json()
-    except ValueError:
-        return None
-    if not isinstance(payload, dict):
-        return None
-    error = payload.get("error")
-    if not isinstance(error, dict):
-        return None
-    details = error.get("details")
-    if not isinstance(details, dict):
-        return None
-    doc_id = details.get("existing_doc_id")
-    sha256 = details.get("sha256")
-    if not isinstance(doc_id, str) or not doc_id:
-        return None
-    if not isinstance(sha256, str) or not sha256:
-        return None
-    return doc_id, sha256
+def _material_aliases(row: Mapping[str, str]) -> list[str]:
+    aliases = {alias.strip() for alias in row["aliases"].split(";") if alias.strip()}
+    return sorted(aliases, key=lambda value: (value.casefold(), value))
+
+
+def _document_metadata(row: Mapping[str, str]) -> dict[str, Any]:
+    return {
+        "title": row["title"],
+        "source_type": "paper",
+        "year": int(row["year"]),
+        "citation_text": row["citation_text"],
+        "material_aliases": _material_aliases(row),
+        "license_note": (
+            f"{row['license']}; terms={row['license_url']}; "
+            f"evidence={row['license_evidence_url']}; reviewed_by={row['reviewed_by']}; "
+            f"reviewed_at={row['reviewed_at']}"
+        ),
+        "allowed_for_demo": True,
+    }
 
 
 def ingest_corpus(
@@ -126,21 +131,7 @@ def ingest_corpus(
     for row in package.accepted_rows:
         asset_id = row["asset_id"]
         source = sources / row["file_path"]
-        metadata = {
-            "title": row["title"],
-            "source_type": "paper",
-            "year": int(row["year"]),
-            "citation_text": row["citation_text"],
-            "material_aliases": [
-                alias.strip() for alias in row["aliases"].split(";") if alias.strip()
-            ],
-            "license_note": (
-                f"{row['license']}; terms={row['license_url']}; "
-                f"evidence={row['license_evidence_url']}; reviewed_by={row['reviewed_by']}; "
-                f"reviewed_at={row['reviewed_at']}"
-            ),
-            "allowed_for_demo": True,
-        }
+        metadata = _document_metadata(row)
         with source.open("rb") as handle:
             response = client.post(
                 f"{api_base}/api/v1/knowledge/documents",
@@ -149,28 +140,11 @@ def ingest_corpus(
                 data={"metadata_json": json.dumps(metadata, ensure_ascii=False)},
                 timeout=120.0,
             )
-        existing_document = _existing_document(response)
-        if response.status_code == 409 and existing_document is None:
+        if response.status_code == 409:
             raise AcceptanceRunError(
-                f"ingest {asset_id} returned an incomplete duplicate-document response"
+                f"ingest {asset_id} conflicts with an existing document; "
+                "a 409 means the stored metadata differs and cannot be reused"
             )
-        if existing_document is not None:
-            existing_doc_id, duplicate_sha = existing_document
-            if duplicate_sha != row["file_sha256"]:
-                raise AcceptanceRunError(
-                    f"ingest {asset_id} duplicate SHA mismatch: "
-                    f"expected {row['file_sha256']}, observed {duplicate_sha}"
-                )
-            mapping[asset_id] = existing_doc_id
-            results.append(
-                {
-                    "asset_id": asset_id,
-                    "doc_id": existing_doc_id,
-                    "source_sha256": duplicate_sha,
-                    "ingest_status": "reused_existing",
-                }
-            )
-            continue
         request_id, data = _response_payload(response, operation=f"ingest {asset_id}")
         doc_id = data.get("doc_id")
         observed_sha = data.get("sha256")
@@ -197,6 +171,82 @@ def ingest_corpus(
             }
         )
     return results, mapping
+
+
+def verify_runtime_mapping(
+    client: HttpClient,
+    api_base: str,
+    headers: Mapping[str, str],
+    package: ValidatedAcceptancePackage,
+    asset_to_doc: Mapping[str, str],
+) -> list[dict[str, str]]:
+    """Bind a saved mapping back to authoritative runtime document facts."""
+
+    response = client.get(
+        f"{api_base}/api/v1/knowledge/documents",
+        headers=dict(headers),
+        timeout=30.0,
+    )
+    _, data = _response_payload(response, operation="list knowledge documents")
+    documents = data.get("documents")
+    if not isinstance(documents, list):
+        raise AcceptanceRunError("knowledge document list is missing documents")
+    by_id: dict[str, dict[str, Any]] = {}
+    for document in documents:
+        if not isinstance(document, dict):
+            raise AcceptanceRunError("knowledge document list contains a non-object")
+        doc_id = document.get("doc_id")
+        if not isinstance(doc_id, str) or not doc_id:
+            raise AcceptanceRunError("knowledge document list contains an invalid doc_id")
+        if doc_id in by_id:
+            raise AcceptanceRunError(f"knowledge document list repeats doc_id: {doc_id}")
+        by_id[doc_id] = document
+
+    expected_assets = {row["asset_id"] for row in package.accepted_rows}
+    if set(asset_to_doc) != expected_assets:
+        raise AcceptanceRunError("runtime mapping does not cover exactly the accepted assets")
+    if len(set(asset_to_doc.values())) != len(asset_to_doc):
+        raise AcceptanceRunError("runtime mapping assigns one doc_id to multiple assets")
+
+    verified: list[dict[str, str]] = []
+    for row in package.accepted_rows:
+        asset_id = row["asset_id"]
+        doc_id = asset_to_doc[asset_id]
+        document = by_id.get(doc_id)
+        if document is None:
+            raise AcceptanceRunError(
+                f"runtime mapping for {asset_id} references missing doc_id {doc_id}"
+            )
+        metadata = _document_metadata(row)
+        expected = {
+            "sha256": row["file_sha256"],
+            "title": metadata["title"],
+            "source_type": metadata["source_type"],
+            "year": metadata["year"],
+            "citation_text": metadata["citation_text"],
+            "material_aliases": metadata["material_aliases"],
+            "license_note": metadata["license_note"],
+            "allowed_for_demo": True,
+            "status": "ready",
+        }
+        mismatches = [
+            field
+            for field, expected_value in expected.items()
+            if document.get(field) != expected_value
+        ]
+        if mismatches:
+            raise AcceptanceRunError(
+                f"runtime document {doc_id} for {asset_id} mismatches fields: {mismatches}"
+            )
+        verified.append(
+            {
+                "asset_id": asset_id,
+                "doc_id": doc_id,
+                "sha256": row["file_sha256"],
+                "status": "ready",
+            }
+        )
+    return verified
 
 
 def load_mapping(path: Path, package: ValidatedAcceptancePackage) -> dict[str, str]:
@@ -311,6 +361,7 @@ def run_queries(
         expected_outcome = question["expected_outcome"]
         observed_outcome = data.get("outcome_code")
         checks = {
+            "query_type_matches": data.get("query_type") == question["query_type"],
             "outcome_matches": observed_outcome == expected_outcome,
             "relevant_asset_retrieved": (
                 bool(observed & relevant) if expected_outcome == "OK" else True
@@ -417,6 +468,13 @@ def main(argv: list[str] | None = None, *, client: HttpClient | None = None) -> 
             _write_json(
                 evaluation_dir / f"ingest-results.{args.run_label}.json", ingest_results
             )
+        verified_runtime_documents = verify_runtime_mapping(
+            runtime_client,
+            api_base,
+            headers,
+            package,
+            asset_to_doc,
+        )
         query_results = run_queries(
             runtime_client,
             api_base,
@@ -426,6 +484,15 @@ def main(argv: list[str] | None = None, *, client: HttpClient | None = None) -> 
             asset_to_doc,
         )
         health_after = fetch_health(runtime_client, api_base)
+        rag_health_after = health_after["data"].get("rag_index")
+        observed_health_after = (
+            rag_health_after.get("status") if isinstance(rag_health_after, dict) else None
+        )
+        if observed_health_after != args.expect_rag_health:
+            raise AcceptanceRunError(
+                "RAG health changed during the run: "
+                f"expected {args.expect_rag_health}, observed {observed_health_after}"
+            )
         result_path = evaluation_dir / f"query-results.{args.run_label}.jsonl"
         _write_jsonl(result_path, query_results)
         failures = [
@@ -438,6 +505,7 @@ def main(argv: list[str] | None = None, *, client: HttpClient | None = None) -> 
             "health_before": health_before,
             "health_after": health_after,
             "accepted_assets": sorted(asset_to_doc),
+            "verified_runtime_documents": verified_runtime_documents,
             "question_count": len(query_results),
             "automated_failure_query_ids": failures,
             "human_review_pending": len(query_results),

@@ -179,6 +179,7 @@ class _FakeClient:
     def __init__(self, expected_shas: dict[str, str]) -> None:
         self.expected_shas = expected_shas
         self.headers_seen: list[dict[str, str]] = []
+        self.get_headers_seen: list[dict[str, str]] = []
         self.calls = 0
 
     @staticmethod
@@ -186,12 +187,40 @@ class _FakeClient:
         return httpx.Response(
             status,
             request=httpx.Request(method, url),
-            json={"request_id": f"req-{status}", "status": "success", "data": data, "error": None},
+            json={
+                "request_id": f"req-{status}",
+                "status": "accepted" if status == 202 else "success",
+                "data": data,
+                "error": None,
+            },
         )
 
     def get(self, url: str, **kwargs: Any) -> httpx.Response:
-        del kwargs
         self.calls += 1
+        if url.endswith("/knowledge/documents"):
+            self.get_headers_seen.append(dict(kwargs.get("headers", {})))
+            documents = []
+            for asset_id, digest in self.expected_shas.items():
+                documents.append(
+                    {
+                        "doc_id": f"doc-{asset_id}",
+                        "title": f"Title {asset_id}",
+                        "source_type": "paper",
+                        "sha256": digest,
+                        "year": 2025,
+                        "citation_text": f"Author. Title {asset_id}. 2025.",
+                        "status": "ready",
+                        "material_aliases": ["titanium dioxide", "二氧化钛"],
+                        "license_note": (
+                            "CC BY 4.0; terms=https://creativecommons.org/licenses/by/4.0/; "
+                            f"evidence=https://example.test/{asset_id}/license; "
+                            "reviewed_by=Reviewer; reviewed_at=2026-07-23"
+                        ),
+                        "allowed_for_demo": True,
+                        "created_at": "2026-07-23T00:00:00Z",
+                    }
+                )
+            return self._response("GET", url, 200, {"documents": documents})
         return self._response(
             "GET",
             url,
@@ -279,6 +308,19 @@ def test_runnable_package_checks_files_embedding_and_independent_review(tmp_path
     assert package.embedding["verified"] is True
 
 
+def test_verified_embedding_cannot_keep_an_unreviewed_license(tmp_path: Path) -> None:
+    package_path, _ = _write_runnable_package(tmp_path)
+    manifest = package_path / "embedding" / "model-manifest.json"
+    value = json.loads(manifest.read_text(encoding="utf-8"))
+    value["license"] = "unknown"
+    manifest.write_text(json.dumps(value), encoding="utf-8")
+
+    with pytest.raises(AssetValidationError, match="embedding license is still unreviewed"):
+        validate_acceptance_package(
+            package_path, require_runnable=True, verify_files=True
+        )
+
+
 def test_csv_column_drift_is_rejected(tmp_path: Path) -> None:
     repository = Path(__file__).resolve().parents[3]
     package = tmp_path / "rag-acceptance-v1"
@@ -299,6 +341,11 @@ def test_private_inputs_and_generated_results_are_gitignored() -> None:
         "rag-acceptance-v1/evaluation/ingest-results.hybrid.json",
         "rag-acceptance-v1/evaluation/acceptance-summary.hybrid.json",
         "rag-acceptance-v1/index-evidence/private.index",
+        "rag-acceptance-v1/embedding/snapshot/model.safetensors",
+        "rag-acceptance-v1/embedding/model.onnx",
+        "rag-acceptance-v1/index-evidence/docstore.json",
+        "rag-acceptance-v1/index-evidence/faiss.bin",
+        "rag-acceptance-v1/index-evidence/generation-manifest.json",
         "rag-acceptance-v1/run-record/restart-smoke.json",
     ]
     for target in targets:
@@ -308,6 +355,22 @@ def test_private_inputs_and_generated_results_are_gitignored() -> None:
             check=False,
         )
         assert completed.returncode == 0, target
+
+    public_contracts = [
+        "rag-acceptance-v1/embedding/model-manifest.json",
+        "rag-acceptance-v1/evaluation/judgment-schema.json",
+        "rag-acceptance-v1/evaluation/questions.jsonl",
+        "rag-acceptance-v1/index-evidence/generation-manifest.example.json",
+        "rag-acceptance-v1/run-record/commands.txt.example",
+        "rag-acceptance-v1/run-record/environment.txt.example",
+    ]
+    for target in public_contracts:
+        completed = subprocess.run(
+            ["git", "check-ignore", "--quiet", target],
+            cwd=repository,
+            check=False,
+        )
+        assert completed.returncode == 1, target
 
 
 def test_real_runner_maps_asset_ids_and_keeps_human_review_pending(
@@ -336,11 +399,12 @@ def test_real_runner_maps_asset_ids_and_keeps_human_review_pending(
         client=fake,
     )
     assert result == 0
-    assert fake.calls == 27
+    assert fake.calls == 28
     assert all(
         headers.get("X-API-Key") == "do-not-print-this-secret"
         for headers in fake.headers_seen
     )
+    assert fake.get_headers_seen == [{"X-API-Key": "do-not-print-this-secret"}]
     output = capsys.readouterr().out
     assert "do-not-print-this-secret" not in output
     results = [
@@ -381,7 +445,7 @@ def test_restart_mapping_must_match_current_manifest_sha(tmp_path: Path) -> None
         runner.load_mapping(mapping_path, package)
 
 
-def test_duplicate_ingest_must_report_matching_sha(tmp_path: Path) -> None:
+def test_metadata_conflict_is_never_reused_even_with_matching_sha(tmp_path: Path) -> None:
     package_path, expected_shas = _write_runnable_package(tmp_path)
 
     class DuplicateMismatchClient(_FakeClient):
@@ -400,7 +464,7 @@ def test_duplicate_ingest_must_report_matching_sha(tmp_path: Path) -> None:
                         "message": "already ingested",
                         "details": {
                             "existing_doc_id": "doc-existing",
-                            "sha256": "0" * 64,
+                            "sha256": next(iter(self.expected_shas.values())),
                         },
                     },
                 },
@@ -423,6 +487,86 @@ def test_duplicate_ingest_must_report_matching_sha(tmp_path: Path) -> None:
         client=fake,
     )
 
+    assert result == 2
+
+
+def test_saved_mapping_is_rebound_to_runtime_document_facts(tmp_path: Path) -> None:
+    package_path, expected_shas = _write_runnable_package(tmp_path)
+    package = validate_acceptance_package(
+        package_path, require_runnable=True, verify_files=True
+    )
+    mapping = {asset_id: f"doc-{asset_id}" for asset_id in expected_shas}
+    stale_runtime_shas = dict(expected_shas)
+    stale_runtime_shas["asset_0"] = "0" * 64
+    fake = _FakeClient(stale_runtime_shas)
+
+    with pytest.raises(runner.AcceptanceRunError, match=r"mismatches fields.*sha256"):
+        runner.verify_runtime_mapping(
+            fake,
+            "http://127.0.0.1:8000",
+            {},
+            package,
+            mapping,
+        )
+
+
+def test_success_envelope_status_and_error_are_fail_closed() -> None:
+    malformed = httpx.Response(
+        200,
+        request=httpx.Request("GET", "http://127.0.0.1:8000/api/v1/health"),
+        json={
+            "request_id": "req-malformed",
+            "status": "error",
+            "data": {"rag_index": {"status": "healthy"}},
+            "error": {"code": "BROKEN"},
+        },
+    )
+    with pytest.raises(runner.AcceptanceRunError, match="invalid success envelope"):
+        runner._response_payload(malformed, operation="health")
+
+
+def test_rag_health_must_stay_at_the_expected_level(tmp_path: Path) -> None:
+    package_path, expected_shas = _write_runnable_package(tmp_path)
+
+    class DegradingClient(_FakeClient):
+        def __init__(self, shas: dict[str, str]) -> None:
+            super().__init__(shas)
+            self.health_calls = 0
+
+        def get(self, url: str, **kwargs: Any) -> httpx.Response:
+            if url.endswith("/health"):
+                self.health_calls += 1
+                if self.health_calls == 2:
+                    self.calls += 1
+                    return self._response(
+                        "GET",
+                        url,
+                        200,
+                        {
+                            "service": {"status": "healthy"},
+                            "database": {"status": "healthy"},
+                            "model_registry": {"status": "degraded"},
+                            "rag_index": {"status": "degraded"},
+                            "version": "test",
+                        },
+                    )
+            return super().get(url, **kwargs)
+
+    result = runner.main(
+        [
+            "--api-base",
+            "http://127.0.0.1:8000",
+            "--package",
+            str(package_path),
+            "--job-id",
+            "job-test",
+            "--run-label",
+            "hybrid",
+            "--expect-rag-health",
+            "healthy",
+        ],
+        client=DegradingClient(expected_shas),
+    )
     assert result == 2
 
 

@@ -25,6 +25,7 @@ _DECISIONS = {
     "ACCEPT_FULLTEXT",
 }
 _EXPECTED_OUTCOMES = {"OK", "INSUFFICIENT_EVIDENCE"}
+_RAG_QUERY_TYPES = {"material_knowledge", "mixed"}
 _CORPUS_FIELDS = {
     "asset_id",
     "decision",
@@ -103,7 +104,19 @@ def _jsonl_objects(path: Path) -> tuple[list[dict[str, Any]], list[str]]:
 
 def _is_https_url(value: str) -> bool:
     parsed = urlsplit(value)
-    return parsed.scheme == "https" and bool(parsed.netloc) and not parsed.username
+    return (
+        parsed.scheme == "https"
+        and bool(parsed.netloc)
+        and parsed.username is None
+        and parsed.password is None
+    )
+
+
+def _license_is_reviewed(value: str) -> bool:
+    normalized = value.strip().casefold()
+    return bool(normalized) and not any(
+        marker in normalized for marker in ("not reviewed", "unknown", "todo", "tbd")
+    )
 
 
 def _parse_bool(value: str, *, location: str, issues: list[str]) -> bool | None:
@@ -233,6 +246,16 @@ def _validate_corpus(
             missing = [field for field in required if not row.get(field)]
             if missing:
                 issues.append(f"{location}: ACCEPT_FULLTEXT missing {missing}")
+            if row.get("license") and not _license_is_reviewed(row["license"]):
+                issues.append(f"{location}: ACCEPT_FULLTEXT license is still unreviewed")
+            if row.get("year"):
+                try:
+                    year = int(row["year"])
+                except ValueError:
+                    issues.append(f"{location}: year must be an integer")
+                else:
+                    if not 1000 <= year <= 3000:
+                        issues.append(f"{location}: year must be between 1000 and 3000")
             if allowed is not True:
                 issues.append(f"{location}: ACCEPT_FULLTEXT requires allowed_for_demo=true")
             if page_verified is not True:
@@ -276,8 +299,11 @@ def _validate_embedding(
     except AssetValidationError as error:
         return {}, list(error.issues)
     issues: list[str] = []
+    status = value.get("status")
+    if status not in {"candidate_unverified", "verified"}:
+        issues.append(f"{path}: status must be candidate_unverified or verified")
     verified = value.get("verified") is True
-    if verified != (value.get("status") == "verified"):
+    if verified != (status == "verified"):
         issues.append(f"{path}: status and verified must agree")
     if not isinstance(value.get("dimension"), int) or value["dimension"] <= 0:
         issues.append(f"{path}: dimension must be a positive integer")
@@ -295,8 +321,17 @@ def _validate_embedding(
         for field in ("license", "license_url", "local_dir", "verified_by", "verified_at"):
             if not value.get(field):
                 issues.append(f"{path}: verified embedding missing {field}")
+        license_name = value.get("license")
+        if isinstance(license_name, str) and not _license_is_reviewed(license_name):
+            issues.append(f"{path}: embedding license is still unreviewed")
         if value.get("license_url") and not _is_https_url(str(value["license_url"])):
             issues.append(f"{path}: license_url must be an HTTPS URL without credentials")
+        verified_at = value.get("verified_at")
+        if isinstance(verified_at, str) and verified_at:
+            try:
+                date.fromisoformat(verified_at)
+            except ValueError:
+                issues.append(f"{path}: verified_at must be YYYY-MM-DD")
         local_value = value.get("local_dir")
         if isinstance(local_value, str) and local_value:
             local_dir = Path(local_value).expanduser().resolve()
@@ -365,6 +400,8 @@ def _validate_questions(
         seen.add(str(query_id))
         if not isinstance(question.get("question"), str) or not question["question"].strip():
             issues.append(f"{location}: question must be non-empty")
+        if question.get("query_type") not in _RAG_QUERY_TYPES:
+            issues.append(f"{location}: query_type must be material_knowledge or mixed")
         outcome = question.get("expected_outcome")
         if outcome not in _EXPECTED_OUTCOMES:
             issues.append(f"{location}: invalid expected_outcome {outcome!r}")
@@ -420,6 +457,21 @@ def _validate_questions(
                     issues.append(f"{location}: relevant assets are not accepted: {unaccepted}")
     if len(questions) < 20:
         issues.append(f"{path}: at least 20 questions are required; found {len(questions)}")
+    if require_runnable:
+        accepted_assets = {
+            row["asset_id"] for row in rows if row["decision"] == "ACCEPT_FULLTEXT"
+        }
+        covered_assets = {
+            asset_id
+            for question in questions
+            if question.get("annotation_status") == "final"
+            and question.get("expected_outcome") == "OK"
+            for asset_id in question.get("relevant_asset_ids", [])
+            if isinstance(asset_id, str)
+        }
+        uncovered = sorted(accepted_assets - covered_assets)
+        if uncovered:
+            issues.append(f"{path}: accepted assets lack final OK questions: {uncovered}")
     return tuple(questions), issues
 
 

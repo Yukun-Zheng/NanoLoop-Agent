@@ -3,6 +3,7 @@
   "expected_source": "questions.jsonl",
   "observed_output_pattern": "query-results.<run_label>.jsonl",
   "automated_checks": [
+    "query_type_matches",
     "outcome_matches",
     "at_least_one_relevant_asset_retrieved_for_ok",
     "forbidden_asset_not_retrieved",
