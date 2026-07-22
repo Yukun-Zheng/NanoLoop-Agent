@@ -12,8 +12,6 @@ import app.inference.registry as registry_module
 from app.contracts.enums import ModelStatus
 from app.inference.registry import ModelRegistryService
 
-_LARGE_TORCHSCRIPT_SHA256 = "007d9a16bf31e5f960160c52eefa938b83feeac2e6c0d7dec9c8670a38626e05"
-
 
 def _artifact_root() -> Path:
     return Path(__file__).parents[3] / "model_artifacts"
@@ -65,11 +63,11 @@ def test_large_unet_config_freezes_confirmed_inference_contract() -> None:
     }
 
 
-def test_large_registry_entry_declares_ready_with_180_px_invalid_bottom() -> None:
+def test_large_public_registry_remains_unavailable_with_180_px_invalid_bottom() -> None:
     entry = _registry_models()["unet-large-optimized-v1"]
     metadata = entry["metadata"]
 
-    assert metadata["status"] == "ready"
+    assert metadata["status"] == "unavailable"
     assert metadata["inference_invalid_bottom_px"] == 180
     assert metadata["default_threshold"] == 0.50
     assert metadata["default_min_area_px"] == 512
@@ -98,10 +96,12 @@ def test_large_registry_entry_declares_ready_with_180_px_invalid_bottom() -> Non
     }
     assert entry["adapter_path"] == "app.inference.adapters.unet:UNetAdapter"
     assert entry["weight_path"] == "weights/unet-large-optimized-v1.pt"
-    assert entry["weight_sha256"] == _LARGE_TORCHSCRIPT_SHA256
+    assert entry["weight_sha256"] is None
     assert entry["config_path"] == "configs/unet-large-optimized-v1.yaml"
     assert entry["model_card_path"] == "model_cards/unet-large-optimized-v1.md"
-    assert "health_error" not in metadata
+    assert metadata["health_error"] == (
+        "External TorchScript, asset ledger, and machine-readable evidence were not delivered."
+    )
 
 
 def test_large_external_bundle_resolves_relative_assets_and_fails_closed(
@@ -126,6 +126,10 @@ def test_large_external_bundle_resolves_relative_assets_and_fails_closed(
     weight_path.write_bytes(weight_bytes)
 
     entry = deepcopy(_registry_models()["unet-large-optimized-v1"])
+    metadata = entry["metadata"]
+    assert isinstance(metadata, dict)
+    metadata["status"] = "ready"
+    metadata.pop("health_error", None)
     entry["weight_sha256"] = hashlib.sha256(weight_bytes).hexdigest()
     registry_path = bundle / "registry.yaml"
     registry_path.write_text(

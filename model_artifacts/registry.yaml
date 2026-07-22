@@ -31,7 +31,7 @@ models:
       variant: large_particle
       quality_tier: balanced
       version: "1"
-      status: ready
+      status: unavailable
       supports_box_prompt: false
       default_threshold: 0.50
       default_min_area_px: 512
@@ -67,9 +67,10 @@ models:
         bottom_crop_px: 180
         scale_nm_per_pixel: 0.5434782608695652
       notes: Large-particle parameters and metrics are developer-reported; independent evidence review is pending.
+      health_error: External TorchScript, asset ledger, and machine-readable evidence were not delivered.
     adapter_path: app.inference.adapters.unet:UNetAdapter
     weight_path: weights/unet-large-optimized-v1.pt
-    weight_sha256: 007d9a16bf31e5f960160c52eefa938b83feeac2e6c0d7dec9c8670a38626e05
+    weight_sha256: null
     config_path: configs/unet-large-optimized-v1.yaml
     model_card_path: model_cards/unet-large-optimized-v1.md
     required_modules:
