@@ -1,8 +1,16 @@
 from __future__ import annotations
 
+import hashlib
+import shutil
+from copy import deepcopy
 from pathlib import Path
 
 import yaml
+
+from app.contracts.enums import ModelStatus
+from app.inference.registry import ModelRegistryService
+
+_LARGE_TORCHSCRIPT_SHA256 = "007d9a16bf31e5f960160c52eefa938b83feeac2e6c0d7dec9c8670a38626e05"
 
 
 def _artifact_root() -> Path:
@@ -88,9 +96,63 @@ def test_large_registry_entry_remains_unavailable_with_180_px_invalid_bottom() -
     }
     assert entry["adapter_path"] == "app.inference.adapters.unet:UNetAdapter"
     assert entry["weight_path"] == "weights/unet-large-optimized-v1.pt"
-    assert entry["weight_sha256"] is None
+    assert entry["weight_sha256"] == _LARGE_TORCHSCRIPT_SHA256
     assert entry["config_path"] == "configs/unet-large-optimized-v1.yaml"
     assert entry["model_card_path"] == "model_cards/unet-large-optimized-v1.md"
+
+
+def test_large_external_bundle_resolves_relative_assets_and_fails_closed(
+    tmp_path: Path,
+) -> None:
+    source = _artifact_root()
+    bundle = tmp_path / "external-model-artifacts"
+    (bundle / "weights").mkdir(parents=True)
+    (bundle / "configs").mkdir()
+    (bundle / "model_cards").mkdir()
+    shutil.copy2(
+        source / "configs" / "unet-large-optimized-v1.yaml",
+        bundle / "configs" / "unet-large-optimized-v1.yaml",
+    )
+    shutil.copy2(
+        source / "model_cards" / "unet-large-optimized-v1.md",
+        bundle / "model_cards" / "unet-large-optimized-v1.md",
+    )
+    weight_path = bundle / "weights" / "unet-large-optimized-v1.pt"
+    weight_bytes = b"external-large-torchscript-fixture"
+    weight_path.write_bytes(weight_bytes)
+
+    entry = deepcopy(_registry_models()["unet-large-optimized-v1"])
+    entry["weight_sha256"] = hashlib.sha256(weight_bytes).hexdigest()
+    # This test verifies registry asset resolution, not third-party runtime discovery.
+    entry["required_modules"] = []
+    registry_path = bundle / "registry.yaml"
+    registry_path.write_text(
+        yaml.safe_dump({"schema_version": "1", "models": [entry]}, sort_keys=False),
+        encoding="utf-8",
+    )
+
+    def load_registry() -> ModelRegistryService:
+        return ModelRegistryService(registry_path, snapshot_root=bundle / "snapshots")
+
+    verified = load_registry()
+    registration = verified.get_registration("unet-large-optimized-v1")
+    metadata = verified.get_metadata("unet-large-optimized-v1")
+    assert registration.weight_path == weight_path
+    assert registration.config_path == bundle / "configs" / "unet-large-optimized-v1.yaml"
+    assert registration.model_card_path == bundle / "model_cards" / "unet-large-optimized-v1.md"
+    assert registration.weight_sha256 == hashlib.sha256(weight_bytes).hexdigest()
+    assert metadata.status == ModelStatus.UNAVAILABLE
+    assert metadata.health_error == entry["metadata"]["health_error"]
+
+    weight_path.unlink()
+    missing = load_registry().get_metadata("unet-large-optimized-v1")
+    assert missing.status == ModelStatus.UNAVAILABLE
+    assert "weight file is missing" in (missing.health_error or "")
+
+    weight_path.write_bytes(b"tampered-external-large-torchscript-fixture")
+    mismatched = load_registry().get_metadata("unet-large-optimized-v1")
+    assert mismatched.status == ModelStatus.UNAVAILABLE
+    assert "weight sha256 mismatch" in (mismatched.health_error or "")
 
 
 def test_small_unet_asset_contract_is_unchanged() -> None:

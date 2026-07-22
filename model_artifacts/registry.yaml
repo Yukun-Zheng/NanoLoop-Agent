@@ -70,7 +70,7 @@ models:
       health_error: External TorchScript, asset ledger, and machine-readable evidence were not delivered.
     adapter_path: app.inference.adapters.unet:UNetAdapter
     weight_path: weights/unet-large-optimized-v1.pt
-    weight_sha256: null
+    weight_sha256: 007d9a16bf31e5f960160c52eefa938b83feeac2e6c0d7dec9c8670a38626e05
     config_path: configs/unet-large-optimized-v1.yaml
     model_card_path: model_cards/unet-large-optimized-v1.md
     required_modules:
