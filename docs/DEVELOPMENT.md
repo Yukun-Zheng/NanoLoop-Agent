@@ -2,14 +2,15 @@
 
 ## 接手前必读
 
-先阅读 [v4.0 交接 DOCX](NanoLoop_Agent_协同开发规格与接口总文档_v4.0.docx)；检索代码路径、评审或修改内容时使用 [Markdown 源文件](NanoLoop_Agent_协同开发规格与接口总文档_v4.0.md)。v4.0 依据 `yukun@16456a3` 的代码、迁移、路由和测试生成，并给出当前实名分工、优先级、依赖和统一验收。RAG 开发者同时阅读 [RAG 与检索功能开发指南](RAG_RETRIEVAL_DEVELOPMENT_GUIDE.md)，但其中旧时间表与旧人员分工由 v4.0 取代；A+B 开发者使用 [模型冻结、接入与 AI 协作指南](developer_handoffs/guo-jinghao-ab-model-integration-guide.md)；后续语音输入探索见 [FunASR Nano POC 记录](experiments/funasr-nano-poc.md)。v3/v2 保留为历史资料；若旧计划与当前实现冲突，以代码、测试和 v4.0 为准。
+先阅读 [v4.0 交接 DOCX](NanoLoop_Agent_协同开发规格与接口总文档_v4.0.docx)；检索代码路径、评审或修改内容时使用 [Markdown 源文件](NanoLoop_Agent_协同开发规格与接口总文档_v4.0.md)。v4.0 依据五人集成快照 `bfb48d4` 及其代码、迁移、路由和测试生成，并给出当前实名分工、优先级、依赖和统一验收；后续事实以最新 `main` 为准。RAG 开发者同时阅读 [RAG 与检索功能开发指南](RAG_RETRIEVAL_DEVELOPMENT_GUIDE.md)，但其中旧时间表与旧人员分工由 v4.0 取代；A+B 开发者使用 [模型冻结、接入与 AI 协作指南](developer_handoffs/guo-jinghao-ab-model-integration-guide.md)；后续语音输入探索见 [FunASR Nano POC 记录](experiments/funasr-nano-poc.md)。v3/v2 保留为历史资料；若旧计划与当前实现冲突，以代码、测试和 v4.0 为准。
 
 ## 分支与合并基线
 
-- `main` 是阶段性稳定分支，平时不直接开发；只有负责人确认里程碑完整门禁全绿后，才从
-  `yukun` 向 `main` 发合并请求。
-- `yukun` 是当前集成分支。开发者先从最新全绿 `origin/yukun` 新建自己的 `feat/*` 或 `fix/*`
-  分支，再向 `yukun` 发 Pull Request；不得把本地训练目录直接复制覆盖仓库。
+- `main` 是唯一长期分支，也是所有开发者的共同基线。不要直接在 `main` 工作或推送提交。
+- 开发者先更新 `origin/main`，再从最新全绿提交新建自己的 `feat/*`、`fix/*`、`docs/*` 或
+  `chore/*` 分支；完成后向 `main` 发 Pull Request。已经合并或废弃的旧分支只作追溯，不继续叠加。
+- 仓库不再保留 `yukun` 集成分支；旧文档和历史日志中的该名称只描述当时事实，不是当前操作指令。
+- 不得把本地训练目录直接复制覆盖仓库。
 - 每个 PR 只解决一个可独立验收的主题。模型权重、训练/测试数据、生产语料、向量索引、运行输出、
   虚拟环境和密钥均作为外部资产管理，不进入 Git。
 - 合入前先跑模块窄测试，再跑 `make check`、`docker compose config --quiet` 和
@@ -192,7 +193,7 @@ soffice --headless --convert-to pdf \
   `nanoloop-outputs`，不要把后两者放入只读模型目录。
 
 `docker compose config --quiet` 可用于静态配置检查。本机 Docker image build 曾因 Docker Hub
-基础镜像拉取超时而未完成；与此同时，v4.0 代码基线 `yukun@16456a3` 的
+基础镜像拉取超时而未完成；与此同时，合并前历史代码快照 `16456a3` 的
 [GitHub Actions run 29848825904](https://github.com/Yukun-Zheng/NanoLoop-Agent/actions/runs/29848825904)
 已全绿，并真实构建、启动、健康检查 API/frontend 双容器并完成备份恢复。后续分支仍须以自己的 CI 结果为准，
 不能把历史成功运行或 CI 定义存在当成当前提交已通过，也不能用容器启动替代真实科学资产验收。

@@ -57,7 +57,7 @@ fixture smoke 的成功只证明工程闭环。正式科学验收仍必须等待
 
 ## 整合结论（2026-07-23）
 
-本交付已在 `yukun` 最新基线上完成冲突整合。身份与 tenant 授权、FileToken v2、文件路径钉扎以及现有模型运行兼容合同均以 `yukun` 实现为准；同时保留了独立 deterministic fixture、显式导出白名单，以及不削弱既有安全约束的跨平台原子发布和状态锁改进。真实模型 Adapter 的既有 `inference/<model_id>` 制品层级未被改变。
+本交付当时已在 `yukun` 集成基线上完成冲突整合；该历史分支现已并入 `main`。身份与 tenant 授权、FileToken v2、文件路径钉扎以及现有模型运行兼容合同均以当前 `main` 实现为准；同时保留了独立 deterministic fixture、显式导出白名单，以及不削弱既有安全约束的跨平台原子发布和状态锁改进。真实模型 Adapter 的既有 `inference/<model_id>` 制品层级未被改变。
 
 整合后的本地验证证据如下：
 

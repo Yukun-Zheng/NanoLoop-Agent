@@ -3,8 +3,8 @@
 ## Current status
 
 - Repository: `NanoLoop-Agent`
-- PR branch: `feat/a-real-unet-large-v1`
-- PR base: `yukun`
+- Original PR branch: `feat/a-real-unet-large-v1` (historical, already integrated)
+- Original PR base: `yukun` (historical); every follow-up branch must start from and target `main`
 - Public `model_artifacts/registry.yaml` intentionally keeps Large U-Net `unavailable` because the
   repository does not contain its checkpoint or complete acceptance bundle.
 - A controlled external registry may declare Large U-Net `ready` only when the actual TorchScript,

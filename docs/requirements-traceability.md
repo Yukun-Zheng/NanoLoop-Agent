@@ -1,7 +1,7 @@
 # NanoLoop Agent v2.0 需求追踪矩阵
 
 本表以《NanoLoop Agent 协同开发规格与接口总文档 v2.0》的 FR-01～FR-14 为准，
-FR 编号沿用 v2.0；当前能力判定已审计到 `yukun@b2836dd`（2026-07-23 五人集成批次），并与
+FR 编号沿用 v2.0；当前能力判定已审计到 `bfb48d4`（2026-07-23 五人集成批次，现由 `main` 承载），并与
 [v4.0 协同开发文档](NanoLoop_Agent_协同开发规格与接口总文档_v4.0.md) 同步。当前发布等级是
 **M1 工程 MVP / 内部 Alpha**，不是计划或演示话术，也不代表真实科学资产已经完成。测试路径只证明
 其覆盖的代码行为；使用 fake adapter、内存向量或临时语料的测试不代表真实模型、生产向量索引或
@@ -50,7 +50,7 @@ FR 编号沿用 v2.0；当前能力判定已审计到 `yukun@b2836dd`（2026-07-
 - 普通陈旧运行可按冻结输入重建子运行；corrected-mask 运行若恢复时缺少原始人工制品，则父运行失败并进入 operator attention，不创建仅复制 JSON 的不可复现子运行。
 - `/health` 的数据库状态会校验 Alembic 当前 revision 与仓库 head；数据库可连接但 revision 缺失/滞后为 `degraded`，连接或检查异常才是 `unavailable`。
 - [Compose](../docker-compose.yml) 默认只把 API/前端发布到宿主机 `127.0.0.1`；容器内 Uvicorn 固定 `--workers 1`，SQLite、进程内任务队列和进程内导出锁只按单 API 实例设计。
-- 本地已执行 ROI headless Chrome round-trip。v4.0 代码基线 `yukun@16456a3` 的 [GitHub Actions run 29848825904](https://github.com/Yukun-Zheng/NanoLoop-Agent/actions/runs/29848825904) 已全绿，并真实构建、启动和健康检查 API/frontend 双容器，完成备份恢复链路。该 run 是工程基线的成功证据，但不代表后续提交、目标部署环境或真实科学资产已经验收。
+- 本地已执行 ROI headless Chrome round-trip。合并前历史代码快照 `16456a3` 的 [GitHub Actions run 29848825904](https://github.com/Yukun-Zheng/NanoLoop-Agent/actions/runs/29848825904) 已全绿，并真实构建、启动和健康检查 API/frontend 双容器，完成备份恢复链路。该 run 是对应工程快照的成功证据，但不代表后续提交、目标部署环境或真实科学资产已经验收。
 - 2026-07-23 五人集成批次的 [GitHub Actions run 29948525202](https://github.com/Yukun-Zheng/NanoLoop-Agent/actions/runs/29948525202) 同样四项全绿；本地组合态完整门禁为 1276 passed / 22 skipped。该证据证明代码组合态和 CPU 容器冒烟成立，仍不替代真实 checkpoint、RAG 全文/embedding、目标部署或无降级 E2E。
 - API 拒绝不受信任/歧义 Host，并对浏览器写请求校验 Origin 与 `Sec-Fetch-Site`。兼容共享 Key 与可撤销 principal credential authentication 已实现，后者持久化 tenant/principal/credential 生命周期并向请求传播安全主体；principal 单进程限流已按直接 socket peer 预鉴权桶和复用同次查询结果的 `principal_id` 主体桶分层，key 状态受严格 LRU 上限约束，捆绑 Uvicorn 不应用代理头。Analysis 聚合现已在 SQL 查询层执行 tenant scope，并按 tenant_admin、owner analyst、peer analyst、viewer 区分读写；跨租户与缺失资源统一 404。Query 路由和数值数据工具分别执行 tenant scope，审计行冻结并关系约束 actor；principal 的知识/混合路径在语料租户化前安全 503。文件能力现由不可变 `file_artifacts`、tenant/principal/purpose-bound v2 token、持久轮换 keyring 与 pinned-fd 流保护；principal 拒绝 v1，compatibility v1 只限 legacy job。知识文档租户化、分布式 rate limit、调用 quota 和磁盘 quota/retention 仍未完成。不得只把 `NANOLOOP_BIND_HOST` 改为 `0.0.0.0`、增加 Uvicorn worker 或扩容 replica，就宣称 production-ready；公网/多实例部署需要受信任反向代理和相应架构改造。
 - [请求体中间件](../app/api/middleware.py) 已用 `MAX_REQUEST_MB` 在 multipart 解析前限制整个请求，Compose 默认 512 MB，并把 `TMPDIR` 放到数据卷；[有界 multipart 路由](../app/api/routing.py) 进一步限制每个操作的文件数、字段数、字段名/类型/基数和 256 KiB 文本 part。用户/任务累计磁盘配额及制品/语料保留策略仍是运维硬化缺口。

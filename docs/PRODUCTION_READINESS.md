@@ -1,6 +1,6 @@
 # 生产就绪说明
 
-本文描述 v4.0 代码基线 `yukun@16456a3` 可以安全承诺的部署边界。当前发布等级是
+本文描述最新全绿 `main`（五人集成快照 `bfb48d4`）可以安全承诺的部署边界。当前发布等级是
 **M1 工程 MVP / 内部 Alpha**：适合受信任网络内的单机开发、合同测试和诚实降级演示，
 但还不是经过真实模型、真实语料和固定独立集验证的科学产品 MVP；M2/M3 的完整退出条件见
 [v4.0 协同开发文档](NanoLoop_Agent_协同开发规格与接口总文档_v4.0.md)。
@@ -9,7 +9,7 @@
 
 | 场景 | 当前结论 | 主要依据 / 阻塞 |
 | --- | --- | --- |
-| 本机或受信任内网、单 API 实例 | 支持 | [Compose](../docker-compose.yml) 默认回环绑定；SQLite WAL、持久 `QUEUED` 行、原子领取和有界 worker pool 已实现；`yukun@16456a3` CI 已真实构建并启动 API/frontend 双容器。 |
+| 本机或受信任内网、单 API 实例 | 支持 | [Compose](../docker-compose.yml) 默认回环绑定；SQLite WAL、持久 `QUEUED` 行、原子领取和有界 worker pool 已实现；历史快照 `16456a3` 的 CI 已真实构建并启动 API/frontend 双容器，当前 `main` 仍须以自身 CI 为准。 |
 | 无外部模型/语料的诚实降级启动 | 支持 | 模型保持 `unavailable`，RAG 可保持 keyword-only/unavailable，健康接口不会把缺失资产报告为正常科学闭环。 |
 | 六页 Streamlit 工程工作台 | 支持 | 六页 AppTest 与容器启动已通过；真实业务演示仍受模型和 RAG 外部资产阻塞。 |
 | 人工矩形 ROI 编辑 | 支持 | 前端内置离线 canvas 与同步数值编辑器；单元测试覆盖坐标/载荷，本地 headless Chrome 已验证拖拽、CAS 保存、重载与 REST revision round-trip。 |
@@ -139,7 +139,7 @@ make check
 docker compose config --quiet
 ```
 
-当前本地 ROI browser smoke 已在 headless Chrome 完成。v4.0 代码基线 `yukun@16456a3` 的
+当前本地 ROI browser smoke 已在 headless Chrome 完成。合并前历史代码快照 `16456a3` 的
 [GitHub Actions run 29848825904](https://github.com/Yukun-Zheng/NanoLoop-Agent/actions/runs/29848825904)
 已全绿，覆盖 Ruff、严格 Mypy、OpenAPI/Alembic、Python 3.11/3.12 的 1098 项 Pytest、六页
 Streamlit、API/frontend 双容器构建与非 root 启动，以及离线备份、fresh-root 恢复和恢复后服务检查。

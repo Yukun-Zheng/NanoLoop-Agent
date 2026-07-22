@@ -2,7 +2,7 @@
 
 本文是 v4.0 分工在 2026-07-23 的动态执行记录。长期合同、模块边界和验收口径仍以
 [v4.0 协同开发总文档](../NanoLoop_Agent_协同开发规格与接口总文档_v4.0.md) 为准；若聊天记录、
-个人进度表或旧 PR 标题与当前代码、CI 和本文冲突，以当前 `yukun`、自动化测试和实际外部资产为准。
+个人进度表或旧 PR 标题与当前代码、CI 和本文冲突，以当前 `main`、自动化测试和实际外部资产为准。
 
 ## 1. 当前结论
 
@@ -39,7 +39,7 @@ canonical export 校验代码；相关反例和整仓门禁通过。
 
 下一步：
 
-1. 先从最新 `yukun` 建新分支，不在旧 PR 分支继续叠加；
+1. 先从最新全绿 `origin/main` 建新分支，不在旧 PR 分支继续叠加；
 2. 通过受控私有渠道交付 Large checkpoint/TorchScript、SHA-256、config、model card、许可、固定
    split、人工 GT、环境和真实 smoke 输出；权重“不进公开 Git”不等于“不用交给项目”；
 3. 使用当前 adapter SHA `6055db45...` 重跑校准、独立评测、Gateway→Analysis→export；旧 `a40...`
@@ -55,7 +55,7 @@ canonical export 校验代码；相关反例和整仓门禁通过。
 
 下一步：
 
-1. 从最新 `yukun` 在 Linux/WSL2/Docker 环境复跑 `make check` 和确定性 fixture；
+1. 从最新全绿 `origin/main` 在 Linux/WSL2/Docker 环境复跑 `make check` 和确定性 fixture；
 2. 部署单实例目标联调环境，执行迁移、健康检查、备份/恢复和私有资产只读挂载；
 3. 提供 HTTPS Base URL；若启用共享 Key，显式设置 `AUTH_MODE=shared_key`，通过安全渠道交付固定、
    可轮换的 Key，不写入 Git；
@@ -84,7 +84,7 @@ canonical export 校验代码；相关反例和整仓门禁通过。
 
 下一步：
 
-1. 合并完成后从最新 `yukun` 建 `feat/e-real-demo-workflow-v1`，不要沿旧 #9 分支继续；
+1. 从最新全绿 `origin/main` 建 `feat/e-real-demo-workflow-v1`，不要沿旧 #9 分支继续；
 2. 接入黄睿健提供的 HTTPS 环境，Key 只放 `NANOLOOP_API_KEY` 环境变量；
 3. 等至少一个真实模型和 RAG 资产通过验收后，跑上传→ROI→选模型→运行→结果/质量→RAG→导出的
    固定浏览器路径；
@@ -97,7 +97,7 @@ canonical export 校验代码；相关反例和整仓门禁通过。
 
 现在可以做：
 
-1. 从最新 `yukun` 读取验收脚本和 schema；
+1. 从最新全绿 `origin/main` 读取验收脚本和 schema；
 2. 建统一资产台账，检查文件名、负责人、来源、许可、版本、SHA-256、大小、用途、外部路径和状态；
 3. 对已收到的模型/RAG 包先做结构、manifest、hash、许可与 dry-run，保存原始命令、stdout/stderr 和
    机器环境；
@@ -106,7 +106,7 @@ canonical export 校验代码；相关反例和整仓门禁通过。
 
 ## 4. 推荐并行顺序
 
-1. 全员先 pull 最新 `yukun`，从新分支继续，旧 PR 分支只作追溯。
+1. 全员先更新最新全绿 `origin/main`，各自从新功能分支继续，旧 PR 分支只作追溯。
 2. 郭境濠交模型私有资产并重跑真实验收；徐皓彬并行做许可全文和固定 embedding。
 3. 黄睿健并行部署目标 Linux 联调环境，准备 HTTPS、迁移、备份/恢复和私有挂载。
 4. 姚承志收到每个包即做台账/结构/hash/dry-run；没有包时先熟悉脚本，不空跑“算法验收”。

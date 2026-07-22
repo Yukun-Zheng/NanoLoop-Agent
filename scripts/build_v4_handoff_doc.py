@@ -34,7 +34,7 @@ def _set_fonts(
 
 def _header_paragraph(paragraph: Paragraph) -> None:
     _base_header_paragraph(paragraph)
-    paragraph.runs[-1].text = "\tv4.0 · 2026-07-22"
+    paragraph.runs[-1].text = "\tv4.0 · 2026-07-23"
     paragraph.runs[-1].font.size = Pt(8.5)
     paragraph.runs[-1].font.color.rgb = base._rgb(base.MUTED)
     base._set_fonts(paragraph.runs[-1])

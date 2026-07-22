@@ -1,6 +1,6 @@
 # 模型与 RAG 后续接入交接
 
-本文是 v4.0 的模型/RAG 专项合同，事实基线为 `yukun@16456a3`；人员任务、依赖顺序和里程碑以
+本文是 v4.0 的模型/RAG 专项合同，事实基线为最新全绿 `main`，五人集成快照为 `bfb48d4`；人员任务、依赖顺序和里程碑以
 [v4.0 协同开发文档](NanoLoop_Agent_协同开发规格与接口总文档_v4.0.md) 为准。公共 DTO、REST 路径和
 持久化约束以当前 `app/contracts`、OpenAPI 与 ADR 为准；本交接不授权通过伪造 ready 状态、测试输出
 或引用来绕过验收。
@@ -32,7 +32,7 @@
   容量与清理策略需要与原始模型资产一起纳入运维设计。
 - API 健康检查会核对 `alembic_version` 与仓库 migration head；接入部署不能用“数据库可连接”
   覆盖 stale/missing revision。本机曾因 Docker Hub 拉取超时而未得到等价构建证据；但
-  `yukun@16456a3` 的 [GitHub Actions run 29848825904](https://github.com/Yukun-Zheng/NanoLoop-Agent/actions/runs/29848825904)
+  合并前历史快照 `16456a3` 的 [GitHub Actions run 29848825904](https://github.com/Yukun-Zheng/NanoLoop-Agent/actions/runs/29848825904)
   已完成 API/frontend 镜像构建、非 root 启动和备份恢复 smoke。目标 GPU、真实模型与 RAG 资产仍须
   独立验收。
 
