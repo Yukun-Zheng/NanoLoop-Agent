@@ -67,6 +67,7 @@ class ApiClientError(RuntimeError):
         request_id: str,
         details: JsonObject | None = None,
         retryable: bool = False,
+        retry_after_seconds: float | None = None,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
@@ -75,6 +76,7 @@ class ApiClientError(RuntimeError):
         self.request_id = request_id
         self.details = details or {}
         self.retryable = retryable
+        self.retry_after_seconds = retry_after_seconds
 
     def __str__(self) -> str:
         return (
@@ -366,6 +368,7 @@ class NanoLoopApiClient:
         timeout: float | httpx.Timeout | None = None,
     ) -> ApiResult[JsonObject]:
         resolved_timeout = timeout or self._timeout
+        retry_after_seconds: float | None = None
         for attempt in range(self._max_retries + 1):
             outbound_request_id = self._new_request_id()
             response = self._send(
@@ -382,14 +385,18 @@ class NanoLoopApiClient:
                 response.status_code == 429
                 and attempt < self._max_retries
             ):
-                delay = _parse_retry_after(
+                retry_after_seconds = _parse_retry_after(
                     response.headers.get("retry-after"),
                     default=self._default_retry_delay,
                 )
-                time.sleep(delay)
+                time.sleep(retry_after_seconds)
                 continue
             if not response.is_success:
-                self._raise_response_error(response, outbound_request_id)
+                self._raise_response_error(
+                    response,
+                    outbound_request_id,
+                    retry_after_seconds=retry_after_seconds,
+                )
             payload = _decode_json_response(response, outbound_request_id)
             request_id = _envelope_request_id(payload, response, outbound_request_id)
             status = payload.get("status")
@@ -477,6 +484,8 @@ class NanoLoopApiClient:
         self,
         response: httpx.Response,
         outbound_request_id: str,
+        *,
+        retry_after_seconds: float | None = None,
     ) -> None:
         try:
             payload = _decode_json_response(response, outbound_request_id)
@@ -488,15 +497,23 @@ class NanoLoopApiClient:
                 message="后端返回了非 JSON 错误响应",
                 request_id=request_id,
                 retryable=response.status_code == 429 or response.status_code >= 500,
+                retry_after_seconds=retry_after_seconds,
             ) from None
         request_id = _envelope_request_id(payload, response, outbound_request_id)
-        self._raise_envelope_error(response.status_code, payload, request_id)
+        self._raise_envelope_error(
+            response.status_code,
+            payload,
+            request_id,
+            retry_after_seconds=retry_after_seconds,
+        )
 
     @staticmethod
     def _raise_envelope_error(
         status_code: int,
         payload: JsonObject,
         request_id: str,
+        *,
+        retry_after_seconds: float | None = None,
     ) -> None:
         error = payload.get("error")
         if not isinstance(error, dict):
@@ -522,6 +539,7 @@ class NanoLoopApiClient:
             request_id=request_id,
             details=details if isinstance(details, dict) else {},
             retryable=retryable if isinstance(retryable, bool) else False,
+            retry_after_seconds=retry_after_seconds,
         )
 
     def _api_url(self, path: str) -> str:
@@ -681,6 +699,7 @@ def _protocol_error(
     message: str,
     *,
     details: JsonObject | None = None,
+    retry_after_seconds: float | None = None,
 ) -> ApiClientError:
     return ApiClientError(
         status_code=status_code,
@@ -689,6 +708,7 @@ def _protocol_error(
         request_id=request_id,
         details=details,
         retryable=False,
+        retry_after_seconds=retry_after_seconds,
     )
 
 

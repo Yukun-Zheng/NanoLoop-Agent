@@ -371,6 +371,42 @@ def create_app(*, auth_mode: str = "disabled", api_key: str = "test-secret-001")
         body = await request.json()
         query_type = body.get("query_type", "auto")
 
+        # ========== 新增：专用于 UI 渲染测试的分支 ==========
+        if query_type == "test_render":
+            test_data = {
+                "query_type": "material_knowledge",
+                "answer": "这是测试回答，其中一条引文没有页码。",
+                "citations": [
+                    {
+                        "citation_id": "C1",
+                        "doc_id": "doc_test_001",
+                        "title": "有页码的文档",
+                        "page": 3,
+                        "chunk_id": "chunk_001",
+                        "excerpt": "这是正文...",
+                        "retrieval_score": 0.9,
+                        "source_type": "paper",
+                        "citation_text": "Test et al."
+                    },
+                    {
+                        "citation_id": "C2",
+                        "doc_id": "doc_test_002",
+                        "title": "无页码的网页或TXT",
+                        "page": None,   # 这就是你要测试的 null 值
+                        "chunk_id": "chunk_002",
+                        "excerpt": "这条来自没有页码的文档...",
+                        "retrieval_score": 0.8,
+                        "source_type": "web",
+                        "citation_text": "Web source"
+                    }
+                ],
+                "material_context": {"formula": "TiO2", "name": "二氧化钛"},
+                "confidence": "high",
+                "outcome_code": "OK"
+            }
+            return _success(test_data, request)
+    # ========== 新增结束 ==========
+
         # When RAG index is not built, knowledge queries return 503
         if query_type in ("material_knowledge", "mixed", "auto"):
             return _error(
