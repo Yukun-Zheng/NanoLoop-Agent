@@ -1,0 +1,10 @@
+# 运行环境记录（资产到位后填写真实值）
+OS: TODO
+Kernel: TODO
+Python: TODO
+Torch: TODO
+Device: cpu / gpu
+RAM_MB: TODO
+ColdStartSeconds: TODO
+NANOLOOP_GIT_COMMIT: TODO
+NANOLOOP_IMAGE_TAG: TODO
