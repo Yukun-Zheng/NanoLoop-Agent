@@ -68,6 +68,7 @@ class ApiClientError(RuntimeError):
         details: JsonObject | None = None,
         retryable: bool = False,
         retry_after_seconds: float | None = None,
+        retry_after: str | float | None = None,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
@@ -76,7 +77,15 @@ class ApiClientError(RuntimeError):
         self.request_id = request_id
         self.details = details or {}
         self.retryable = retryable
-        self.retry_after_seconds = retry_after_seconds
+        if retry_after_seconds is not None:
+            self.retry_after_seconds = retry_after_seconds
+        elif retry_after is not None:
+            try:
+                self.retry_after_seconds = float(retry_after)
+            except (ValueError, TypeError):
+                self.retry_after_seconds = None
+        else:
+            self.retry_after_seconds = None
 
     def __str__(self) -> str:
         return (

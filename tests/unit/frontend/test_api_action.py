@@ -38,6 +38,7 @@ class _FakeStreamlit:
         self.caption_calls: list[str] = []
         self.json_calls: list[Any] = []
         self.button_calls: list[str] = []
+        self.warning_calls: list[str] = []
 
     # st.spinner is a context manager; the fake just yields.
     @contextmanager
@@ -55,6 +56,12 @@ class _FakeStreamlit:
 
     def json(self, data: Any) -> None:
         self.json_calls.append(data)
+
+    def warning(self, text: str) -> None:
+        """Capture warning calls from render_exception / render_run_summary."""
+        if not hasattr(self, "warning_calls"):
+            self.warning_calls = []
+        self.warning_calls.append(text)
 
     def button(self, label: str = "", **_kw: Any) -> bool:
         """Record the button label and always return False (not clicked)."""
