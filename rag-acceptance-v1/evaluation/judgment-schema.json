@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "expected_source": "questions.jsonl",
+  "observed_output_pattern": "query-results.<run_label>.jsonl",
+  "automated_checks": [
+    "query_type_matches",
+    "outcome_matches",
+    "at_least_one_relevant_asset_retrieved_for_ok",
+    "forbidden_asset_not_retrieved",
+    "insufficient_evidence_has_zero_citations"
+  ],
+  "human_checks": [
+    "citation_page_and_excerpt_support_the_answer",
+    "no_material_leakage",
+    "no_unsupported_fact",
+    "mixed_query_keeps_data_and_knowledge_evidence_separate"
+  ],
+  "rule": "Automated checks never set final passed=true. A named independent reviewer records human checks in a private run record after the real run."
+}

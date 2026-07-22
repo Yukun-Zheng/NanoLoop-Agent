@@ -81,7 +81,12 @@ def test_existing_snapshot_symlink_is_never_followed_or_replaced(tmp_path: Path)
     target = tmp_path / "external.pt"
     target.write_bytes(payload)
     destination = digest_dir / "weights.pt"
-    destination.symlink_to(target)
+    try:
+        destination.symlink_to(target)
+    except OSError as error:
+        if os.name == "nt" and error.winerror == 1314:
+            pytest.skip("Windows symlink privilege is unavailable")
+        raise
     store = ModelArtifactSnapshotStore(tmp_path / "snapshots")
 
     with pytest.raises(ModelArtifactSnapshotError, match="cannot be opened safely"):

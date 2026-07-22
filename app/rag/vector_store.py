@@ -739,7 +739,10 @@ class PersistentFaissVectorStore:
 
     @staticmethod
     def _fsync_file(path: Path) -> None:
-        with path.open("rb") as source:
+        # Windows' CRT commit primitive rejects a read-only descriptor even
+        # though POSIX fsync accepts one. The file is a private publish temp and
+        # is still writable at this point.
+        with path.open("r+b") as source:
             os.fsync(source.fileno())
 
     @staticmethod

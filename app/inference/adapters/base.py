@@ -8,6 +8,7 @@ extras installed.
 from __future__ import annotations
 
 import os
+import stat
 import tempfile
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
@@ -98,7 +99,7 @@ class BaseSegmentationAdapter(ABC):
             self._release()
         finally:
             if self._runtime_weight_path is not None:
-                self._runtime_weight_path.unlink(missing_ok=True)
+                self._unlink_runtime_weight(self._runtime_weight_path)
                 self._runtime_weight_path = None
             self._loaded = False
             self._device = None
@@ -137,8 +138,11 @@ class BaseSegmentationAdapter(ABC):
                 if written <= 0:  # pragma: no cover - defensive OS contract guard
                     raise OSError("short write while materializing pinned model bytes")
                 view = view[written:]
-            os.fchmod(descriptor, 0o400)
             os.fsync(descriptor)
+            if hasattr(os, "fchmod"):
+                os.fchmod(descriptor, 0o400)
+            else:
+                os.chmod(path, stat.S_IREAD)
         except Exception:
             os.close(descriptor)
             path.unlink(missing_ok=True)
@@ -146,3 +150,13 @@ class BaseSegmentationAdapter(ABC):
         os.close(descriptor)
         self._runtime_weight_path = path
         return path
+
+    @staticmethod
+    def _unlink_runtime_weight(path: Path) -> None:
+        try:
+            path.unlink(missing_ok=True)
+        except PermissionError:
+            if os.name != "nt" or not path.exists():
+                raise
+            os.chmod(path, stat.S_IWRITE)
+            path.unlink(missing_ok=True)

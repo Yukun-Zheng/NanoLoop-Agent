@@ -50,15 +50,15 @@ class ModelArtifactSnapshotStore:
                 raise ModelArtifactSnapshotError(
                     f"weight sha256 mismatch: expected {expected}, observed {observed}"
                 )
-            os.fchmod(temp_fd, 0o444)
             os.fsync(temp_fd)
+            self._make_read_only(temp_fd, temp_path)
             os.close(temp_fd)
             temp_fd = -1
 
             try:
                 # A same-directory hard link is an atomic no-replace publication. Concurrent
                 # publishers either create the one complete destination or validate that winner.
-                os.link(temp_path, destination, follow_symlinks=False)
+                self._publish_no_replace(temp_path, destination)
                 self._fsync_directory(digest_dir)
             except FileExistsError:
                 self.verify(destination, expected)
@@ -74,7 +74,7 @@ class ModelArtifactSnapshotStore:
             if temp_fd >= 0:
                 os.close(temp_fd)
             try:
-                temp_path.unlink(missing_ok=True)
+                self._unlink_private_temp(temp_path)
             finally:
                 self._fsync_directory(digest_dir)
 
@@ -203,12 +203,12 @@ class ModelArtifactSnapshotStore:
                 if written <= 0:  # pragma: no cover - defensive OS contract guard
                     raise OSError("short write while creating model snapshot")
                 view = view[written:]
-            os.fchmod(temp_fd, 0o444)
             os.fsync(temp_fd)
+            self._make_read_only(temp_fd, temp_path)
             os.close(temp_fd)
             temp_fd = -1
             try:
-                os.link(temp_path, destination, follow_symlinks=False)
+                self._publish_no_replace(temp_path, destination)
                 self._fsync_directory(destination.parent)
             except FileExistsError:
                 self.verify(destination, expected_sha256)
@@ -223,7 +223,7 @@ class ModelArtifactSnapshotStore:
         finally:
             if temp_fd >= 0:
                 os.close(temp_fd)
-            temp_path.unlink(missing_ok=True)
+            self._unlink_private_temp(temp_path)
             self._fsync_directory(destination.parent)
 
     def _prepare_directory(self, directory: Path) -> Path:
@@ -257,6 +257,7 @@ class ModelArtifactSnapshotStore:
     def _open_snapshot(path: Path) -> int:
         flags = (
             os.O_RDONLY
+            | getattr(os, "O_BINARY", 0)
             | getattr(os, "O_CLOEXEC", 0)
             | getattr(os, "O_NOFOLLOW", 0)
             | getattr(os, "O_NONBLOCK", 0)
@@ -280,6 +281,7 @@ class ModelArtifactSnapshotStore:
     def _copy_and_hash(source: Path, destination_fd: int) -> str:
         flags = (
             os.O_RDONLY
+            | getattr(os, "O_BINARY", 0)
             | getattr(os, "O_CLOEXEC", 0)
             | getattr(os, "O_NOFOLLOW", 0)
             | getattr(os, "O_NONBLOCK", 0)
@@ -321,7 +323,43 @@ class ModelArtifactSnapshotStore:
             digest.update(chunk)
 
     @staticmethod
+    def _make_read_only(descriptor: int, path: Path) -> None:
+        """Apply immutable-file mode using the strongest local platform primitive."""
+
+        if hasattr(os, "fchmod"):
+            os.fchmod(descriptor, 0o444)
+        else:  # Windows exposes only its read-only attribute through chmod.
+            os.chmod(path, 0o444)
+
+    @staticmethod
+    def _publish_no_replace(temporary_path: Path, destination: Path) -> None:
+        """Atomically publish without replacing an existing snapshot."""
+
+        if os.name == "nt":
+            # Windows rename is no-replace and, unlike unlinking one side of a
+            # read-only hard link, can move the immutable temporary file safely.
+            os.rename(temporary_path, destination)
+        else:
+            os.link(temporary_path, destination, follow_symlinks=False)
+
+    @staticmethod
+    def _unlink_private_temp(path: Path) -> None:
+        """Remove only a private temporary path, including a Windows read-only file."""
+
+        try:
+            path.unlink(missing_ok=True)
+        except PermissionError:
+            if os.name != "nt" or not path.exists():
+                raise
+            os.chmod(path, 0o600)
+            path.unlink(missing_ok=True)
+
+    @staticmethod
     def _fsync_directory(directory: Path) -> None:
+        if os.name == "nt":
+            # Python cannot open directory handles for fsync on Windows. File
+            # contents are fsynced before the same-directory atomic rename.
+            return
         flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0)
         descriptor = os.open(directory, flags)
         try:

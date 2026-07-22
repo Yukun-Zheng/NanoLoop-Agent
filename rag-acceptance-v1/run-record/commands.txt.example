@@ -1,0 +1,28 @@
+# 资产到位后把真实命令、时间和退出码复制到私有 run record；不要记录 Key。
+
+.venv/bin/python -m pip install -e '.[dev,rag]'
+.venv/bin/python -m alembic -c alembic.ini upgrade head
+
+# 先验证全部资产；当前候选草稿预期在 --require-runnable 处失败关闭。
+.venv/bin/python scripts/validate_rag_assets.py \
+  --package rag-acceptance-v1 --require-runnable --verify-files
+
+# API Key 只从环境读取；无鉴权的受控本机可不设置。
+export NANOLOOP_API_KEY='<secure-runtime-value>'
+
+.venv/bin/python scripts/run_rag_acceptance.py \
+  --api-base http://127.0.0.1:8000 \
+  --package rag-acceptance-v1 \
+  --job-id '<authorized_job_id>' \
+  --run-label hybrid \
+  --expect-rag-health healthy
+
+# 重启后复用首次映射，禁止再次摄取来冒充“未重新 embedding”。
+.venv/bin/python scripts/run_rag_acceptance.py \
+  --api-base http://127.0.0.1:8000 \
+  --package rag-acceptance-v1 \
+  --job-id '<authorized_job_id>' \
+  --run-label restart \
+  --expect-rag-health healthy \
+  --skip-ingest \
+  --mapping-file rag-acceptance-v1/evaluation/ingest-results.hybrid.json
