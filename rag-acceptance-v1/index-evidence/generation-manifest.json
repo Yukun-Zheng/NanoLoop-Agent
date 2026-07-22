@@ -1,0 +1,11 @@
+{
+  "generation": "TODO: FAISS generation id（由 vector_index 发布时生成）",
+  "model": "BAAI/bge-small-zh-v1.5",
+  "model_revision": "TODO: 与 embedding/model-manifest.json 一致",
+  "dimension": 512,
+  "index_sha256_ref": "index-sha256.txt",
+  "database_membership_ref": "database-membership-summary.json",
+  "created_at": "TODO",
+  "verified": false,
+  "notes": "索引与数据库成员、模型指纹、正文摘要一致时才可使用；失配必须拒用"
+}
