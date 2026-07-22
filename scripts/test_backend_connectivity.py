@@ -253,18 +253,13 @@ def main() -> int:
         help="Backend origin (env: NANOLOOP_API_BASE_URL)",
     )
     parser.add_argument(
-        "--api-key",
-        default=_env("NANOLOOP_API_KEY"),
-        help="Shared API key (env: NANOLOOP_API_KEY)",
-    )
-    parser.add_argument(
         "--job-id",
         default=_env("NANOLOOP_JOB_ID"),
         help="Optional existing job to fetch (env: NANOLOOP_JOB_ID)",
     )
     args = parser.parse_args()
     base_url = args.base_url or DEFAULT_BASE_URL
-    api_key = args.api_key
+    api_key = _env("NANOLOOP_API_KEY")
     job_id = args.job_id
 
     _print_header("NanoLoop-Agent Backend Connectivity Test")

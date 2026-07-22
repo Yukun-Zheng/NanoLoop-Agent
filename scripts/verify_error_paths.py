@@ -26,6 +26,8 @@ import sys
 import traceback
 from pathlib import Path
 
+import httpx
+
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
@@ -581,7 +583,9 @@ def verify_401(base_url: str) -> None:
 def verify_429(base_url: str, api_key: str | None) -> None:
     """Hit rate limit — verify 429 RATE_LIMITED."""
     print("\n=== 10. Rate Limit 429 (RATE_LIMITED) ===")
-    client = NanoLoopApiClient(base_url, api_key=api_key)
+    # This verifies the raw 429 contract, so surface the first limited response
+    # instead of waiting for the production client's bounded GET retry loop.
+    client = NanoLoopApiClient(base_url, api_key=api_key, max_retries=0)
     try:
         with client:
             hit_429 = False
@@ -633,11 +637,16 @@ def verify_429(base_url: str, api_key: str | None) -> None:
 def verify_transport_error() -> None:
     """Connect to a non-existent server — verify TRANSPORT_ERROR."""
     print("\n=== 11. Transport Error (TRANSPORT_ERROR) ===")
-    client = NanoLoopApiClient("http://127.0.0.1:59999", api_key=None, timeout=3.0)
+    transport = httpx.Client(trust_env=False)
+    client = NanoLoopApiClient(
+        "http://127.0.0.1:59999",
+        api_key=None,
+        timeout=3.0,
+        client=transport,
+    )
     try:
-        with client:
-            client.health()
-            _record("Transport", "health raises ApiClientError", False, "no exception raised")
+        client.health()
+        _record("Transport", "health raises ApiClientError", False, "no exception raised")
     except ApiClientError as exc:
         _record(
             "Transport",
@@ -672,6 +681,8 @@ def verify_transport_error() -> None:
             f"unexpected: {type(exc).__name__}: {exc}",
         )
         traceback.print_exc()
+    finally:
+        transport.close()
 
 
 # ---------------------------------------------------------------------------

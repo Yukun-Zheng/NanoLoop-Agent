@@ -646,15 +646,14 @@ class TestSuccessfulOperation:
 
 
 # ---------------------------------------------------------------------------
-# Retry button rendering (E-P1 task 4)
+# Retry recovery messaging (E-P1 task 4)
 # ---------------------------------------------------------------------------
 
 
-class TestRetryButtonRendering:
-    """Verify that explicit retry buttons appear after recoverable errors."""
+class TestRetryRecoveryMessaging:
+    """Recovery guidance must not expose a dead or unsafe replay button."""
 
-    def test_429_read_action_shows_retry_button(self) -> None:
-        """Read actions that hit 429 must show a retry button."""
+    def test_429_read_action_points_back_to_original_control(self) -> None:
         st = _FakeStreamlit()
         _api_action(
             st,
@@ -670,7 +669,8 @@ class TestRetryButtonRendering:
                 )
             ),
         )
-        assert any("重试" in label for label in st.button_calls)
+        assert st.button_calls == []
+        assert any("重新点击原读取控件" in html for html in st.markdown_calls)
 
     def test_429_write_action_does_not_show_retry_button(self) -> None:
         """Write actions that hit 429 must NOT show an auto-retry button."""
@@ -691,8 +691,7 @@ class TestRetryButtonRendering:
         )
         assert not any("重试" in label for label in st.button_calls)
 
-    def test_service_unavailable_shows_retry_button(self) -> None:
-        """502/503 errors must show a retry-connection button."""
+    def test_service_unavailable_points_to_connection_check_without_dead_button(self) -> None:
         st = _FakeStreamlit()
         _api_action(
             st,
@@ -707,10 +706,10 @@ class TestRetryButtonRendering:
                 )
             ),
         )
-        assert any("重试" in label for label in st.button_calls)
+        assert st.button_calls == []
+        assert any("检查连接" in html for html in st.markdown_calls)
 
-    def test_retryable_error_shows_retry_button(self) -> None:
-        """Retryable errors must show a retry button."""
+    def test_retryable_error_requires_manual_original_action(self) -> None:
         st = _FakeStreamlit()
         _api_action(
             st,
@@ -726,7 +725,8 @@ class TestRetryButtonRendering:
                 )
             ),
         )
-        assert any("重试" in label for label in st.button_calls)
+        assert st.button_calls == []
+        assert any("手动重新发起" in html for html in st.markdown_calls)
 
     def test_401_does_not_show_retry_button(self) -> None:
         """401 auth errors must NOT show a retry button (requires operator action)."""

@@ -28,7 +28,7 @@ Usage
     python scripts/test_real_assets_smoke.py --live
 
     # Live mode with remote backend + API key
-    NANOLOOP_API_BASE_URL=http://10.0.0.5:8000 \
+    NANOLOOP_API_BASE_URL=https://nanoloop.example.com \
     NANOLOOP_API_KEY=your-secret-key \
     python scripts/test_real_assets_smoke.py --live
 """
@@ -842,11 +842,6 @@ def main() -> int:
         help="Backend base URL (env: NANOLOOP_API_BASE_URL, default: http://127.0.0.1:8000)",
     )
     parser.add_argument(
-        "--api-key",
-        default=os.environ.get("NANOLOOP_API_KEY", ""),
-        help="API key for X-API-Key header (env: NANOLOOP_API_KEY, default: empty=disabled)",
-    )
-    parser.add_argument(
         "--job-id",
         default=os.environ.get("NANOLOOP_JOB_ID"),
         help="Existing job ID (env: NANOLOOP_JOB_ID; optional in live mode)",
@@ -866,7 +861,7 @@ def main() -> int:
     if args.live:
         return run_live(
             args.base_url,
-            args.api_key,
+            os.environ.get("NANOLOOP_API_KEY", ""),
             job_id=args.job_id,
             run_id=args.run_id,
             image_id=args.image_id,

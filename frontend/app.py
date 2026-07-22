@@ -1314,7 +1314,6 @@ def _single_run_layer_panel(
         height=560,
         border=True,
         key=f"single_result_viewport_{_widget_key(run_id)}",
-        vertical_alignment="center",
     ):
         st.image(
             preview["display_content"],
@@ -2475,10 +2474,6 @@ def _api_action(
                 is_read_request=_is_read_action(action),
                 request_id=request_id,
             )
-            if _is_read_action(action) and st.button(
-                "重试", key=f"retry_{action}_{code}", use_container_width=True
-            ):
-                st.rerun()
         elif is_service_unavailable:
             base_url = None
             try:
@@ -2486,8 +2481,6 @@ def _api_action(
             except Exception:
                 base_url = None
             render_service_unavailable(st, code=code, base_url=base_url)
-            if st.button("重试连接", key=f"retry_{action}_{code}", use_container_width=True):
-                st.rerun()
         elif getattr(error, "retryable", False):
             render_actionable_error(
                 st,
@@ -2501,10 +2494,6 @@ def _api_action(
                     "——请确认后端状态后，再手动重新发起该操作。"
                 ),
             )
-            if _is_read_action(action) and st.button(
-                "重试", key=f"retry_{action}_{code}", use_container_width=True
-            ):
-                st.rerun()
         else:
             render_exception(st, error, action=action)
         return None

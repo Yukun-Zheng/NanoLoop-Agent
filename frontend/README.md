@@ -13,6 +13,8 @@
 - **当前默认关闭**（后端 `auth_mode = disabled`），联调时无需提供 Key。
 - 若后端开启鉴权，通过运行环境中的 `NANOLOOP_API_KEY` 配置共享 Key；前端不在
   页面中回显或接收密钥。客户端会将它附加到每个请求的 `X-API-Key` 头。
+- 除 `localhost`、IPv4/IPv6 loopback 本机联调外，配置 API Key 时后端地址必须
+  使用 HTTPS；客户端会拒绝向远程明文 HTTP 地址发送共享 Key。
 - API Key 仅接受可见 ASCII 字符（`0x21`–`0x7E`），不含空白符。
 
 ## 启动前端
@@ -32,7 +34,7 @@ PYTHONPATH=. streamlit run frontend/app.py
 python scripts/test_real_assets_smoke.py --offline
 
 # 真实后端 + 受控资产 ID（也可用同名环境变量）
-NANOLOOP_API_BASE_URL=http://10.0.0.5:8000 \
+NANOLOOP_API_BASE_URL=https://nanoloop.example.com \
 NANOLOOP_API_KEY=your-secret-key \
 NANOLOOP_JOB_ID=job_... \
 NANOLOOP_RUN_ID=run_... \

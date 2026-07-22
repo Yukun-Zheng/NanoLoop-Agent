@@ -186,7 +186,7 @@ def build_rate_limit_html(
         action_html = (
             '<div class="nl-error-hint">'
             "这是一次<b>读取</b>操作，等待结束后可安全重试；界面不会自动重放，"
-            "请在倒计时结束后点击重试按钮。"
+            "请在倒计时结束后重新点击原读取控件。"
             "</div>"
         )
     else:

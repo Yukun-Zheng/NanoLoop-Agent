@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.message import Message
 from email.utils import parsedate_to_datetime
+from ipaddress import ip_address
 from typing import Any, BinaryIO, Generic, Literal, TypeAlias, TypeVar, cast
 from urllib.parse import SplitResult, quote, urljoin, urlsplit
 from uuid import uuid4
@@ -114,20 +115,28 @@ class NanoLoopApiClient:
         default_retry_delay: float = 3.0,
     ) -> None:
         parsed = urlsplit(base_url)
+        hostname = parsed.hostname
         if (
             parsed.scheme not in {"http", "https"}
-            or parsed.hostname is None
+            or hostname is None
             or parsed.username is not None
             or parsed.password is not None
             or parsed.query
             or parsed.fragment
         ):
             raise ValueError("base_url must be an HTTP(S) origin/path without credentials or query")
+        normalized_api_key = _normalize_api_key(api_key)
+        if (
+            normalized_api_key is not None
+            and parsed.scheme != "https"
+            and not _is_loopback_host(hostname)
+        ):
+            raise ValueError("API keys require HTTPS for non-loopback backend addresses")
         normalized_prefix = "/" + api_prefix.strip("/")
         self._base_url = base_url.rstrip("/")
         self._api_prefix = normalized_prefix
         self._origin = _origin(parsed)
-        self._api_key = _normalize_api_key(api_key)
+        self._api_key = normalized_api_key
         self._timeout = timeout or httpx.Timeout(30.0, connect=5.0, pool=5.0)
         self._upload_timeout = upload_timeout or httpx.Timeout(
             300.0,
@@ -584,6 +593,17 @@ def _normalize_api_key(value: str | None) -> str | None:
     if value != value.strip() or any(not 0x21 <= ord(character) <= 0x7E for character in value):
         raise ValueError("api_key must contain only visible ASCII characters without whitespace")
     return value
+
+
+def _is_loopback_host(hostname: str) -> bool:
+    """Return whether *hostname* is safe for authenticated plain HTTP development."""
+
+    if hostname.casefold() == "localhost":
+        return True
+    try:
+        return ip_address(hostname).is_loopback
+    except ValueError:
+        return False
 
 
 def _parse_retry_after(

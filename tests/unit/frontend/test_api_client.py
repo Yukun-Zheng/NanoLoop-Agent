@@ -168,7 +168,7 @@ def test_api_key_is_sent_for_json_multipart_and_artifact_downloads() -> None:
     http_client = httpx.Client(transport=httpx.MockTransport(handler))
     api_key = "client-test-key_123"
     client = NanoLoopApiClient(
-        "http://backend.test",
+        "https://backend.test",
         api_key=api_key,
         client=http_client,
         request_id_factory=lambda: "web_authenticated",
@@ -182,7 +182,7 @@ def test_api_key_is_sent_for_json_multipart_and_artifact_downloads() -> None:
         client.download_artifact("/api/v1/files/signed.token")
         client._send(
             "GET",
-            "http://backend.test/api/v1/health",
+            "https://backend.test/api/v1/health",
             request_id="web_internal_header",
             headers={"x-api-key": "must-not-win"},
             timeout=1.0,
@@ -213,9 +213,43 @@ def test_absent_api_key_does_not_add_authentication_header(api_key: str | None) 
     assert "x-api-key" not in requests[0].headers
 
 
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+        "http://127.42.0.9:8000",
+        "http://[::1]:8000",
+    ],
+)
+def test_api_key_allows_plain_http_only_for_loopback_hosts(base_url: str) -> None:
+    client = NanoLoopApiClient(base_url, api_key="loopback-development-key")
+    client.close()
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "http://10.0.0.5:8000",
+        "http://backend.test",
+        "http://0.0.0.0:8000",
+    ],
+)
+def test_api_key_rejects_plain_http_for_non_loopback_hosts(base_url: str) -> None:
+    secret = "must-not-leak-remote-key"
+    with pytest.raises(ValueError, match="require HTTPS") as exc_info:
+        NanoLoopApiClient(base_url, api_key=secret)
+    assert secret not in str(exc_info.value)
+
+
+def test_api_key_allows_https_for_remote_host() -> None:
+    client = NanoLoopApiClient("https://backend.test", api_key="remote-shared-key")
+    client.close()
+
+
 def test_api_key_never_appears_in_client_or_validation_error_text() -> None:
     api_key = "repr-secret-key"
-    client = NanoLoopApiClient("http://backend.test", api_key=api_key)
+    client = NanoLoopApiClient("https://backend.test", api_key=api_key)
     try:
         assert api_key not in str(client)
         assert api_key not in repr(client)
@@ -224,7 +258,7 @@ def test_api_key_never_appears_in_client_or_validation_error_text() -> None:
 
     invalid_key = "invalid-secret\nvalue"
     with pytest.raises(ValueError) as exc_info:
-        NanoLoopApiClient("http://backend.test", api_key=invalid_key)
+        NanoLoopApiClient("https://backend.test", api_key=invalid_key)
     assert invalid_key not in str(exc_info.value)
 
 
@@ -236,7 +270,7 @@ def test_api_key_never_appears_in_transport_error_text_or_repr() -> None:
 
     http_client = httpx.Client(transport=httpx.MockTransport(handler))
     client = NanoLoopApiClient(
-        "http://backend.test",
+        "https://backend.test",
         api_key=api_key,
         client=http_client,
         request_id_factory=lambda: "web_secret_transport",
@@ -282,9 +316,9 @@ def test_streamlit_client_cache_uses_only_api_key_fingerprint(
     )
     first_api_key = "first-cache-secret"
     monkeypatch.setenv("NANOLOOP_API_KEY", first_api_key)
-    monkeypatch.setenv("NANOLOOP_API_BASE_URL", "http://backend.test")
+    monkeypatch.setenv("NANOLOOP_API_BASE_URL", "https://backend.test")
     state: dict[str, Any] = {
-        "api_base_url": "http://backend.test",
+        "api_base_url": "https://backend.test",
         "api_timeout_seconds": 17.0,
     }
 
@@ -295,7 +329,7 @@ def test_streamlit_client_cache_uses_only_api_key_fingerprint(
     assert len(created) == 1
     assert created[0].api_key == first_api_key
     fingerprint = hashlib.sha256(first_api_key.encode()).hexdigest()
-    assert state["_api_client_key"] == ("http://backend.test", 17.0, fingerprint)
+    assert state["_api_client_key"] == ("https://backend.test", 17.0, fingerprint)
     assert first_api_key not in repr(state["_api_client_key"])
 
     second_api_key = "rotated-cache-secret"

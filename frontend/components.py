@@ -204,7 +204,7 @@ def render_run_table(streamlit: Any, runs: Sequence[Mapping[str, Any]]) -> None:
         }
         for run in runs
     ]
-    streamlit.dataframe(rows, hide_index=True, width="stretch")
+    streamlit.dataframe(rows, hide_index=True, use_container_width=True)
 
 
 def render_run_summary(streamlit: Any, run: Mapping[str, Any]) -> None:
@@ -235,7 +235,7 @@ def render_run_summary(streamlit: Any, run: Mapping[str, Any]) -> None:
             if isinstance(event, Mapping)
         ]
         with streamlit.expander(f"状态时间线（{len(timeline)}）"):
-            streamlit.dataframe(timeline, hide_index=True, width="stretch")
+            streamlit.dataframe(timeline, hide_index=True, use_container_width=True)
 
     quality = run.get("quality")
     streamlit.markdown("#### 质量判断")
@@ -425,7 +425,9 @@ def render_query_response(streamlit: Any, response: Mapping[str, Any]) -> None:
                     streamlit.write("聚合结果")
                     streamlit.json(item["aggregates"])
                 if item.get("rows"):
-                    streamlit.dataframe(item["rows"], hide_index=True, width="stretch")
+                    streamlit.dataframe(
+                        item["rows"], hide_index=True, use_container_width=True
+                    )
                 if item.get("units"):
                     streamlit.caption(f"单位：{item['units']}")
     else:
@@ -434,7 +436,7 @@ def render_query_response(streamlit: Any, response: Mapping[str, Any]) -> None:
     calls = response.get("tool_calls")
     if isinstance(calls, list) and calls:
         with streamlit.expander("工具调用审计日志"):
-            streamlit.dataframe(calls, hide_index=True, width="stretch")
+            streamlit.dataframe(calls, hide_index=True, use_container_width=True)
 
 
 def render_empty(streamlit: Any, title: str, detail: str) -> None:

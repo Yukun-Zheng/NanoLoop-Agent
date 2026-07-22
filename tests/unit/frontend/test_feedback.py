@@ -75,6 +75,7 @@ class TestBuildRateLimit:
         assert "秒" in html
         assert "读取" in html
         assert "可安全重试" in html
+        assert "重新点击原读取控件" in html
         assert 'role="alert"' in html
 
     def test_write_request_forbids_auto_replay(self) -> None:
