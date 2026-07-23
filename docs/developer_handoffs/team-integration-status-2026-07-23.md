@@ -4,6 +4,22 @@
 [v4.0 协同开发总文档](../NanoLoop_Agent_协同开发规格与接口总文档_v4.0.md) 为准；若聊天记录、
 个人进度表或旧 PR 标题与当前代码、CI 和本文冲突，以当前 `main`、自动化测试和实际外部资产为准。
 
+## 0. 当前开工基线
+
+本文是集成审计快照，不是另一套任务书。当前已验收的发布点为
+`main@3900aad8eed80fd794ca4b7b38c5da916df9573f`，主线 push 门禁
+[Actions run 29953751731](https://github.com/Yukun-Zheng/NanoLoop-Agent/actions/runs/29953751731)
+四项全绿；远端只保留长期分支 `main`，审计时没有未处理 PR。每个人本批唯一任务、精确分支和回执格式
+统一以 [v4.0 第 0.4～0.5 节](../NanoLoop_Agent_协同开发规格与接口总文档_v4.0.md#04-2026-07-23-当前开工卡) 为准：
+
+| 工单 | 负责人 | 当前分支 |
+| --- | --- | --- |
+| `V4-AB-01` | 郭境濠（A+B） | `feat/ab-unet-large-private-acceptance-v1` |
+| `V4-C-01` | 黄睿健（C） | `ops/c-target-server-v1` |
+| `V4-D-01` | 徐皓彬（D） | `feat/d-rag-real-assets-v1` |
+| `V4-E-01` | 杨雨宁（E） | `test/e-playwright-matrix-v1` |
+| `V4-F-01` | 姚承志（F） | `docs/f-asset-intake-v1` |
+
 ## 1. 当前结论
 
 仓库已经从“工程骨架”推进到 **M1 工程 MVP / 内部 Alpha 的完整协作基线**：后端、A+B 接缝与科学
@@ -84,11 +100,11 @@ canonical export 校验代码；相关反例和整仓门禁通过。
 
 下一步：
 
-1. 从最新全绿 `origin/main` 建 `feat/e-real-demo-workflow-v1`，不要沿旧 #9 分支继续；
-2. 接入黄睿健提供的 HTTPS 环境，Key 只放 `NANOLOOP_API_KEY` 环境变量；
-3. 等至少一个真实模型和 RAG 资产通过验收后，跑上传→ROI→选模型→运行→结果/质量→RAG→导出的
-   固定浏览器路径；
-4. 安装 Playwright 运行浏览器矩阵，补正常、错误、降级和恢复截图；
+1. 从最新全绿 `origin/main` 建 `test/e-playwright-matrix-v1`，不要沿旧 #9 分支继续；
+2. 安装 Playwright 运行现有浏览器矩阵，补正常、错误、降级和恢复证据；
+3. 等至少一个真实模型、RAG 资产和黄睿健的 HTTPS 环境通过验收后，另开
+   `feat/e-real-demo-workflow-v1`，Key 只放 `NANOLOOP_API_KEY` 环境变量；
+4. 在该后续分支跑上传→ROI→选模型→运行→结果/质量→RAG→导出的固定浏览器路径；
 5. 合同缺口提给 C/A+B/D 修复，不在前端伪造成功数据、重算科学指标或自动重放写请求。
 
 ### 3.5 姚承志（F-学习岗）

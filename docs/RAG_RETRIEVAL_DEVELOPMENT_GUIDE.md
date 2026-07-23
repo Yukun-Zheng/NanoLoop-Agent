@@ -480,6 +480,9 @@ git status --short
 
 所有人只从最新全绿 `main` 建短期功能分支，不再从旧集成分支或已合并的个人分支继续叠加：
 
+当前实名工单和精确分支由 v4.0 第 0.4 节统一下发；下列 `feat/<role>-<single-slice>` 只是新批次的
+命名模板，不能覆盖已下发的 `V4-D-01` 等具体工单。
+
 ```bash
 git fetch origin --prune
 git switch main
