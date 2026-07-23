@@ -2,6 +2,7 @@ schema_version: "1"
 loader: torchscript
 input_channels: 1
 input_size: [256, 256]
+expected_image_size: [1536, 2048]
 patch_size: [256, 256]
 stride: [128, 128]
 tiling_padding: reflect

@@ -12,11 +12,17 @@ models:
       preprocess_profile: sem-gray-unit-crop-bottom-130-v1
       postprocess_profile: semantic-mask-v1
       inference_invalid_bottom_px: 130
+      expected_input_width: 2048
+      expected_input_height: 1536
       applicable_materials: []
       metrics: {}
-      metric_context: {}
-      notes: Small-particle TorchScript U-Net; external artifact remains unavailable until registered.
-      health_error: Model checkpoint is not bundled with this repository.
+      metric_context:
+        engineering_default_threshold: 0.30
+        threshold_comparison: gt
+        scientific_calibration_status: pending_small_b
+        cloud_validation_status: pending
+      notes: Small-particle U-Net engineering contract; private TorchScript cloud validation is pending.
+      health_error: Private TorchScript is not bundled with this repository.
     adapter_path: app.inference.adapters.unet:UNetAdapter
     weight_path: weights/unet-small-balanced-v1.pt
     weight_sha256: null

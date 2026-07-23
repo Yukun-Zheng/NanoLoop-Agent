@@ -15,6 +15,7 @@ from app.contracts.enums import (
     ModelVariant,
     QualityTier,
 )
+from app.contracts.execution import InferenceExecutionEvidence
 from app.contracts.inference import SegmentationOutput, SegmentationRequest
 from app.contracts.models import ModelBundleReference, ModelHealth, ModelMetadata
 from app.core.config import Settings
@@ -30,8 +31,6 @@ from scripts.models.smoke_unet_small_analysis import (
 
 
 class FakeGateway:
-    freeze_model_bundle: Any = None
-
     def __init__(self) -> None:
         self.model = ModelMetadata(
             model_id="unet-small-balanced-v1",
@@ -53,6 +52,15 @@ class FakeGateway:
             model_card_sha256="c" * 64,
             adapter_sha256="d" * 64,
         )
+        self.bundle = ModelBundleReference(
+            bundle_id="e" * 64,
+            manifest_ref=f"bundles/{'e' * 64}/manifest.json",
+            weight_ref=f"{'a' * 64}/weights.pt",
+            config_ref=f"{'b' * 64}/config.yaml",
+            model_card_ref=f"{'c' * 64}/model-card.md",
+            adapter_ref=f"{'d' * 64}/adapter.py",
+            adapter_sha256="d" * 64,
+        )
 
     def list_models(self, only_ready: bool = False) -> list[ModelMetadata]:
         assert not only_ready or self.model.status == ModelStatus.READY
@@ -66,6 +74,16 @@ class FakeGateway:
                 weight_sha256=self.model.weight_sha256,
             )
         ]
+
+    def freeze_model_bundle(self, model_id: str, **expected: Any) -> ModelBundleReference:
+        assert model_id == self.model.model_id
+        assert expected["expected_model_version"] == self.model.version
+        assert expected["expected_adapter_path"] == self.model.adapter_path
+        assert expected["expected_weight_sha256"] == self.model.weight_sha256
+        assert expected["expected_config_sha256"] == self.model.config_sha256
+        assert expected["expected_model_card_sha256"] == self.model.model_card_sha256
+        assert expected["expected_adapter_sha256"] == self.model.adapter_sha256
+        return self.bundle
 
     def predict(
         self,
@@ -89,8 +107,8 @@ class FakeGateway:
         assert expected_weight_sha256 == self.model.weight_sha256
         assert expected_config_sha256 == self.model.config_sha256
         assert expected_model_card_sha256 == self.model.model_card_sha256
-        assert expected_adapter_sha256 is None
-        assert model_bundle is None
+        assert expected_adapter_sha256 == self.model.adapter_sha256
+        assert model_bundle == self.bundle
         mask = np.zeros((200, 40), dtype=np.uint8)
         mask[10:25, 10:25] = 255
         mask_path = request.run_dir / "fake-mask.png"
@@ -100,6 +118,14 @@ class FakeGateway:
             height=200,
             binary_mask_path=mask_path,
             runtime_ms=1,
+            execution=InferenceExecutionEvidence(
+                actual_device="cpu",
+                python_random_seeded=True,
+                numpy_random_seeded=True,
+                torch_deterministic_algorithms=True,
+                global_inference_serialized=True,
+                backend="app.inference.adapters.unet.UNetAdapter",
+            ),
         )
 
 
@@ -158,9 +184,12 @@ def test_execute_analysis_freezes_calibration_and_excludes_bottom_bar(
             ),
             gateway=gateway,
         )
-        assert result["evidence_class"] == "engineering_diagnostic_only"
-        assert result["readiness_eligible"] is False
+        assert result["evidence_class"] == "engineering_acceptance"
+        assert result["readiness_eligible"] is True
+        assert result["scientific_acceptance_eligible"] is False
         assert result["limitations"]
+        assert result["model"]["bundle"] == gateway.bundle.model_dump(mode="json")
+        assert result["model"]["adapter_sha256"] == gateway.model.adapter_sha256
     finally:
         database.dispose()
 
@@ -205,6 +234,7 @@ def test_output_root_protection(tmp_path: Path, protected_kind: str) -> None:
         registry=registry,
         output_root=output_root,
         scale_nm_per_pixel=0.5,
+        pixel_only=False,
         sample_id="sample-1",
         model_id="unet-small-balanced-v1",
         threshold=0.30,
@@ -215,3 +245,28 @@ def test_output_root_protection(tmp_path: Path, protected_kind: str) -> None:
 
     with pytest.raises(ValueError, match="output-root"):
         _validated_parameters(namespace)
+
+
+def test_pixel_only_parameters_do_not_invent_a_physical_scale(tmp_path: Path) -> None:
+    image = tmp_path / "sample.png"
+    registry = tmp_path / "registry.yaml"
+    output_root = tmp_path / "smoke-output"
+    _write_test_image(image)
+    registry.write_text("models: []\n", encoding="utf-8")
+    namespace = argparse.Namespace(
+        image=image,
+        registry=registry,
+        output_root=output_root,
+        scale_nm_per_pixel=None,
+        pixel_only=True,
+        sample_id="sample-1",
+        model_id="unet-small-balanced-v1",
+        threshold=0.30,
+        min_area_px=64,
+        seed=2026,
+        device="cpu",
+    )
+
+    parameters = _validated_parameters(namespace)
+
+    assert parameters.scale_nm_per_pixel is None

@@ -194,7 +194,7 @@ def test_large_external_bundle_resolves_relative_assets_and_fails_closed(
     assert "weight sha256 mismatch" in (mismatched.health_error or "")
 
 
-def test_small_unet_asset_contract_is_unchanged() -> None:
+def test_small_unet_asset_contract_includes_confirmed_input_dimensions() -> None:
     config = yaml.safe_load(
         (_artifact_root() / "configs" / "unet-small-balanced-v1.yaml").read_text(
             encoding="utf-8"
@@ -207,6 +207,7 @@ def test_small_unet_asset_contract_is_unchanged() -> None:
         "loader": "torchscript",
         "input_channels": 1,
         "input_size": [256, 256],
+        "expected_image_size": [1536, 2048],
         "patch_size": [256, 256],
         "stride": [128, 128],
         "tiling_padding": "reflect",
@@ -222,8 +223,8 @@ def test_small_unet_asset_contract_is_unchanged() -> None:
     assert entry["metadata"]["status"] == "unavailable"
     assert entry["metadata"]["default_threshold"] == 0.30
     assert entry["metadata"]["inference_invalid_bottom_px"] == 130
-    assert "expected_input_width" not in entry["metadata"]
-    assert "expected_input_height" not in entry["metadata"]
+    assert entry["metadata"]["expected_input_width"] == 2048
+    assert entry["metadata"]["expected_input_height"] == 1536
 
 
 def test_large_model_card_records_export_and_scientific_readiness_limits() -> None:
@@ -266,13 +267,6 @@ def test_large_model_card_records_export_and_scientific_readiness_limits() -> No
     assert "developer-reported" in card
     assert "not acceptance evidence" in card
     assert "`expected_image_size=[1536, 2048]`" in card
-
-    small_card = (
-        _artifact_root() / "model_cards" / "unet-small-balanced-v1.md"
-    ).read_text(encoding="utf-8")
-    assert "no delivered source-image dimension evidence" in small_card
-    assert "must fail" in small_card
-
 
 def test_large_model_card_records_frozen_independent_test_evidence() -> None:
     card = (_artifact_root() / "model_cards" / "unet-large-optimized-v1.md").read_text(

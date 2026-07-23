@@ -20,12 +20,18 @@ rights.
 
 | Model | Source checkpoint SHA-256 | TorchScript SHA-256 |
 | --- | --- | --- |
-| `unet-small-balanced-v1` | `915911107c82c01ff7d37746f4fcce6db39d40659cfb93e059e14b18134ba008` | `dac85662061b12f1d8e8d583500558b787dd2c98795bf2ef816ddc95c3491446` |
+| `unet-small-balanced-v1` | `915911107c82c01ff7d37746f4fcce6db39d40659cfb93e059e14b18134ba008` | pending cloud validation |
 | `unet-large-optimized-v1` | `5c5dbcae61f40f8eb1fef27c7b69592a727260898330abc546f7e7a6833035bd` | `007d9a16bf31e5f960160c52eefa938b83feeac2e6c0d7dec9c8670a38626e05` |
 
 The Large TorchScript is distributed at
 `model_artifacts/weights/unet-large-optimized-v1.pt`; the Small model and source checkpoints remain
 external.
+
+The historical Small handoff mentioned
+`dac85662061b12f1d8e8d583500558b787dd2c98795bf2ef816ddc95c3491446`, but no matching
+TorchScript was available for independent verification. It is not an accepted Small-A artifact
+identity. Use [the controlled Small-A cloud checklist](small-a-cloud-validation.md) to produce and
+record the actual digest.
 
 ## Frozen scientific contracts
 
