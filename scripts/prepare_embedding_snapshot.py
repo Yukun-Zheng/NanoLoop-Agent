@@ -55,9 +55,9 @@ def main(argv: list[str] | None = None) -> int:
     output = args.output_dir.expanduser().resolve(strict=False)
     manifest_path = args.manifest.expanduser().resolve(strict=False)
     try:
+        if output.exists() and not args.force:
+            raise ValueError(f"output directory already exists: {output}")
         if output.exists():
-            if not args.force:
-                raise ValueError(f"output directory already exists: {output}")
             shutil.rmtree(output)
         output.parent.mkdir(parents=True, exist_ok=True)
 
@@ -75,7 +75,11 @@ def main(argv: list[str] | None = None) -> int:
         downloaded_seconds = time.perf_counter() - started
 
         load_started = time.perf_counter()
-        model = SentenceTransformer(str(output), device=args.device, local_files_only=True)
+        model = SentenceTransformer(
+            str(output),
+            device=args.device,
+            local_files_only=True,
+        )
         vector = model.encode(
             ["钙钛矿氧化物中的纳米颗粒析出"],
             convert_to_numpy=True,
@@ -125,12 +129,13 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True))
         return 0
     except Exception as error:
+        error_payload = {
+            "status": "error",
+            "error_type": type(error).__name__,
+            "message": str(error),
+        }
         print(
-            json.dumps(
-                {"status": "error", "error_type": type(error).__name__, "message": str(error)},
-                ensure_ascii=False,
-                indent=2,
-            ),
+            json.dumps(error_payload, ensure_ascii=False, indent=2),
             file=sys.stderr,
         )
         return 1
