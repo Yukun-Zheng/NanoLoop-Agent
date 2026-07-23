@@ -1,0 +1,151 @@
+{
+  "schema_version": 1,
+  "package": "nanoloop-demo-knowledge-v1",
+  "status": "public_curated_demo_corpus",
+  "created_at": "2026-07-23",
+  "owner": "NanoLoop Agent Team",
+  "scientific_scope": {
+    "sample_group_labels": [
+      "LaCo",
+      "LaCr",
+      "LaCu",
+      "LaMn",
+      "LaNi",
+      "NdCo",
+      "NdCu",
+      "NdNi"
+    ],
+    "exact_formula_policy": "Sample-group labels are not treated as exact chemical formulas. Exact stoichiometry must come from image/project metadata.",
+    "answer_policy": "Separate current experimental data from literature knowledge; do not infer composition, phase or causality from SEM morphology alone."
+  },
+  "documents": [
+    {
+      "asset_id": "demo_project_sample_context",
+      "path": "sources/project_sample_context.md",
+      "metadata": {
+        "title": "NanoLoop 项目样品标签与材料上下文",
+        "source_type": "material_note",
+        "year": 2026,
+        "citation_text": "NanoLoop Agent Team. NanoLoop 项目样品标签与材料上下文. Project knowledge note, 2026.",
+        "material_aliases": ["LaCo", "La-Co", "LaCr", "La-Cr", "LaCu", "La-Cu", "LaMn", "La-Mn", "LaNi", "La-Ni", "NdCo", "Nd-Co", "NdCu", "Nd-Cu", "NdNi", "Nd-Ni", "钙钛矿氧化物", "perovskite oxide", "ABO3", "析出", "exsolution"],
+        "license_note": "NanoLoop Agent project-authored demo knowledge card. Competition/internal demonstration use permitted; external scientific claims are not made in this card.",
+        "allowed_for_demo": true
+      },
+      "evidence_sources": [
+        {
+          "title": "NanoLoop Agent v4.0 developer handoff",
+          "url": "https://github.com/Yukun-Zheng/NanoLoop-Agent/blob/main/docs/NanoLoop_Agent_%E5%8D%8F%E5%90%8C%E5%BC%80%E5%8F%91%E8%A7%84%E6%A0%BC%E4%B8%8E%E6%8E%A5%E5%8F%A3%E6%80%BB%E6%96%87%E6%A1%A3_v4.0.md"
+        }
+      ],
+      "sha256": "3226e75b0e96f590c12f69cec20d56cafb91fe26ba194b09d1e86b573e705e4b"
+    },
+    {
+      "asset_id": "demo_perovskite_exsolution_overview",
+      "path": "sources/perovskite_exsolution_overview.md",
+      "metadata": {
+        "title": "钙钛矿氧化物中的纳米颗粒析出：概念、机制与价值",
+        "source_type": "material_note",
+        "year": 2026,
+        "citation_text": "NanoLoop Agent Team. 钙钛矿氧化物中的纳米颗粒析出：概念、机制与价值. Curated knowledge card based on CC BY sources, 2026.",
+        "material_aliases": ["LaCo", "La-Co", "LaCr", "La-Cr", "LaCu", "La-Cu", "LaMn", "La-Mn", "LaNi", "La-Ni", "NdCo", "Nd-Co", "NdCu", "Nd-Cu", "NdNi", "Nd-Ni", "钙钛矿氧化物", "perovskite oxide", "ABO3", "析出", "exsolution"],
+        "license_note": "Project-authored summary for NanoLoop demo. Underlying cited articles are CC BY 4.0; attribution and DOI are included in the card.",
+        "allowed_for_demo": true
+      },
+      "evidence_sources": [
+        {"doi": "10.1038/ncomms15967", "license": "CC BY 4.0", "url": "https://www.nature.com/articles/ncomms15967"},
+        {"doi": "10.1038/s41467-023-37212-6", "license": "CC BY 4.0", "url": "https://www.nature.com/articles/s41467-023-37212-6"}
+      ],
+      "sha256": "9cfd2cc9c1d2bc00f1f7103abbe87ff4e67c01c0ceb99c22942c0e89f622de64"
+    },
+    {
+      "asset_id": "demo_exsolution_morphology_sem",
+      "path": "sources/exsolution_morphology_sem.md",
+      "metadata": {
+        "title": "析出颗粒形貌、SEM 指标与谨慎解释",
+        "source_type": "material_note",
+        "year": 2026,
+        "citation_text": "NanoLoop Agent Team. 析出颗粒形貌、SEM 指标与谨慎解释. Curated knowledge card based on CC BY sources, 2026.",
+        "material_aliases": ["LaCo", "La-Co", "LaCr", "La-Cr", "LaCu", "La-Cu", "LaMn", "La-Mn", "LaNi", "La-Ni", "NdCo", "Nd-Co", "NdCu", "Nd-Cu", "NdNi", "Nd-Ni", "钙钛矿氧化物", "perovskite oxide", "ABO3", "析出", "exsolution"],
+        "license_note": "Project-authored summary for NanoLoop demo. Underlying cited articles are CC BY 4.0; attribution and DOI are included in the card.",
+        "allowed_for_demo": true
+      },
+      "evidence_sources": [
+        {"doi": "10.1038/s41467-019-09395-4", "license": "CC BY 4.0", "url": "https://www.nature.com/articles/s41467-019-09395-4"},
+        {"doi": "10.1038/s41467-022-34289-3", "license": "CC BY 4.0", "url": "https://www.nature.com/articles/s41467-022-34289-3"}
+      ],
+      "sha256": "ac3c900bb1fec7723edf9bfe4e280074aeabdf42b245bbaa0cf60bcb19fa5d4b"
+    },
+    {
+      "asset_id": "demo_a_site_deficiency",
+      "path": "sources/a_site_deficiency_oxygen_vacancies.md",
+      "metadata": {
+        "title": "A 位缺位、氧空位与析出倾向",
+        "source_type": "material_note",
+        "year": 2026,
+        "citation_text": "NanoLoop Agent Team. A 位缺位、氧空位与析出倾向. Curated knowledge card based on CC BY sources, 2026.",
+        "material_aliases": ["LaCo", "La-Co", "LaCr", "La-Cr", "LaCu", "La-Cu", "LaMn", "La-Mn", "LaNi", "La-Ni", "NdCo", "Nd-Co", "NdCu", "Nd-Cu", "NdNi", "Nd-Ni", "钙钛矿氧化物", "perovskite oxide", "ABO3", "析出", "exsolution"],
+        "license_note": "Project-authored summary for NanoLoop demo. Underlying cited articles are CC BY 4.0; attribution and DOI are included in the card.",
+        "allowed_for_demo": true
+      },
+      "evidence_sources": [
+        {"doi": "10.1038/ncomms15967", "license": "CC BY 4.0", "url": "https://www.nature.com/articles/ncomms15967"},
+        {"doi": "10.1038/s41467-019-09395-4", "license": "CC BY 4.0", "url": "https://www.nature.com/articles/s41467-019-09395-4"}
+      ],
+      "sha256": "d08f7d82a949628305179153ca09b7100a3f18bc64542c9c619f33b9fe8aab7a"
+    },
+    {
+      "asset_id": "demo_b_site_trends",
+      "path": "sources/b_site_transition_metal_trends.md",
+      "metadata": {
+        "title": "B 位过渡金属与析出趋势：Ni、Co、Mn、Cr、Cu",
+        "source_type": "material_note",
+        "year": 2026,
+        "citation_text": "NanoLoop Agent Team. B 位过渡金属与析出趋势：Ni、Co、Mn、Cr、Cu. Curated knowledge card based on CC BY sources, 2026.",
+        "material_aliases": ["LaCo", "La-Co", "LaCr", "La-Cr", "LaCu", "La-Cu", "LaMn", "La-Mn", "LaNi", "La-Ni", "NdCo", "Nd-Co", "NdCu", "Nd-Cu", "NdNi", "Nd-Ni", "钙钛矿氧化物", "perovskite oxide", "ABO3", "析出", "exsolution"],
+        "license_note": "Project-authored summary for NanoLoop demo. Underlying cited articles are CC BY 4.0 or CC BY 3.0; attribution and DOI are included in the card.",
+        "allowed_for_demo": true
+      },
+      "evidence_sources": [
+        {"doi": "10.1038/ncomms15967", "license": "CC BY 4.0", "url": "https://www.nature.com/articles/ncomms15967"},
+        {"doi": "10.1039/D4NA00349G", "license": "CC BY 3.0", "url": "https://pubs.rsc.org/en/content/articlelanding/2024/na/d4na00349g"}
+      ],
+      "sha256": "2961102999695811cee0fdab7345c65203e2fedbdee1c343ca8460988dcdc38f"
+    },
+    {
+      "asset_id": "demo_ni_applications",
+      "path": "sources/nickel_exsolution_applications.md",
+      "metadata": {
+        "title": "Ni 析出、固体氧化物电池与催化应用",
+        "source_type": "material_note",
+        "year": 2026,
+        "citation_text": "NanoLoop Agent Team. Ni 析出、固体氧化物电池与催化应用. Curated knowledge card based on CC BY sources, 2026.",
+        "material_aliases": ["LaNi", "La-Ni", "NdNi", "Nd-Ni", "Ni", "镍", "nickel", "镍析出", "Ni exsolution", "钙钛矿氧化物", "perovskite oxide", "ABO3"],
+        "license_note": "Project-authored summary for NanoLoop demo. Underlying cited articles are CC BY 3.0 and CC BY 4.0; attribution and DOI are included in the card.",
+        "allowed_for_demo": true
+      },
+      "evidence_sources": [
+        {"doi": "10.1039/D4NA00349G", "license": "CC BY 3.0", "url": "https://pubs.rsc.org/en/content/articlelanding/2024/na/d4na00349g"},
+        {"doi": "10.1038/s41467-019-09395-4", "license": "CC BY 4.0", "url": "https://www.nature.com/articles/s41467-019-09395-4"}
+      ],
+      "sha256": "9678b6caccfa1a2806a1920d924f528dd58bc934da996415c9f168fe97e12938"
+    },
+    {
+      "asset_id": "demo_stability_switchability",
+      "path": "sources/stability_switchability_limitations.md",
+      "metadata": {
+        "title": "析出颗粒的稳定性、可切换性与局限",
+        "source_type": "material_note",
+        "year": 2026,
+        "citation_text": "NanoLoop Agent Team. 析出颗粒的稳定性、可切换性与局限. Curated knowledge card based on CC BY sources, 2026.",
+        "material_aliases": ["LaCo", "La-Co", "LaCr", "La-Cr", "LaCu", "La-Cu", "LaMn", "La-Mn", "LaNi", "La-Ni", "NdCo", "Nd-Co", "NdCu", "Nd-Cu", "NdNi", "Nd-Ni", "钙钛矿氧化物", "perovskite oxide", "ABO3", "析出", "exsolution"],
+        "license_note": "Project-authored summary for NanoLoop demo. Underlying cited articles are CC BY 4.0; attribution and DOI are included in the card.",
+        "allowed_for_demo": true
+      },
+      "evidence_sources": [
+        {"doi": "10.1038/s41467-020-18563-w", "license": "CC BY 4.0", "url": "https://www.nature.com/articles/s41467-020-18563-w"},
+        {"doi": "10.1038/s41467-022-32393-y", "license": "CC BY 4.0", "url": "https://www.nature.com/articles/s41467-022-32393-y"}
+      ],
+      "sha256": "a20b3566c83998c0ae42695e892468eaba5198f3a553c82febb2216c228dcffb"
+    }
+  ]
+}
