@@ -1,9 +1,9 @@
-"""Verify frontend error handling against real HTTP responses from the degraded stub.
+"""Verify backend error contracts against real HTTP responses from the degraded stub.
 
-This script uses the REAL NanoLoopApiClient (frontend/api_client.py) and the
-REAL _error_guidance function (frontend/components.py) to verify that every
-required error path is triggered by a genuine HTTP status code from the stub
-server, not a mocked exception.
+This script uses the shared synchronous API client to verify that every
+required backend error path is triggered by a genuine HTTP status code from
+the stub server, not a mocked exception. Browser presentation of these errors
+is covered by the TypeScript frontend tests.
 
 Usage:
     # Start the stub first (in another terminal or background):
@@ -32,10 +32,11 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from frontend.api_client import ApiClientError, NanoLoopApiClient, UploadPart  # noqa: E402
-from frontend.components import _error_guidance  # noqa: E402
-from frontend.model_catalog import model_availability, model_is_runnable  # noqa: E402
-from frontend.state import health_rollup  # noqa: E402
+from scripts.nanoloop_api_client import (  # noqa: E402
+    ApiClientError,
+    NanoLoopApiClient,
+    UploadPart,
+)
 
 # ---------------------------------------------------------------------------
 # Test result tracking
@@ -74,8 +75,6 @@ def verify_health(client: NanoLoopApiClient) -> dict | None:
     try:
         result = client.health()
         data = result.data
-        rollup = health_rollup(data)
-
         # Verify model_registry is unavailable
         mr = data.get("model_registry", {})
         mr_status = str(mr.get("status", "")).casefold()
@@ -96,16 +95,26 @@ def verify_health(client: NanoLoopApiClient) -> dict | None:
             f"got status={ri_status!r}, detail={ri.get('detail')!r}",
         )
 
-        # Verify health rollup is degraded (not healthy, not crashed)
+        component_names = ("service", "database", "model_registry", "rag_index")
+        statuses = {
+            name: str((data.get(name) or {}).get("status", "unavailable")).casefold()
+            for name in component_names
+        }
+        unhealthy = {name for name, status in statuses.items() if status != "healthy"}
+        unavailable_core = any(statuses[name] == "unavailable" for name in ("service", "database"))
+        rollup_status = (
+            "unavailable" if unavailable_core else "degraded" if unhealthy else "healthy"
+        )
+
+        # Verify the backend component records imply a degraded service.
         _record(
             "Health",
-            "health_rollup is degraded (not healthy/crashed)",
-            rollup.status == "degraded",
-            f"got status={rollup.status!r}, label={rollup.label!r}",
+            "component records imply degraded service",
+            rollup_status == "degraded",
+            f"got status={rollup_status!r}",
         )
 
         # Verify unhealthy components include model_registry and rag_index
-        unhealthy = set(rollup.unhealthy_components)
         _record(
             "Health",
             "unhealthy components include model_registry and rag_index",
@@ -142,20 +151,13 @@ def verify_models(client: NanoLoopApiClient) -> list:
             f"statuses={[m.get('status') for m in models]}",
         )
 
-        # Verify model_availability marks them as not runnable
+        # The backend contract must not advertise an unavailable model as ready.
         for m in models:
-            avail = model_availability(m)
             _record(
                 "Models",
-                f"model_availability({m['model_id']}) is not runnable",
-                not avail.runnable,
-                f"severity={avail.severity}, message={avail.message!r}",
-            )
-            _record(
-                "Models",
-                f"model_is_runnable({m['model_id']}) is False",
-                model_is_runnable(m) is False,
-                "",
+                f"{m['model_id']} is not advertised as ready",
+                str(m.get("status", "")).casefold() != "ready",
+                f"status={m.get('status')!r}",
             )
 
         return models
@@ -258,7 +260,7 @@ def verify_upload(client: NanoLoopApiClient) -> str | None:
 
 
 def verify_run_submission(client: NanoLoopApiClient, job_id: str) -> None:
-    """POST /analyses/{job_id}/runs — verify 503 MODEL_NOT_READY with guidance."""
+    """POST /analyses/{job_id}/runs — verify 503 MODEL_NOT_READY."""
     print("\n=== 4. Run Submission (503 MODEL_NOT_READY) ===")
     if not job_id:
         _skip("Run", "create run", "no job_id from upload")
@@ -310,23 +312,6 @@ def verify_run_submission(client: NanoLoopApiClient, job_id: str) -> None:
             f"request_id={exc.request_id!r}",
         )
 
-        # Verify _error_guidance is triggered and returns model-specific message
-        guidance = _error_guidance(exc.code, exc.status_code)
-        _record(
-            "Run",
-            "_error_guidance returns non-None for MODEL_NOT_READY",
-            guidance is not None,
-            f"guidance={guidance!r}",
-        )
-        if guidance:
-            _record(
-                "Run",
-                "guidance mentions model availability",
-                "模型" in guidance
-                and ("不可用" in guidance or "加载" in guidance or "权重" in guidance),
-                f"guidance={guidance!r}",
-            )
-
         # Verify error details contain model_ids
         _record(
             "Run",
@@ -345,7 +330,7 @@ def verify_run_submission(client: NanoLoopApiClient, job_id: str) -> None:
 
 
 def verify_rag_query(client: NanoLoopApiClient, job_id: str) -> None:
-    """POST /analyses/{job_id}/query — verify 503 RAG_INDEX_NOT_READY with guidance."""
+    """POST /analyses/{job_id}/query — verify 503 RAG_INDEX_NOT_READY."""
     print("\n=== 5. RAG Query (503 RAG_INDEX_NOT_READY) ===")
     if not job_id:
         _skip("Query", "RAG query", "no job_id from upload")
@@ -372,20 +357,6 @@ def verify_rag_query(client: NanoLoopApiClient, job_id: str) -> None:
             f"got status_code={exc.status_code}",
         )
 
-        guidance = _error_guidance(exc.code, exc.status_code)
-        _record(
-            "Query",
-            "_error_guidance returns non-None for RAG_INDEX_NOT_READY",
-            guidance is not None,
-            f"guidance={guidance!r}",
-        )
-        if guidance:
-            _record(
-                "Query",
-                "guidance mentions knowledge index",
-                "知识" in guidance and ("索引" in guidance or "就绪" in guidance),
-                f"guidance={guidance!r}",
-            )
     except Exception as exc:
         _record(
             "Query",
@@ -483,13 +454,6 @@ def verify_knowledge_reindex(client: NanoLoopApiClient) -> None:
             exc.status_code == 503,
             f"got status_code={exc.status_code}",
         )
-        guidance = _error_guidance(exc.code, exc.status_code)
-        _record(
-            "Knowledge",
-            "_error_guidance triggered for reindex error",
-            guidance is not None,
-            f"guidance={guidance!r}",
-        )
     except Exception as exc:
         _record(
             "Knowledge",
@@ -523,13 +487,6 @@ def verify_export(client: NanoLoopApiClient, job_id: str) -> None:
             exc.status_code == 409,
             f"got status_code={exc.status_code}",
         )
-        guidance = _error_guidance(exc.code, exc.status_code)
-        _record(
-            "Export",
-            "_error_guidance triggered for export error",
-            guidance is not None,
-            f"guidance={guidance!r}",
-        )
     except Exception as exc:
         _record(
             "Export",
@@ -562,13 +519,6 @@ def verify_401(base_url: str) -> None:
             "error code is AUTHENTICATION_REQUIRED",
             exc.code == "AUTHENTICATION_REQUIRED",
             f"got code={exc.code!r}",
-        )
-        guidance = _error_guidance(exc.code, exc.status_code)
-        _record(
-            "Auth401",
-            "_error_guidance returns API Key message (via sc==401)",
-            guidance is not None and "API Key" in guidance,
-            f"guidance={guidance!r}",
         )
     except Exception as exc:
         _record(
@@ -619,13 +569,6 @@ def verify_429(base_url: str, api_key: str | None) -> None:
                             exc.retryable is True,
                             f"got retryable={exc.retryable}",
                         )
-                        guidance = _error_guidance(exc.code, exc.status_code)
-                        _record(
-                            "Rate429",
-                            "_error_guidance returns rate limit message",
-                            guidance is not None and "频繁" in guidance,
-                            f"guidance={guidance!r}",
-                        )
                         break
             if not hit_429:
                 _record("Rate429", "429 triggered within 10 requests", False, "never hit 429")
@@ -666,13 +609,6 @@ def verify_transport_error() -> None:
             exc.retryable is True,
             f"got retryable={exc.retryable}",
         )
-        guidance = _error_guidance(exc.code, exc.status_code)
-        _record(
-            "Transport",
-            "_error_guidance returns connection message",
-            guidance is not None and "连接" in guidance,
-            f"guidance={guidance!r}",
-        )
     except Exception as exc:
         _record(
             "Transport",
@@ -691,7 +627,7 @@ def verify_transport_error() -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Verify frontend error paths against real HTTP")
+    parser = argparse.ArgumentParser(description="Verify backend error contracts against real HTTP")
     parser.add_argument("--base-url", default="http://127.0.0.1:8001", help="Stub server base URL")
     parser.add_argument("--api-key", default=None, help="API key (for auth mode)")
     parser.add_argument("--test-401", action="store_true", help="Run 401 auth test")
@@ -699,7 +635,7 @@ def main() -> int:
     args = parser.parse_args()
 
     print("=" * 70)
-    print("NanoLoop Frontend Error Path Verification")
+    print("NanoLoop Backend Error Contract Verification")
     print(f"Backend: {args.base_url}")
     print("=" * 70)
 

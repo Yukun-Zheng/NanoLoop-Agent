@@ -41,7 +41,6 @@ models = [
   "torchvision>=0.21,<1",
   "ultralytics>=8.3,<9",
 ]
-frontend = ["streamlit>=1.42,<2"]
 docs = ["python-docx>=1.2,<2"]
 dev = [
   "mypy>=1.15,<2",

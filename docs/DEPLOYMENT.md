@@ -2,9 +2,12 @@
 
 ## 支持拓扑
 
-当前正式支持的拓扑是单台主机上的一个 API 容器、一个 Streamlit 容器、SQLite WAL 和本地命名卷。API 容器固定单 Uvicorn worker，内部分析线程数由 `ANALYSIS_WORKER_COUNT` 控制。不要用增加 Uvicorn worker 的方式提高模型并发。
+当前正式支持的拓扑是单台主机上的一个 FastAPI 容器、一个 Next.js 16 容器、SQLite WAL 和
+本地命名卷。前端容器在 `3000` 端口提供 React 19 Command Center 与同源 BFF；API 容器固定单
+Uvicorn worker，内部分析线程数由 `ANALYSIS_WORKER_COUNT` 控制。不要用增加 Uvicorn worker
+的方式提高模型并发。
 
-当前部署基线为最新全绿 `main`，发布等级是 **M1 工程 MVP / 内部 Alpha**。默认资产目录已包含 Large U-Net TorchScript；安装 `models` extra 且 bundle 校验通过时该项为 `ready`，其余四个模型仍为 `unavailable`。示例 smoke fixture 仍需替换为许可明确的真实数据，Large 的许可/独立科学证据、正式 RAG 语料与固定 embedding 尚未交付。基础设施和单模型运行可用不等于科学闭环已经验收；里程碑与真实资产门槛见 [v4.0 协同开发文档](NanoLoop_Agent_协同开发规格与接口总文档_v4.0.md)。
+当前部署基线为最新全绿 `main`，发布等级是 **M1 工程 MVP / 内部 Alpha**。默认资产目录已包含 Large U-Net TorchScript；安装 `models` extra 且 bundle 校验通过时该项为 `ready`，其余四个模型仍为 `unavailable`。示例 smoke fixture 仍需替换为许可明确的真实数据，Large 的许可/独立科学证据、正式 RAG 语料与固定 embedding 尚未交付。基础设施和单模型运行可用不等于科学闭环已经验收；当前真实资产门槛见 [需求追踪矩阵](requirements-traceability.md) 和 [生产就绪说明](PRODUCTION_READINESS.md)。
 
 默认端口只发布到 `127.0.0.1`。API 依据 `TRUSTED_HOSTS` 拒绝异常 Host，并依据
 `CORS_ALLOW_ORIGINS`/同站 fetch metadata 保护浏览器写请求。`AUTH_MODE` 支持
@@ -26,11 +29,40 @@ principal 模式还必须设置独立且稳定的 32 字节以上 `CREDENTIAL_PE
 `python scripts/manage_identity.py --help` 所列的 tenant/principal/credential 子命令预置身份，
 并把 `credential issue --token-output` 生成的 `0600` 文件作为唯一一次 token 交付。数据库只保存
 peppered HMAC 摘要；原始 token 不会被列出或恢复。把共享 Key 或已签发 principal token 通过同一
-`NANOLOOP_API_KEY` 变量提供给 Streamlit；principal 模式下 API 只把该值当请求携带的 token，绝不当
-共享 fallback。Streamlit 会禁用会话内的后端地址编辑，并在构造客户端前再次要求规范化地址与
-`NANOLOOP_API_BASE_URL` 完全一致；不匹配时拒绝创建客户端，不能静默把 Key 发往其他 origin/path。
-环境变量可被宿主管理员或 `docker inspect` 看到，长期部署应迁移到 secret file/
-Docker secret；principal credential 可单独撤销和轮换。
+`NANOLOOP_API_KEY` 变量提供给 Next.js 服务端；principal 模式下 API 只把该值当请求携带的 token，
+绝不当共享 fallback。浏览器只访问 `/api/nanoloop/*`，不能设置 Key 或后端地址；BFF 把允许列表中的
+路径映射到 `NANOLOOP_API_INTERNAL_URL` 下的 `/api/v1`，丢弃浏览器 Cookie、Authorization 与
+`X-API-Key`，再注入服务端 Key。两个变量都禁止使用 `NEXT_PUBLIC_*` 前缀。环境变量可被宿主管理员
+或 `docker inspect` 看到，长期部署应迁移到 secret file/Docker secret；principal credential 可单独
+撤销和轮换。当前架构仍是单一服务器身份，不提供浏览器用户登录或逐用户 token 代理。
+
+## Next.js 前端与 BFF
+
+Compose 从 `frontend/Dockerfile` 构建 Node.js 24 standalone 镜像，以 UID/GID `10001:10001`、
+只读根文件系统启动；`/api/healthz` 只用于容器存活检查。默认发布地址是
+`http://127.0.0.1:3000`，可用 `NANOLOOP_FRONTEND_PORT` 改宿主端口，但容器内仍为 `3000`。
+
+本地直接运行前端时：
+
+```dotenv
+NANOLOOP_API_INTERNAL_URL=http://127.0.0.1:8000
+NANOLOOP_API_KEY=
+NANOLOOP_FRONTEND_ALLOWED_ORIGINS=http://127.0.0.1:3000,http://localhost:3000
+```
+
+Compose 已固定把内部地址设置为 `http://api:8000`。`NANOLOOP_API_INTERNAL_URL` 只用于
+Next.js 服务端到 FastAPI 的连接，不是浏览器可访问的 Base URL；命令行 smoke 所用的
+`NANOLOOP_API_BASE_URL` 是另一个变量。BFF 使用严格路径/方法允许列表、`no-store`、请求 ID
+校验和手动重定向拒绝，不能当通用反向代理。后端返回的短期文件 URL 也只允许收敛到
+`/api/nanoloop/files/{token}`。
+`NANOLOOP_FRONTEND_ALLOWED_ORIGINS` 是逗号分隔的精确 HTTP(S) origin；公网或反向代理部署必须填写
+实际 HTTPS origin，并让 ingress 保留正确 Host。BFF 会拒绝不在列表中的 Host/origin 以及跨站
+`POST/PUT/PATCH`，避免浏览器借服务端共享凭据执行写操作。
+
+前端生产门禁使用锁定的 pnpm 依赖，执行 OpenAPI 类型漂移、ESLint、TypeScript、Vitest、
+`next build` 与 Playwright Chromium。容器冒烟同时检查非 root、只读根文件系统、
+`/api/healthz` 和经 BFF 的 FastAPI `/health`。这些是工程部署证据，不替代真实模型或 RAG
+科学验收。
 
 `NANOLOOP_BIND_HOST=0.0.0.0` 只应在前方已有 TLS、所需的用户登录/联邦身份、独立边缘限流和请求体
 配额的受信任反向代理时使用。捆绑的 Uvicorn 命令显式使用 `--no-proxy-headers`，应用不读取
@@ -98,7 +130,7 @@ API 以 UID/GID `10001:10001` 运行。Compose 新建的命名卷会从镜像中
 ## 容量与上传
 
 - Compose 默认将主体限流设为 `API_RATE_LIMIT_REQUESTS=120`/60 秒，并把 principal 预鉴权来源桶设为 `API_PRINCIPAL_PREAUTH_RATE_LIMIT_REQUESTS=600`/60 秒；每层最多保留 4096 个 LRU key。disabled/shared-key 仍使用兼容固定桶。principal 请求先消费规范化的直接 peer 桶，认证成功后再消费同次查询产生的 `principal_id` 桶；失败的 401/503 不消费主体桶。进程重启会清空计数，多个 worker/replica 之间不共享额度。
-- Compose 的 API Host allowlist 包含内部服务名 `api`；删除该项会使 Streamlit 到 API 的请求被 Host guard 拒绝。
+- Compose 的 API Host allowlist 包含内部服务名 `api`；删除该项会使 Next.js BFF 到 API 的请求被 Host guard 拒绝。
 - `MAX_UPLOAD_MB` 是每个文件的流式保存上限，默认 200 MB。
 - `MAX_REQUEST_MB` 是整个 HTTP 请求在 multipart 解析前的上限，默认 512 MB，且不得小于单文件上限。
 - API 的 `TMPDIR=/app/data/tmp`，避免 Starlette 在 64 MB `/tmp` tmpfs 中展开大 multipart。

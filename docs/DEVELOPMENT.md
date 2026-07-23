@@ -2,7 +2,14 @@
 
 ## 接手前必读
 
-先阅读 [v4.0 交接 DOCX](NanoLoop_Agent_协同开发规格与接口总文档_v4.0.docx)；检索代码路径、评审或修改内容时使用 [Markdown 源文件](NanoLoop_Agent_协同开发规格与接口总文档_v4.0.md)。v4.0 依据五人集成快照 `bfb48d4` 及其代码、迁移、路由和测试生成，并给出当前实名分工、优先级、依赖和统一验收；每次开工的唯一具体任务、分支和非目标从第 0.4 节领取，并按第 0.5 节先回执，后续事实以最新 `main` 为准。RAG 开发者同时阅读 [RAG 与检索功能开发指南](RAG_RETRIEVAL_DEVELOPMENT_GUIDE.md)，但其中旧时间表与旧人员分工由 v4.0 取代；A+B 开发者使用 [模型冻结、接入与 AI 协作指南](developer_handoffs/guo-jinghao-ab-model-integration-guide.md)；后续语音输入探索见 [FunASR Nano POC 记录](experiments/funasr-nano-poc.md)。v3/v2 保留为历史资料；若旧计划与当前实现冲突，以代码、测试和 v4.0 为准。
+先阅读仓库 [README](../README.md)、[需求追踪矩阵](requirements-traceability.md) 和
+[开发日志](DEVELOPMENT_LOG.md)，再按模块阅读 OpenAPI、ADR 与专项技术 handoff。v4.0 是
+2026-07-23 的团队任务分发快照，仍包含已退役前端和当时工单；项目负责人已暂停分发文档维护，
+不能把 v4/v3/v2 当作当前操作指令。RAG 技术细节见
+[RAG 与检索功能开发指南](RAG_RETRIEVAL_DEVELOPMENT_GUIDE.md)，模型接入细节见
+[当前模型与 RAG 接入交接](model-rag-handoff.md)。郭境濠 A/B 指南只保留为历史任务快照，
+语音输入探索见 [FunASR Nano POC](experiments/funasr-nano-poc.md)；其中旧时间表和人员分工只作历史
+参考。若旧计划与当前实现冲突，以代码、测试和本组 operational docs 为准。
 
 ## 分支与合并基线
 
@@ -11,10 +18,13 @@
   `chore/*` 分支；完成后向 `main` 发 Pull Request。已经合并或废弃的旧分支只作追溯，不继续叠加。
 - 仓库不再保留 `yukun` 集成分支；旧文档和历史日志中的该名称只描述当时事实，不是当前操作指令。
 - 不得把本地训练目录直接复制覆盖仓库。
-- 每个 PR 只解决一个可独立验收的主题。模型权重、训练/测试数据、生产语料、向量索引、运行输出、
-  虚拟环境和密钥均作为外部资产管理，不进入 Git。
-- 合入前先跑模块窄测试，再跑 `make check`、`docker compose config --quiet` 和
-  `git diff --check`；以该提交自己的 GitHub Actions 为最终工程门禁，不沿用历史成功记录。
+- 每个 PR 只解决一个可独立验收的主题。源 checkpoint、训练/测试数据、生产语料、向量索引、
+  运行输出、虚拟环境和密钥默认作为外部资产管理，不进入 Git。只有经项目负责人明确批准、完成
+  许可/来源记录并以哈希冻结的部署制品才可作为例外提交；当前
+  `unet-large-optimized-v1.pt` 即为该例外，不能据此推定其他资产也获准入库。
+- 合入前先跑模块窄测试，再跑 `make check`、`make frontend-check`、
+  `make frontend-e2e`、`docker compose config --quiet` 和 `git diff --check`；以该提交自己的
+  GitHub Actions 为最终工程门禁，不沿用历史成功记录。
 - 分支声称的状态必须与证据一致：缺 checkpoint、依赖、许可、真实 fixture 或冷启动证据时，模型继续
   `unavailable`；仅截图或 fake 测试不构成可交付验收。
 
@@ -26,44 +36,41 @@
 | B | 科学分析 | `app/analysis`、分析领域 contracts | repository 与 inference protocol |
 | C | 平台后端 | `app/main.py`、`app/api`、`app/core`、`app/db`、`app/storage`、`app/orchestration` | 共享 DTO、事务、文件仓储与任务状态 |
 | D | RAG / Agent | `app/rag`、`app/agent`、知识与查询领域 contracts | retrieval、provider 与只读分析数据工具 |
-| E | 前端 | `frontend` | 只依赖 `/api/v1` |
+| E | 前端 | `frontend` | 浏览器只依赖同源 `/api/nanoloop/*`；BFF 映射到 `/api/v1` |
 | F | QA / 交付 | CI、`scripts`、集成测试、`demo_data`、`docs`、Docker 文件 | 黑盒 API、OpenAPI 与发布门禁 |
 
-当前实名分工与 P0/P1 优先级以 [v4.0 第 0.3 节](NanoLoop_Agent_协同开发规格与接口总文档_v4.0.md#03-全员速览) 为准；本批精确工单和分支以第 0.4 节为准，避免在多个文件重复维护人员安排。
+上表只冻结模块边界，不分发当前人员工单。当前开发阶段由项目负责人直接安排；历史实名分工只在
+开发日志和分发快照中追溯。
 
 `app/contracts` 是共享事实源。若修改其中字段，必须同步更新持久化所需的 Alembic 迁移、
 生成的 `docs/api/openapi-v1.json`、相关 `tests/fixtures/api`，以及 v2.0 规格未覆盖行为所需的
 ADR。不得只改某一层后让其他层猜测新合同。
 
-## 重建 v4.0 交接文档
+### 前端合同与工具链
 
-v4.0 Markdown 是编辑源，DOCX 是随仓库提交的生成物。安装 `docs` 依赖和 Pandoc 后，在仓库根目录运行：
+- 前端是独立的 Node.js 24 / pnpm 10 工程，使用 Next.js 16、React 19、TypeScript 5、
+  Tailwind CSS 4、TanStack Query、Zod、Zustand 与 React-Konva；Python 包不再包含
+  `frontend` extra。
+- `docs/api/openapi-v1.json` 生成 `frontend/src/lib/api/schema.d.ts`。公共 API 变更后运行
+  `make openapi` 与 `cd frontend && pnpm generate:api`，并提交两份生成结果。
+- 浏览器不得直接访问 FastAPI、携带 API Key 或接收任意上游地址。所有请求必须走同源
+  `/api/nanoloop/*`；BFF 使用严格路径/方法允许列表，只在服务端读取
+  `NANOLOOP_API_INTERNAL_URL` 和 `NANOLOOP_API_KEY`。部署时还必须通过
+  `NANOLOOP_FRONTEND_ALLOWED_ORIGINS` 明确允许的前端 origin；默认仅允许本机 3000 端口。
+- BFF 不转发浏览器 Cookie、Authorization 或 `X-API-Key`，不跟随上游重定向；文件制品只接受
+  后端签发的 `/api/v1/files/{token}` 并收敛到同源下载路径。前端不得读取 SQLite、宿主路径或
+  自行计算颗粒统计。
+- 路由入口为 `/`、`/workspace/{job_id}`、`/knowledge`；`/api/healthz` 只证明 Next.js
+  进程存活，FastAPI 业务健康仍经 `/api/nanoloop/health` 查看。
+- 安装与开发：`make frontend-install`、`make frontend`。提交前运行 `make frontend-check`；
+  Chromium 场景另运行 `make frontend-e2e`（首次需安装 Playwright Chromium）。
 
-```bash
-make handoff-doc
-```
+## 历史分发文档
 
-该命令从 `docs/NanoLoop_Agent_协同开发规格与接口总文档_v4.0.md` 重建同目录的 `.docx`。两者应在同一个提交中保持同步。历史 v3 如确需重建，使用 `make handoff-doc-v3`。
-
-RAG 指南同样以 Markdown 为编辑源、DOCX 为分发物，可单独重建：
-
-```bash
-make rag-guide-doc
-```
-
-在 macOS 上用 headless LibreOffice 转 PDF 做中文排版检查时，应显式使用 Homebrew 的 Fontconfig；否则进程可能找不到苹方等系统中文字体：
-
-```bash
-fontconfig_root="$(brew --prefix)"
-export FONTCONFIG_FILE="$fontconfig_root/etc/fonts/fonts.conf"
-export FONTCONFIG_PATH="$fontconfig_root/etc/fonts"
-mkdir -p /tmp/nanoloop-v4-render
-soffice --headless --convert-to pdf \
-  --outdir /tmp/nanoloop-v4-render \
-  docs/NanoLoop_Agent_协同开发规格与接口总文档_v4.0.docx
-```
-
-`brew --prefix` 同时适配 Apple Silicon 和 Intel Homebrew；渲染后应人工检查中文字体、表格换页、目录和页眉页脚。
+v4.0/v3.0 DOCX 与 Markdown 仅保留为历史团队快照；当前已暂停维护和分发。除非项目负责人明确
+重新启动分发流程，不要运行 `make handoff-doc`、`make handoff-doc-v3`，也不要据当前实现改写这些
+文件。RAG 指南的技术合同仍可维护；若确需重建其 DOCX，使用 `make rag-guide-doc`，并确保没有把
+旧人员分工重新升级为当前指令。
 
 ## 合并与验证顺序
 
@@ -71,7 +78,8 @@ soffice --headless --convert-to pdf \
 2. 推理注册表/Adapter、检索服务和纯分析服务；
 3. 路由到应用服务的集成与后台执行；
 4. API 集成测试、smoke、Docker 冷启动、许可证和固定演示数据；
-5. 在冻结 OpenAPI 和真实资产状态后，对现有六页 Streamlit 做真实联调、错误状态和固定浏览器演示路径验收。
+5. 在冻结 OpenAPI 和真实资产状态后，对 Next.js Command Center 做 BFF 安全回归、错误/降级状态、
+   固定浏览器路径和目标后端真实联调验收。
 
 先运行改动模块的窄测试，再运行完整门禁。重型模型和语料测试使用 `slow` marker；普通测试
 不得依赖私有权重、外网、API Key 或生产语料。
@@ -174,19 +182,24 @@ soffice --headless --convert-to pdf \
 - Canonical `instances.json` 和边界过滤前诊断已实现并有分析测试；新 Adapter 必须维持这些
   不变量。
 - 确定性数据工具白名单已覆盖分组比较、分布、异常和模型比较，并有重复 run/单位保护。
-- Streamlit 结果页先呈现质量结论/原因/建议，再呈现数值；单 run 可切换原图、mask、overlay、实例标注
-  和经范围/形状/有限值校验的概率图，也可并排比较同一图像的 2～3 个完成 run。模型目录可按族、变体、
-  quality tier、状态与材料筛选，展示指标上下文及健康原因，并对矛盾的 ready/health 状态失败关闭。
-  知识库页可启用/禁用已索引文档。ROI 页提供仓库内置的离线 canvas 和同步数值编辑器：拖拽建框、
-  选择/删除、50%～200% 缩放、
-  有效/无效区阴影、显示坐标到原图坐标转换和 revision CAS 保存均已接通。纯转换/校验由单元
-  测试覆盖；本地 headless Chrome 已走通真实拖拽、保存、重载与 REST revision round-trip。
+- Next.js Command Center 以任务启动页、三栏工作区和知识库页覆盖项目、ROI、模型/运行、时间线、
+  结果/复核/导出、Agent 查询与知识资产管理。结果区先呈现质量结论/原因/建议，再呈现后端数值，
+  支持原图、mask、overlay、概率和实例标注制品及同图终态运行对比；浏览器不补算科学指标。
+- ROI 使用 React-Konva 和同步数值编辑器，坐标固定为 `original_px` 半开区间；有效/无效区、
+  最小边长、显示/原图转换和 revision CAS 载荷由纯函数与组件实现。当前 Vitest 覆盖几何和合同，
+  Playwright 使用同源 API mock 覆盖任务/ROI/模型运行/结果/复核/查询/导出、ROI CAS 恢复、
+  响应式审查器和知识库生命周期；旧前端曾完成的真实
+  REST ROI round-trip 不自动证明重写后的实现，目标后端联调仍须单独留证。
+- 模型目录只允许选择后端标记为 `ready` 的条目，推荐与创建运行保持分离；知识库页要求许可元数据，
+  支持摄取、启停和重建。BFF 允许列表、服务端 Key 注入/浏览器凭据剥离、错误信封、OpenAPI 生成
+  类型、ROI 几何、时间线与查询证据均有专项测试。
 - 运行创建专项测试覆盖 2 图像 × 3 个 ready 模型的 6 个独立 run、全部组合、配置/provenance
   快照和无重复调度；这证明 Cartesian 编排，不证明缺失 checkpoint 的科学性能。
 - 稳定 RAG 基线是 FTS5 + 可核验摘录。可选 SentenceTransformers/FAISS runtime 已接通
   原子 generation、manifest/数据库映射校验、重启加载和 keyword-only 降级；没有固定的真实
   embedding 模型与正式语料完成资产级冒烟前，仍不得标记为生产向量闭环完成。
-- 真实分割 checkpoint 与有许可的演示语料仍是外部交付物。
+- Large U-Net 部署用 TorchScript 已接入；其许可/科学证据、其余四个模型 checkpoint，以及有许可的
+  演示语料和固定 embedding 仍是外部交付物。
 - 容器资产接缝已存在：默认挂载仓库内 `./model_artifacts`，也可把
   `NANOLOOP_MODEL_ARTIFACTS_DIR` 设为宿主机上的私有绝对路径。API 以 UID/GID `10001:10001`
   只读访问该目录；内容寻址 snapshot 位于可写 `nanoloop-data`，运行产物位于可写

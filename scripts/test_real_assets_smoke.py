@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Real-assets smoke test for the NanoLoop frontend API client.
+"""Real-assets smoke test for the NanoLoop backend API client.
 
 This script verifies that ``NanoLoopApiClient`` can consume either contract-faithful
 offline samples or a real backend running on Linux, WSL2, Docker, or a remote host.
@@ -14,7 +14,7 @@ team (郭境濠 — models, 徐皓彬 — RAG):
 Modes
 -----
 - **offline** (default): Uses hardcoded JSON samples (matching contracts) to
-  verify the frontend parsing logic — citations top-level, ``page=null``,
+  verify the shared client parsing logic — citations top-level, ``page=null``,
   ``INSUFFICIENT_EVIDENCE`` + empty citations. No HTTP requests are made.
 - **live**: Connects to a real backend via ``NANOLOOP_API_BASE_URL``.
 
@@ -46,7 +46,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from frontend.api_client import ApiClientError, NanoLoopApiClient  # noqa: E402
+from scripts.nanoloop_api_client import ApiClientError, NanoLoopApiClient  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # ANSI colour codes for terminal output
@@ -821,7 +821,7 @@ def main() -> int:
     live_by_env = os.environ.get("RUN_REAL_TESTS", "").lower() in ("1", "true", "yes")
 
     parser = argparse.ArgumentParser(
-        description="NanoLoop real-assets smoke test (frontend API client)",
+        description="NanoLoop real-assets smoke test (backend API client)",
     )
     mode_group = parser.add_mutually_exclusive_group()
     mode_group.add_argument(

@@ -28,14 +28,14 @@ import os
 import sys
 from pathlib import Path
 
-# Ensure project root is on sys.path so `frontend` package is importable.
+# Ensure project root is on sys.path so the shared script client is importable.
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 import httpx  # noqa: E402
 
-from frontend.api_client import ApiClientError, NanoLoopApiClient  # noqa: E402
+from scripts.nanoloop_api_client import ApiClientError, NanoLoopApiClient  # noqa: E402
 
 # --- Configuration ---------------------------------------------------------
 

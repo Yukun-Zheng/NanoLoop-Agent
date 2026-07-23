@@ -12,7 +12,7 @@ import httpx
 import pytest
 
 import scripts.smoke_test as smoke_test_module
-from frontend.api_client import NanoLoopApiClient
+from scripts.nanoloop_api_client import NanoLoopApiClient
 from scripts.smoke_test import (
     SmokeFixture,
     SmokeRunner,

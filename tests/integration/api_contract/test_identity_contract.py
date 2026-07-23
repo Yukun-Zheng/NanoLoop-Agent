@@ -192,14 +192,14 @@ def test_cors_preflight_bypasses_both_stages_but_plain_options_is_protected(
     preflight = identity_harness.client.options(
         "/api/v1/health",
         headers={
-            "Origin": "http://localhost:8501",
+            "Origin": "http://localhost:3000",
             "Access-Control-Request-Method": "GET",
             "Access-Control-Request-Headers": "X-API-Key",
         },
     )
 
     assert preflight.status_code == 200
-    assert preflight.headers["access-control-allow-origin"] == "http://localhost:8501"
+    assert preflight.headers["access-control-allow-origin"] == "http://localhost:3000"
     assert identity_harness.app.state.principal_preauth_rate_limiter.bucket_count == 0
     assert identity_harness.app.state.principal_rate_limiter.bucket_count == 0
 

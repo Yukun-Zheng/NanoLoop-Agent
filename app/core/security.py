@@ -15,8 +15,8 @@ from app.core.config import Settings
 
 _REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 _LOCAL_FRONTEND_ORIGINS = (
-    "http://127.0.0.1:8501",
-    "http://localhost:8501",
+    "http://127.0.0.1:3000",
+    "http://localhost:3000",
 )
 
 

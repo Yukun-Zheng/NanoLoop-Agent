@@ -123,7 +123,7 @@ def test_security_order_preserves_cors_host_and_origin_guards(
     api_harness: ApiHarness,
 ) -> None:
     client = _security_client(api_harness)
-    allowed_origin = "http://localhost:8501"
+    allowed_origin = "http://localhost:3000"
     try:
         preflight = client.options(
             "/api/v1/models",
@@ -765,24 +765,24 @@ def test_cors_is_allowlisted(api_harness: ApiHarness) -> None:
     allowed = api_harness.client.options(
         "/api/v1/health",
         headers={
-            "Origin": "http://localhost:8501",
+            "Origin": "http://localhost:3000",
             "Access-Control-Request-Method": "GET",
             "Access-Control-Request-Headers": "X-Request-ID",
         },
     )
     assert allowed.status_code == 200
-    assert allowed.headers["access-control-allow-origin"] == "http://localhost:8501"
+    assert allowed.headers["access-control-allow-origin"] == "http://localhost:3000"
 
     patch_allowed = api_harness.client.options(
         "/api/v1/knowledge/documents/doc_1",
         headers={
-            "Origin": "http://localhost:8501",
+            "Origin": "http://localhost:3000",
             "Access-Control-Request-Method": "PATCH",
             "Access-Control-Request-Headers": "Content-Type",
         },
     )
     assert patch_allowed.status_code == 200
-    assert patch_allowed.headers["access-control-allow-origin"] == "http://localhost:8501"
+    assert patch_allowed.headers["access-control-allow-origin"] == "http://localhost:3000"
 
     denied = api_harness.client.options(
         "/api/v1/health",
@@ -863,11 +863,11 @@ def test_host_and_browser_origin_guard_mutations_before_handler(
     allowlisted_browser = api_harness.client.post(
         "/api/v1/models/recommend",
         headers={
-            "Origin": "http://localhost:8501",
+            "Origin": "http://localhost:3000",
             "Sec-Fetch-Site": "same-site",
         },
         json=payload,
     )
     assert allowlisted_browser.status_code == 200
-    assert allowlisted_browser.headers["access-control-allow-origin"] == ("http://localhost:8501")
+    assert allowlisted_browser.headers["access-control-allow-origin"] == ("http://localhost:3000")
     assert calls == 2

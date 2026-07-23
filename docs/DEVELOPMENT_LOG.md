@@ -449,6 +449,8 @@
 
 ## 2026-07-23 11:50 +08:00 — 发布五人当前工单与统一分发任务书
 
+- 历史状态提示：本段记录当时已经发生的团队分发，不再是当前任务安排；其文档维护与分发要求已被
+  本日志后续“Streamlit 前端退役并重建 Next.js 科研 Command Center”条目的文档权威决策取代。
 - 发布基线：以 `main@3900aad8eed80fd794ca4b7b38c5da916df9573f` 和
   [Actions run 29953751731](https://github.com/Yukun-Zheng/NanoLoop-Agent/actions/runs/29953751731)
   四项全绿为已验收发布点；远端只保留长期分支 `main`，后续仍从最新全绿 `origin/main` 开短期分支。
@@ -483,3 +485,41 @@
   calibration/test JSON/CSV 或目标部署完整 Analysis 运行记录。Large 因此是“运行就绪、科学验收
   待完成”；开发者报告指标继续保留为未独立复现，FR-06 从 `external-blocked` 上调为 `partial`，
   项目等级仍为 M1。
+
+## 2026-07-23 — Streamlit 前端退役并重建 Next.js 科研 Command Center
+
+- 分支：`feat/e-command-center-next-v1`，从 `origin/main` 创建；本条只记录当前实现事实，合入与发布
+  仍以该提交自己的 GitHub Actions 结果为准。
+- 文档权威：项目负责人已暂停个人分发文档；v4.0/v3.0 保留为历史团队快照且未随本次前端改写。
+  当前事实入口调整为代码、README、开发指南、需求追踪矩阵和本日志。
+- 完整替换：删除 Python Streamlit 页面、组件、前端专用 Python 测试和 `Dockerfile.frontend`；
+  独立 smoke/运维脚本仍需的 HTTP 客户端迁移到 `scripts/nanoloop_api_client.py`，不再让 Python
+  工具依赖 UI 包。
+- 新前端：采用 Node.js 24、pnpm 10、Next.js 16、React 19、TypeScript 5、Tailwind CSS 4、
+  TanStack Query、Zod、Zustand 与 React-Konva。公开路由为任务启动页 `/`、工作区
+  `/workspace/{job_id}`、知识库 `/knowledge` 和进程探针 `/api/healthz`；三栏工作区覆盖项目、
+  ROI、模型/运行、时间线、结果/复核/导出与 Agent 查询。
+- 信任边界：浏览器只访问同源 `/api/nanoloop/*`。Next.js BFF 使用严格路径/方法允许列表，把请求
+  映射到服务端 `NANOLOOP_API_INTERNAL_URL` 的 FastAPI `/api/v1`，剥离浏览器 Cookie、
+  Authorization 和 API Key，再注入服务端 `NANOLOOP_API_KEY`；不跟随上游重定向，不接受任意
+  制品 URL。前端只展示/编排后端科学结果，不在浏览器重算颗粒指标。
+- 合同与门禁：OpenAPI 快照生成 TypeScript schema 并执行漂移检查；Vitest 覆盖 BFF、错误信封、
+  元数据、ROI 坐标、时间线、近期任务和查询证据，Playwright Chromium 使用同源 API mock 覆盖
+  创建任务→选择 ready 模型→创建运行→时间线→作用域问答。CI 新增独立前端质量任务，并构建
+  Node standalone 非 root/只读容器，经 BFF 检查 FastAPI 健康；`make frontend-check` 和
+  `make frontend-e2e` 是本地入口。
+- 部署变化：Compose 前端端口由 `8501` 改为 `3000`，使用
+  `NANOLOOP_API_INTERNAL_URL=http://api:8000`；`NANOLOOP_API_KEY` 与内部 URL 均为服务端变量，
+  不得使用 `NEXT_PUBLIC_*`。当前只支持单 Next.js 服务身份，不等于交互式用户登录或完整多租户。
+- 本地工程证据：生产依赖审计无已知漏洞，OpenAPI TypeScript 漂移、ESLint、严格 TypeScript、
+  16 个 Vitest 文件共 79 项测试和 Next.js standalone 生产构建全绿；Playwright Chromium 通过
+  4 个场景，包括“创建项目 → ROI revision 保存/重载 → ready/unavailable 模型 → 运行 →
+  质量/结果 → 复核子运行 → mixed query → signed export SHA-256”闭环、响应式审查器，以及
+  真实 409 revision 冲突下保留未保存 ROI 并提供重载/复制恢复操作；知识库场景覆盖 Markdown
+  导入、列表刷新、停用/启用和强制重建索引。Python 侧 Ruff、严格 Mypy、
+  OpenAPI、1089 项 Pytest、Alembic 往返与 ORM 漂移全绿，`docker compose config --quiet` 通过。
+  本机前端镜像冷构建仅因 Docker Hub `node:24.18.0-bookworm-slim` manifest 请求网络超时未完成，
+  未观察到 Dockerfile 编译失败；容器结论仍须由本提交自己的 GitHub Actions 给出。
+- 验收边界：mock 浏览器场景和工程构建不证明目标后端、Large U-Net 科学性能、多模型共同图像、
+  正式 RAG 语料/embedding 或知识租户隔离。旧前端的 live ROI round-trip 不能自动转移到重写版本；
+  仍需在目标环境完成真实后端 ROI、制品、复核、导出、RAG 和错误/降级路径验收。
