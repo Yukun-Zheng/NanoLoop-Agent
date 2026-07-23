@@ -507,6 +507,7 @@ def _build_query_services(
             model_id=settings.embedding_model,
             model_fingerprint=lambda: embedding_provider.fingerprint,
             database_path=database_path,
+            thread_count=settings.faiss_thread_count,
         )
         vector_index_publisher = DatabaseVectorIndexPublisher(
             database,

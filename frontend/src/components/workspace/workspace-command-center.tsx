@@ -551,7 +551,7 @@ export function WorkspaceCommandCenter({ jobId }: { jobId: string }) {
           image={activeImage}
           runIds={composerRunIds}
           writeBlocker={writeBlocker}
-          needsClarification={Boolean(answer?.needs_clarification)}
+          clarification={answer}
           onAnswer={(value, scope) => {
             if (scope !== activeAnswerScope.current) return;
             setAnswerState({ scope, value });

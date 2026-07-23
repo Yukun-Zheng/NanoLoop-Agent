@@ -131,6 +131,7 @@ def test_unknown_auto_query_clarifies_without_calling_tools() -> None:
 
     assert response.needs_clarification
     assert response.query_type == QueryType.AUTO
+    assert response.outcome_code == "INSUFFICIENT_EVIDENCE"
     assert not data.queries
     assert knowledge.calls == 0
 
@@ -173,6 +174,7 @@ def test_auto_mixed_query_keeps_data_and_knowledge_in_separate_sections() -> Non
     assert response.data_evidence
     assert response.citations
     assert response.confidence == "medium"
+    assert "一般规律不能直接证明当前样品" in response.limitations[-1]
     assert data.queries and knowledge.calls == 1
 
 

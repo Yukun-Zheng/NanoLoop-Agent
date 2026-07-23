@@ -94,6 +94,7 @@ class UnifiedQueryService:
                     confidence="low",
                     limitations=("查询意图不明确，未调用任何工具",),
                     needs_clarification=True,
+                    outcome_code="INSUFFICIENT_EVIDENCE",
                 )
             query_type = decision.query_type
 
@@ -194,7 +195,15 @@ class UnifiedQueryService:
             tool_calls=list(data.tool_calls),
             material_context=knowledge.material_context,
             confidence=_lower_confidence(data.confidence, knowledge.confidence),
-            limitations=list(dict.fromkeys([*data.limitations, *knowledge.limitations])),
+            limitations=list(
+                dict.fromkeys(
+                    [
+                        *data.limitations,
+                        *knowledge.limitations,
+                        "文献中的一般规律不能直接证明当前样品的因果机理",
+                    ]
+                )
+            ),
             needs_clarification=data.needs_clarification,
             outcome_code=outcome,
         )

@@ -60,7 +60,14 @@ class RetrievalService:
                 f"vector={vector.status}",
             ]
             return HealthComponent(status="degraded", detail=", ".join(details))
-        return HealthComponent(status="healthy", detail="keyword and vector retrieval available")
+        return HealthComponent(
+            status="healthy",
+            detail=(
+                "keyword and vector retrieval available; "
+                f"embedding={embedding.detail or embedding.status}; "
+                f"vector={vector.detail or vector.status}"
+            ),
+        )
 
     def retrieve(self, request: RetrievalRequest) -> list[RetrievedChunk]:
         return list(self.retrieve_with_report(request).chunks)
@@ -89,9 +96,18 @@ class RetrievalService:
             try:
                 query_vector = self.embedding_provider.embed_query(request.query)
                 vector_hits = self.vector_store.search(query_vector, limit=request.candidate_k)
-                if vector_hits:
+                accepted_vector_hits = [
+                    hit for hit in vector_hits if hit.score >= request.min_score
+                ]
+                if vector_hits and not accepted_vector_hits:
+                    warnings.append(
+                        "vector candidates were below the minimum cosine similarity "
+                        f"({request.min_score:.3f})"
+                    )
+                if accepted_vector_hits:
                     vector_ranks = {
-                        hit.chunk_id: rank for rank, hit in enumerate(vector_hits, start=1)
+                        hit.chunk_id: rank
+                        for rank, hit in enumerate(accepted_vector_hits, start=1)
                     }
                     channel_ranks.append(vector_ranks)
                     missing_ids = [

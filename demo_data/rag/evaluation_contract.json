@@ -1,0 +1,114 @@
+{
+  "schema_version": 1,
+  "expected_asset_ids": {
+    "q001": ["demo_project_sample_context"],
+    "q002": ["demo_perovskite_exsolution_overview"],
+    "q003": ["demo_perovskite_exsolution_overview"],
+    "q004": ["demo_project_sample_context", "demo_exsolution_morphology_sem"],
+    "q005": ["demo_exsolution_morphology_sem"],
+    "q006": ["demo_exsolution_morphology_sem", "demo_perovskite_exsolution_overview"],
+    "q007": ["demo_exsolution_morphology_sem"],
+    "q008": ["demo_exsolution_morphology_sem"],
+    "q009": ["demo_a_site_deficiency"],
+    "q010": ["demo_a_site_deficiency"],
+    "q011": ["demo_a_site_deficiency", "demo_project_sample_context"],
+    "q012": ["demo_b_site_trends"],
+    "q013": ["demo_b_site_trends"],
+    "q014": ["demo_b_site_trends", "demo_project_sample_context"],
+    "q015": ["demo_ni_applications"],
+    "q016": ["demo_ni_applications"],
+    "q017": ["demo_perovskite_exsolution_overview", "demo_stability_switchability"],
+    "q018": ["demo_stability_switchability"],
+    "q019": ["demo_stability_switchability"],
+    "q020": ["demo_project_sample_context", "demo_ni_applications"],
+    "q021": ["demo_project_sample_context"],
+    "q022": ["demo_project_sample_context"],
+    "q023": ["demo_exsolution_morphology_sem"],
+    "q024": ["demo_exsolution_morphology_sem"],
+    "q025": ["demo_exsolution_morphology_sem"],
+    "q026": ["demo_exsolution_morphology_sem"],
+    "q027": ["demo_exsolution_morphology_sem"],
+    "q028": ["demo_project_sample_context", "demo_stability_switchability"],
+    "q029": [],
+    "q030": []
+  },
+  "scope_requirements": {
+    "q025": "image",
+    "q026": "image",
+    "q027": "job",
+    "q028": "image"
+  },
+  "evidence_requirements": {
+    "q025": {
+      "tool_name": "get_metric",
+      "validated_arguments": {
+        "intent": "number_density",
+        "metric": "number_density_um2"
+      },
+      "required_units": {
+        "number_density_um2": "um^-2"
+      },
+      "required_numeric_fields": ["number_density_um2"],
+      "min_source_runs": 1,
+      "min_rows": 1,
+      "aggregate_equals_row_count": "completed_run_count",
+      "require_row_source_coverage": true
+    },
+    "q026": {
+      "tool_name": "get_metric",
+      "validated_arguments": {
+        "intent": "mean_diameter",
+        "metric": "mean_equivalent_diameter_px"
+      },
+      "required_units": {
+        "mean_equivalent_diameter_nm": "nm"
+      },
+      "required_numeric_fields": ["mean_equivalent_diameter_nm"],
+      "min_source_runs": 1,
+      "min_rows": 1,
+      "aggregate_equals_row_count": "completed_run_count",
+      "require_row_source_coverage": true
+    },
+    "q027": {
+      "tool_name": "compare_groups",
+      "validated_arguments": {
+        "intent": "compare_groups",
+        "metric": "number_density_um2",
+        "group_by": "sample",
+        "order": "desc"
+      },
+      "required_units": {
+        "number_density_um2": "um^-2",
+        "value": "um^-2"
+      },
+      "required_numeric_fields": ["value"],
+      "min_source_runs": 2,
+      "min_rows": 2,
+      "aggregate_equals_row_count": "group_count",
+      "required_row_values": {
+        "metric": "number_density_um2",
+        "group_by": "sample"
+      },
+      "distinct_row_field": "group",
+      "sort": {
+        "field": "value",
+        "order": "desc"
+      },
+      "require_row_source_coverage": true
+    },
+    "q028": {
+      "tool_name": "find_review",
+      "validated_arguments": {
+        "intent": "review"
+      },
+      "required_units": {
+        "review_required_count": "count"
+      },
+      "required_numeric_fields": ["review_required_count"],
+      "min_source_runs": 1,
+      "min_rows": 0,
+      "aggregate_equals_row_count": "review_required_count",
+      "require_row_source_coverage": false
+    }
+  }
+}

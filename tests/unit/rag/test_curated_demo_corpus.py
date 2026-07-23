@@ -132,3 +132,22 @@ def test_curated_question_set_contains_knowledge_mixed_and_refusal_cases() -> No
     assert {item["query_type"] for item in questions} == {"material_knowledge", "mixed"}
     assert sum(item["expected_outcome"] == "INSUFFICIENT_EVIDENCE" for item in questions) == 2
     assert any("编造" in item["question"] for item in questions)
+    contract = json.loads(
+        (_PACKAGE / "evaluation_contract.json").read_text(encoding="utf-8")
+    )
+    assert contract["schema_version"] == 1
+    assert set(contract["expected_asset_ids"]) == {
+        item["query_id"] for item in questions
+    }
+    assert contract["scope_requirements"] == {
+        "q025": "image",
+        "q026": "image",
+        "q027": "job",
+        "q028": "image",
+    }
+    assert set(contract["evidence_requirements"]) == {
+        "q025",
+        "q026",
+        "q027",
+        "q028",
+    }

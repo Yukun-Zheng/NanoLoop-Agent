@@ -86,13 +86,99 @@ def test_particle_count_respects_image_and_run_filters(
     assert image_evidence.source_run_ids == ["run_a"]
     assert image_evidence.rows[0]["stored_particle_rows"] == 2
 
-    run_result = service.answer(
-        _query("颗粒数是多少？", run_ids=("run_b", "run_b"))
-    )
+    run_result = service.answer(_query("颗粒数是多少？", run_ids=("run_b", "run_b")))
     run_evidence = run_result.evidence[0]
     assert run_evidence.aggregates["particle_count"] == 4
     assert run_evidence.validated_arguments["run_ids"] == ["run_b"]
     assert run_evidence.source_run_ids == ["run_b"]
+
+
+def test_particle_number_density_uses_area_metric_not_particle_count(
+    service: SqlAlchemyDataToolService,
+) -> None:
+    direct = service.answer(
+        _query(
+            "我们这张图的颗粒密度较高，文献上有哪些可能原因？",
+            image_id="img_a",
+        )
+    )
+    evidence = direct.evidence[0]
+
+    assert direct.outcome_code == "OK"
+    assert evidence.validated_arguments["intent"] == "number_density"
+    assert evidence.validated_arguments["metric"] == "number_density_um2"
+    assert evidence.aggregates["number_density_um2"] == pytest.approx(80_000)
+    assert evidence.aggregates["particle_count"] == 2
+    assert evidence.aggregates["roi_area_um2"] == pytest.approx(0.000025)
+    assert evidence.rows[0]["number_density_px2"] == pytest.approx(0.02)
+    assert evidence.rows[0]["number_density_um2"] == pytest.approx(80_000)
+    assert evidence.units["number_density_um2"] == "um^-2"
+    assert "相同物理尺度" in direct.answer
+
+
+def test_particle_number_density_ranking_does_not_rank_raw_counts(
+    service: SqlAlchemyDataToolService,
+) -> None:
+    result = service.answer(_query("哪组颗粒数密度最高，这种差异可能和什么材料因素有关？"))
+    evidence = result.evidence[0]
+
+    assert result.outcome_code == "OK"
+    assert evidence.validated_arguments["metric"] == "number_density_um2"
+    assert [row["group"] for row in evidence.rows] == ["sample_A", "sample_B"]
+    assert [row["value"] for row in evidence.rows] == pytest.approx([80_000, 160_000 / 3])
+    assert all(
+        row["weighting"] == "total_particle_count_over_total_roi_area" for row in evidence.rows
+    )
+    assert evidence.units["value"] == "um^-2"
+    assert "number_density_um2" in result.answer
+    assert "number_density_px2" not in result.answer
+
+
+def test_particle_number_density_ranking_uses_total_physical_roi_area(
+    service: SqlAlchemyDataToolService,
+) -> None:
+    result = service.answer(_query("哪组颗粒数密度最高？"))
+    evidence = result.evidence[0]
+
+    assert result.outcome_code == "OK"
+    assert evidence.tool_name == "rank_samples"
+    assert [row["group"] for row in evidence.rows] == ["sample_A", "sample_B"]
+    assert all(
+        row["aggregation"] == "total_particle_count_over_total_roi_area" for row in evidence.rows
+    )
+    assert all(row["weight_unit"] == "um^2" for row in evidence.rows)
+    assert evidence.units["value"] == "um^-2"
+    assert "number_density_um2" in result.answer
+    assert "number_density_px2" not in result.answer
+
+
+def test_particle_number_density_comparison_requires_compatible_area_scale(
+    service: SqlAlchemyDataToolService,
+    database: Database,
+) -> None:
+    with database.engine.begin() as connection:
+        connection.execute(
+            update(SegmentationRun)
+            .where(SegmentationRun.run_id.in_(("run_a", "run_b")))
+            .values(
+                run_config_json={
+                    "schema_version": 2,
+                    "provenance_status": "complete",
+                    "scale_nm_per_pixel": None,
+                }
+            )
+        )
+        connection.execute(
+            update(ImageSummary)
+            .where(ImageSummary.run_id.in_(("run_a", "run_b")))
+            .values(number_density_um2=None)
+        )
+
+    result = service.answer(_query("哪组颗粒数密度最高？"))
+
+    assert result.outcome_code == "INSUFFICIENT_EVIDENCE"
+    assert result.needs_clarification is True
+    assert "物理面积尺度" in result.answer
 
 
 def test_mean_diameter_uses_particle_rows_not_summary_placeholders(
@@ -101,9 +187,7 @@ def test_mean_diameter_uses_particle_rows_not_summary_placeholders(
     result = service.answer(_query("平均粒径是多少？"))
 
     evidence = result.evidence[0]
-    assert evidence.aggregates["mean_equivalent_diameter_px"] == pytest.approx(
-        170 / 6
-    )
+    assert evidence.aggregates["mean_equivalent_diameter_px"] == pytest.approx(170 / 6)
     assert evidence.aggregates["mean_equivalent_diameter_nm"] == pytest.approx(85 / 6)
     by_run = {row["run_id"]: row for row in evidence.rows}
     assert by_run["run_a"]["mean_equivalent_diameter_px"] == 15
@@ -111,8 +195,7 @@ def test_mean_diameter_uses_particle_rows_not_summary_placeholders(
     assert evidence.units["mean_equivalent_diameter_nm"] == "nm"
     assert evidence.source_run_ids == ["run_a", "run_b"]
     assert any(
-        "physical diameter exists for 3/4" in warning
-        for warning in evidence.quality_warnings
+        "physical diameter exists for 3/4" in warning for warning in evidence.quality_warnings
     )
     assert any(
         "recomputed from pixel diameter and scale=0.5" in warning
@@ -134,18 +217,39 @@ def test_physical_diameter_does_not_drift_when_live_image_scale_changes(
     one_image = service.answer(_query("平均粒径是多少？", image_id="img_b"))
 
     assert aggregate.outcome_code == "OK"
-    assert aggregate.evidence[0].aggregates["mean_equivalent_diameter_nm"] == pytest.approx(
-        85 / 6
-    )
+    assert aggregate.evidence[0].aggregates["mean_equivalent_diameter_nm"] == pytest.approx(85 / 6)
     assert distribution.outcome_code == "OK"
     assert one_image.outcome_code == "OK"
-    assert one_image.evidence[0].aggregates["mean_equivalent_diameter_nm"] == pytest.approx(
-        17.5
-    )
+    assert one_image.evidence[0].aggregates["mean_equivalent_diameter_nm"] == pytest.approx(17.5)
     assert "17.5 nm" in one_image.answer
 
 
 def test_legacy_run_scale_uses_live_metadata_with_explicit_warning(
+    service: SqlAlchemyDataToolService,
+    database: Database,
+) -> None:
+    with database.engine.begin() as connection:
+        connection.execute(
+            update(SegmentationRun)
+            .where(SegmentationRun.run_id == "run_a")
+            .values(run_config_json={})
+        )
+        connection.execute(
+            update(ImageAsset).where(ImageAsset.image_id == "img_a").values(scale_nm_per_pixel=0.25)
+        )
+
+    result = service.answer(_query("平均粒径是多少？", image_id="img_a"))
+
+    evidence = result.evidence[0]
+    assert evidence.aggregates["mean_equivalent_diameter_nm"] == pytest.approx(3.75)
+    assert any(
+        "legacy run configuration has no complete frozen scale" in warning
+        and "fallback=0.25 nm/px" in warning
+        for warning in evidence.quality_warnings
+    )
+
+
+def test_legacy_density_rows_and_aggregate_use_the_same_effective_scale(
     service: SqlAlchemyDataToolService,
     database: Database,
 ) -> None:
@@ -161,13 +265,15 @@ def test_legacy_run_scale_uses_live_metadata_with_explicit_warning(
             .values(scale_nm_per_pixel=0.25)
         )
 
-    result = service.answer(_query("平均粒径是多少？", image_id="img_a"))
+    result = service.answer(_query("颗粒数密度是多少？", image_id="img_a"))
 
     evidence = result.evidence[0]
-    assert evidence.aggregates["mean_equivalent_diameter_nm"] == pytest.approx(3.75)
+    assert result.outcome_code == "OK"
+    assert evidence.aggregates["number_density_um2"] == pytest.approx(320_000)
+    assert evidence.rows[0]["number_density_um2"] == pytest.approx(320_000)
     assert any(
-        "legacy run configuration has no complete frozen scale" in warning
-        and "fallback=0.25 nm/px" in warning
+        "persisted number_density_um2=80000 differs" in warning
+        and "effective scale-derived value=320000" in warning
         for warning in evidence.quality_warnings
     )
 
@@ -182,13 +288,12 @@ def test_particle_level_statistics_fail_closed_on_missing_detail_row(
         session.delete(particle)
 
     mean = service.answer(_query("平均粒径是多少？", image_id="img_a"))
-    distribution = service.answer(
-        _query("平均粒径分布 4 bins", image_id="img_a")
-    )
+    distribution = service.answer(_query("平均粒径分布 4 bins", image_id="img_a"))
     count = service.answer(_query("颗粒数是多少？", image_id="img_a"))
+    density = service.answer(_query("颗粒数密度是多少？", image_id="img_a"))
     overview = service.answer(_query("任务概览", image_id="img_a"))
 
-    for result in (mean, distribution, count, overview):
+    for result in (mean, distribution, count, density, overview):
         assert result.outcome_code == "INSUFFICIENT_EVIDENCE"
         assert result.tool_calls[0].outcome == "insufficient_data"
         assert "run_a=1/2" in result.answer
@@ -233,11 +338,11 @@ def test_review_results_include_reasons_and_support_a_negative_answer(
 
 @pytest.mark.parametrize(
     ("job_id", "question", "image_id", "run_ids"),
-        [
-            ("job_1", "颗粒数是多少？", None, ("run_other",)),
-            ("job_1", "覆盖率是多少？", "img_other", ()),
-            ("job_2", "任务概览", None, ()),
-            ("missing", "任务概览", None, ()),
+    [
+        ("job_1", "颗粒数是多少？", None, ("run_other",)),
+        ("job_1", "覆盖率是多少？", "img_other", ()),
+        ("job_2", "任务概览", None, ()),
+        ("missing", "任务概览", None, ()),
     ],
 )
 def test_foreign_or_missing_scope_is_an_error_without_leaking_data(
@@ -266,9 +371,7 @@ def test_foreign_or_missing_scope_is_an_error_without_leaking_data(
 def test_non_completed_selection_returns_insufficient_not_fabricated_zero(
     service: SqlAlchemyDataToolService,
 ) -> None:
-    result = service.answer(
-        _query("颗粒数是多少？", run_ids=("run_pending",))
-    )
+    result = service.answer(_query("颗粒数是多少？", run_ids=("run_pending",)))
 
     assert result.outcome_code == "INSUFFICIENT_EVIDENCE"
     assert result.evidence[0].aggregates == {}
@@ -314,9 +417,7 @@ def test_ranking_rejects_mixed_model_results(
 ) -> None:
     _add_second_model_run(database)
 
-    result = service.answer(
-        _query("哪组颗粒数最高？", run_ids=("run_a", "run_a2"))
-    )
+    result = service.answer(_query("哪组颗粒数最高？", run_ids=("run_a", "run_a2")))
 
     assert result.outcome_code == "INSUFFICIENT_EVIDENCE"
     assert result.needs_clarification is True
@@ -420,9 +521,7 @@ def test_default_numeric_query_refuses_to_double_count_alternative_runs(
     _add_second_model_run(database)
 
     ambiguous = service.answer(_query("颗粒数是多少？"))
-    explicit = service.answer(
-        _query("颗粒数是多少？", run_ids=("run_a", "run_b"))
-    )
+    explicit = service.answer(_query("颗粒数是多少？", run_ids=("run_a", "run_b")))
 
     assert ambiguous.outcome_code == "INSUFFICIENT_EVIDENCE"
     assert ambiguous.needs_clarification is True
@@ -688,7 +787,7 @@ def _summary(
         particle_count=particle_count,
         roi_area_px=roi_area_px,
         number_density_px2=particle_count / roi_area_px,
-        number_density_um2=None,
+        number_density_um2=(particle_count / roi_area_px) * (1000 / 0.5) ** 2,
         mean_equivalent_diameter_px=999,
         mean_equivalent_diameter_nm=999,
         coverage_ratio=coverage_ratio,

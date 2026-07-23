@@ -857,6 +857,7 @@ def test_queued_run_executes_complete_bundle_after_config_and_card_sources_chang
             image_ids=["img_1"],
             model_ids=["unet-general-balanced-v1"],
             roi_mode=RoiMode.FULL_IMAGE,
+            inference=InferenceOptions(device=DevicePreference.CPU),
         ),
         principal=LEGACY_ADMIN,
     )[0]

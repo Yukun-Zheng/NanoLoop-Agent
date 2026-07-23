@@ -9,9 +9,11 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import numpy as np
 import pytest
 
 from scripts import run_rag_acceptance as runner
+from scripts import validate_rag_assets as asset_validator
 from scripts.validate_rag_assets import (
     AssetValidationError,
     directory_tree_sha256,
@@ -44,6 +46,47 @@ _FIELDS = [
 
 def _sha256(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
+
+
+@pytest.fixture(autouse=True)
+def fake_embedding_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> dict[str, Any]:
+    trusted_embedding = tmp_path / "trusted-embedding"
+    trusted_embedding.mkdir()
+    (trusted_embedding / "model.bin").write_bytes(b"fixed embedding bytes")
+    trusted_tree_sha = directory_tree_sha256(trusted_embedding)
+    monkeypatch.setattr(
+        asset_validator,
+        "_APPROVED_EMBEDDING_TREE_SHA256",
+        trusted_tree_sha,
+    )
+    runtime: dict[str, Any] = {
+        "dimension": 512,
+        "vector": np.pad(
+            np.ones((1, 1), dtype=np.float32),
+            ((0, 0), (0, 511)),
+        ),
+        "loads": [],
+        "encodes": [],
+        "trusted_tree_sha": trusted_tree_sha,
+    }
+
+    class FakeSentenceTransformer:
+        def get_sentence_embedding_dimension(self) -> int:
+            return int(runtime["dimension"])
+
+        def encode(self, sentences: list[str], **kwargs: Any) -> np.ndarray:
+            runtime["encodes"].append((sentences, kwargs))
+            return np.asarray(runtime["vector"], dtype=np.float32)
+
+    def factory(*args: Any, **kwargs: Any) -> object:
+        runtime["loads"].append((args, kwargs))
+        return FakeSentenceTransformer()
+
+    monkeypatch.setattr(asset_validator, "_sentence_transformer_factory", lambda: factory)
+    return runtime
 
 
 def _write_runnable_package(tmp_path: Path) -> tuple[Path, dict[str, str]]:
@@ -130,9 +173,9 @@ def _write_runnable_package(tmp_path: Path) -> tuple[Path, dict[str, str]]:
             {
                 "schema_version": 1,
                 "status": "verified",
-                "model": "example/model",
-                "revision": "a" * 40,
-                "dimension": 2,
+                "model": "BAAI/bge-small-zh-v1.5",
+                "revision": "13942ee7a1615d20a84b41e800c63775e174f97f",
+                "dimension": 512,
                 "normalize": True,
                 "max_length": 512,
                 "pooling": "mean",
@@ -229,7 +272,13 @@ class _FakeClient:
                 "service": {"status": "healthy"},
                 "database": {"status": "healthy"},
                 "model_registry": {"status": "degraded"},
-                "rag_index": {"status": "healthy"},
+                "rag_index": {
+                    "status": "healthy",
+                    "detail": (
+                        "vector=40 vectors, dimension=512, "
+                        "generation=0123456789abcdef0123456789abcdef"
+                    ),
+                },
                 "version": "test",
             },
         )
@@ -287,7 +336,9 @@ class _FakeClient:
         )
 
 
-def test_checked_in_package_is_schema_valid_but_not_runnable() -> None:
+def test_checked_in_package_is_schema_valid_but_not_runnable(
+    fake_embedding_runtime: dict[str, Any],
+) -> None:
     repository = Path(__file__).resolve().parents[3]
     package = validate_acceptance_package(repository / "rag-acceptance-v1")
     assert len(package.corpus_rows) == 17
@@ -297,15 +348,150 @@ def test_checked_in_package_is_schema_valid_but_not_runnable() -> None:
         validate_acceptance_package(
             repository / "rag-acceptance-v1", require_runnable=True, verify_files=True
         )
+    assert fake_embedding_runtime["loads"] == []
 
 
-def test_runnable_package_checks_files_embedding_and_independent_review(tmp_path: Path) -> None:
+def test_runnable_package_checks_files_embedding_and_independent_review(
+    tmp_path: Path,
+    fake_embedding_runtime: dict[str, Any],
+) -> None:
     package_path, _ = _write_runnable_package(tmp_path)
     package = validate_acceptance_package(
         package_path, require_runnable=True, verify_files=True
     )
     assert len(package.accepted_rows) == 5
     assert package.embedding["verified"] is True
+    embedding_dir = tmp_path / "private-embedding"
+    assert fake_embedding_runtime["loads"] == [
+        (
+            (str(embedding_dir),),
+            {
+                "device": "cpu",
+                "revision": "13942ee7a1615d20a84b41e800c63775e174f97f",
+                "local_files_only": True,
+                "trust_remote_code": False,
+            },
+        )
+    ]
+    assert fake_embedding_runtime["encodes"] == [
+        (
+            ["二氧化钛纳米颗粒的晶型与光催化性能有什么关系？"],
+            {
+                "batch_size": 1,
+                "convert_to_numpy": True,
+                "normalize_embeddings": True,
+                "show_progress_bar": False,
+            },
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected"),
+    [
+        ("model", "example/model", "runnable embedding model"),
+        ("revision", "a" * 40, "runnable embedding revision"),
+        ("dimension", 2, "runnable embedding dimension"),
+        ("normalize", False, "runnable embedding requires normalize=true"),
+    ],
+)
+def test_runnable_embedding_contract_is_pinned(
+    tmp_path: Path,
+    field: str,
+    value: Any,
+    expected: str,
+) -> None:
+    package_path, _ = _write_runnable_package(tmp_path)
+    manifest = package_path / "embedding" / "model-manifest.json"
+    document = json.loads(manifest.read_text(encoding="utf-8"))
+    document[field] = value
+    manifest.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(AssetValidationError, match=expected):
+        validate_acceptance_package(
+            package_path, require_runnable=True, verify_files=True
+        )
+
+
+def test_runnable_embedding_snapshot_fingerprint_is_verified(
+    tmp_path: Path,
+    fake_embedding_runtime: dict[str, Any],
+) -> None:
+    package_path, _ = _write_runnable_package(tmp_path)
+    (tmp_path / "private-embedding" / "model.bin").write_bytes(b"tampered")
+
+    with pytest.raises(AssetValidationError, match="embedding tree SHA mismatch"):
+        validate_acceptance_package(
+            package_path, require_runnable=True, verify_files=True
+        )
+    assert fake_embedding_runtime["loads"] == []
+
+
+def test_runnable_embedding_ignores_mutable_hugging_face_cache_metadata(
+    tmp_path: Path,
+    fake_embedding_runtime: dict[str, Any],
+) -> None:
+    package_path, _ = _write_runnable_package(tmp_path)
+    metadata = (
+        tmp_path
+        / "private-embedding"
+        / ".cache"
+        / "huggingface"
+        / "download"
+        / "model.metadata"
+    )
+    metadata.parent.mkdir(parents=True)
+    metadata.write_text("etag\ncommit\n1784810048.001\n", encoding="utf-8")
+    first = validate_acceptance_package(
+        package_path, require_runnable=True, verify_files=True
+    )
+    metadata.write_text("etag\ncommit\n1984810048.999\n", encoding="utf-8")
+    second = validate_acceptance_package(
+        package_path, require_runnable=True, verify_files=True
+    )
+
+    assert first.embedding["tree_sha256"] == fake_embedding_runtime["trusted_tree_sha"]
+    assert second.embedding["tree_sha256"] == fake_embedding_runtime["trusted_tree_sha"]
+    assert len(fake_embedding_runtime["loads"]) == 2
+
+
+def test_runnable_embedding_rejects_self_reported_counterfeit_fingerprint(
+    tmp_path: Path,
+    fake_embedding_runtime: dict[str, Any],
+) -> None:
+    package_path, _ = _write_runnable_package(tmp_path)
+    counterfeit_dir = tmp_path / "counterfeit-embedding"
+    counterfeit_dir.mkdir()
+    (counterfeit_dir / "model.bin").write_bytes(b"different but structurally valid model")
+    counterfeit_sha = directory_tree_sha256(counterfeit_dir)
+    assert counterfeit_sha != fake_embedding_runtime["trusted_tree_sha"]
+
+    manifest = package_path / "embedding" / "model-manifest.json"
+    document = json.loads(manifest.read_text(encoding="utf-8"))
+    document["local_dir"] = str(counterfeit_dir)
+    document["tree_sha256"] = counterfeit_sha
+    manifest.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(AssetValidationError, match="runnable embedding tree SHA must be"):
+        validate_acceptance_package(
+            package_path, require_runnable=True, verify_files=True
+        )
+    assert fake_embedding_runtime["loads"] == []
+
+
+def test_runnable_embedding_probe_rejects_non_finite_output(
+    tmp_path: Path,
+    fake_embedding_runtime: dict[str, Any],
+) -> None:
+    package_path, _ = _write_runnable_package(tmp_path)
+    vector = np.zeros((1, 512), dtype=np.float32)
+    vector[0, 0] = np.nan
+    fake_embedding_runtime["vector"] = vector
+
+    with pytest.raises(AssetValidationError, match="non-finite"):
+        validate_acceptance_package(
+            package_path, require_runnable=True, verify_files=True
+        )
 
 
 def test_verified_embedding_cannot_keep_an_unreviewed_license(tmp_path: Path) -> None:
@@ -594,3 +780,89 @@ def test_draft_refuses_network_access(tmp_path: Path) -> None:
 def test_remote_plain_http_is_rejected() -> None:
     with pytest.raises(runner.AcceptanceRunError, match="requires HTTPS"):
         runner.normalize_api_base("http://example.test:8000")
+
+
+def _formal_citation(**overrides: object) -> dict[str, object]:
+    return {
+        "citation_id": "C1",
+        "doc_id": "doc-asset_0",
+        "page": 1,
+        "chunk_id": "chunk-1",
+        "excerpt": "Supported evidence.",
+        "retrieval_score": 0.75,
+        "citation_text": "Author. Title. 2025.",
+        **overrides,
+    }
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected"),
+    [
+        ("citation_id", "", "citation_id"),
+        ("citation_id", "C0", "citation_id"),
+        ("page", None, "page >= 1"),
+        ("page", True, "page >= 1"),
+        ("chunk_id", "", "missing chunk_id"),
+        ("excerpt", " ", "missing excerpt"),
+        ("citation_text", None, "missing citation_text"),
+        ("retrieval_score", float("nan"), "retrieval_score"),
+        ("retrieval_score", 1.1, "retrieval_score"),
+    ],
+)
+def test_formal_citation_records_fail_closed_on_malformed_fields(
+    field: str,
+    value: object,
+    expected: str,
+) -> None:
+    citation = _formal_citation(**{field: value})
+
+    with pytest.raises(runner.AcceptanceRunError, match=expected):
+        runner._citation_records([citation], {"doc-asset_0": "asset_0"})
+
+
+def test_formal_citation_records_require_unique_ids() -> None:
+    with pytest.raises(runner.AcceptanceRunError, match="repeats citation_id"):
+        runner._citation_records(
+            [_formal_citation(), _formal_citation()],
+            {"doc-asset_0": "asset_0"},
+        )
+
+
+def test_formal_citation_markers_must_be_valid_and_exact() -> None:
+    assert runner._citation_markers_match("Supported [C1].", {"C1"}) is True
+    assert runner._citation_markers_match("Unsupported.", {"C1"}) is False
+    assert runner._citation_markers_match("Invalid [C0].", {"C0"}) is False
+    assert runner._citation_markers_match("Extra [C1] [C2].", {"C1"}) is False
+
+
+def test_formal_mixed_evidence_requires_unit_bound_finite_measure_and_sources() -> None:
+    valid = [
+        {
+            "tool_name": "get_metric",
+            "source_run_ids": ["run_1"],
+            "rows": [{"number_density_um2": 0.0}],
+            "aggregates": {},
+            "units": {"number_density_um2": "um^-2"},
+        }
+    ]
+    placeholder = [
+        {
+            "tool_name": "anything",
+            "source_run_ids": ["run_1"],
+            "rows": [{"value": "high"}],
+            "aggregates": {"value": "many"},
+            "units": {"value": "words"},
+        }
+    ]
+
+    assert runner._mixed_evidence_is_valid(valid) is True
+    assert runner._mixed_evidence_is_valid(placeholder) is False
+    assert runner._mixed_evidence_is_valid(
+        [{**valid[0], "units": {}}]
+    ) is False
+    assert runner._mixed_evidence_is_valid(
+        [{**valid[0], "rows": [{"number_density_um2": float("inf")}]}]
+    ) is False
+    assert runner._mixed_evidence_is_valid(
+        [{**valid[0], "source_run_ids": []}]
+    ) is False

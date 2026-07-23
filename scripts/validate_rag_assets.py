@@ -5,18 +5,37 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import importlib
 import json
 import re
+import sys
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Protocol, cast
 from urllib.parse import urlsplit
+
+import numpy as np
+
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from scripts.embedding_snapshot_fingerprint import (
+    directory_tree_sha256 as _canonical_embedding_tree_sha256,
+)
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _ASSET_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{2,99}$")
 _QUERY_ID = re.compile(r"^q[0-9]{3,}$")
+_APPROVED_EMBEDDING_MODEL = "BAAI/bge-small-zh-v1.5"
+_APPROVED_EMBEDDING_REVISION = "13942ee7a1615d20a84b41e800c63775e174f97f"
+_APPROVED_EMBEDDING_DIMENSION = 512
+_APPROVED_EMBEDDING_TREE_SHA256 = (
+    "b24a9bacfdd51e203abc9e060567ae565fa094f95a400a6fbbae502904e1afd4"
+)
+_EMBEDDING_PROBE = "二氧化钛纳米颗粒的晶型与光催化性能有什么关系？"
 _DECISIONS = {
     "DISCOVERY_ONLY",
     "METADATA_ONLY",
@@ -68,6 +87,97 @@ class AssetValidationError(ValueError):
     def __init__(self, issues: list[str]) -> None:
         self.issues = tuple(issues)
         super().__init__("\n".join(f"- {issue}" for issue in self.issues))
+
+
+class _SentenceTransformerModel(Protocol):
+    def get_embedding_dimension(self) -> int | None: ...
+
+    def get_sentence_embedding_dimension(self) -> int | None: ...
+
+    def encode(self, sentences: Sequence[str], **kwargs: Any) -> Any: ...
+
+
+def _sentence_transformer_factory() -> Callable[..., object]:
+    """Resolve the optional runtime only when validating a runnable package."""
+
+    module = importlib.import_module("sentence_transformers")
+    factory = module.SentenceTransformer
+    return cast(Callable[..., object], factory)
+
+
+def _load_sentence_transformer(local_dir: Path) -> _SentenceTransformerModel:
+    factory = _sentence_transformer_factory()
+    model = factory(
+        str(local_dir),
+        device="cpu",
+        revision=_APPROVED_EMBEDDING_REVISION,
+        local_files_only=True,
+        trust_remote_code=False,
+    )
+    return cast(_SentenceTransformerModel, model)
+
+
+def _validate_embedding_runtime(path: Path, local_dir: Path) -> list[str]:
+    """Load and encode from the fingerprinted local snapshot without network access."""
+
+    try:
+        model = _load_sentence_transformer(local_dir)
+    except Exception as error:
+        return [
+            f"{path}: offline SentenceTransformer load failed from {local_dir}: "
+            f"{type(error).__name__}: {error}"
+        ]
+
+    issues: list[str] = []
+    try:
+        try:
+            observed_dimension = model.get_embedding_dimension()
+        except AttributeError:
+            # SentenceTransformers <5 used the longer method name.
+            observed_dimension = model.get_sentence_embedding_dimension()
+    except Exception as error:
+        issues.append(
+            f"{path}: embedding dimension inspection failed: "
+            f"{type(error).__name__}: {error}"
+        )
+    else:
+        if observed_dimension != _APPROVED_EMBEDDING_DIMENSION:
+            issues.append(
+                f"{path}: loaded embedding dimension must be "
+                f"{_APPROVED_EMBEDDING_DIMENSION}, observed {observed_dimension!r}"
+            )
+
+    try:
+        encoded = model.encode(
+            [_EMBEDDING_PROBE],
+            batch_size=1,
+            convert_to_numpy=True,
+            normalize_embeddings=True,
+            show_progress_bar=False,
+        )
+        vector = np.asarray(encoded, dtype=np.float32)
+    except Exception as error:
+        issues.append(
+            f"{path}: offline embedding probe failed: {type(error).__name__}: {error}"
+        )
+        return issues
+
+    expected_shape = (1, _APPROVED_EMBEDDING_DIMENSION)
+    if vector.shape != expected_shape:
+        issues.append(
+            f"{path}: embedding probe must return shape {expected_shape}, "
+            f"observed {vector.shape}"
+        )
+        return issues
+    if not bool(np.isfinite(vector).all()):
+        issues.append(f"{path}: embedding probe returned non-finite values")
+        return issues
+    norm = float(np.linalg.norm(vector[0]))
+    if not np.isclose(norm, 1.0, rtol=1e-4, atol=1e-5):
+        issues.append(
+            f"{path}: normalized embedding probe must have unit norm, observed {norm:.8g}"
+        )
+    return issues
 
 
 def _json_object(path: Path) -> dict[str, Any]:
@@ -152,21 +262,10 @@ def file_sha256(path: Path) -> str:
 
 
 def directory_tree_sha256(root: Path) -> str:
-    files = sorted(
-        (path for path in root.rglob("*") if path.is_file()),
-        key=lambda path: path.relative_to(root).as_posix(),
-    )
-    if not files:
-        raise AssetValidationError([f"{root}: embedding snapshot contains no files"])
-    digest = hashlib.sha256()
-    for path in files:
-        relative = path.relative_to(root).as_posix().encode("utf-8")
-        content = path.read_bytes()
-        digest.update(len(relative).to_bytes(8, "big"))
-        digest.update(relative)
-        digest.update(len(content).to_bytes(8, "big"))
-        digest.update(content)
-    return digest.hexdigest()
+    try:
+        return _canonical_embedding_tree_sha256(root)
+    except (ValueError, RuntimeError) as error:
+        raise AssetValidationError([f"{root}: {error}"]) from error
 
 
 def _validate_corpus(
@@ -310,6 +409,23 @@ def _validate_embedding(
     if not isinstance(value.get("normalize"), bool):
         issues.append(f"{path}: normalize must be boolean")
     if require_runnable:
+        if value.get("model") != _APPROVED_EMBEDDING_MODEL:
+            issues.append(
+                f"{path}: runnable embedding model must be "
+                f"{_APPROVED_EMBEDDING_MODEL!r}"
+            )
+        if value.get("revision") != _APPROVED_EMBEDDING_REVISION:
+            issues.append(
+                f"{path}: runnable embedding revision must be "
+                f"{_APPROVED_EMBEDDING_REVISION}"
+            )
+        if value.get("dimension") != _APPROVED_EMBEDDING_DIMENSION:
+            issues.append(
+                f"{path}: runnable embedding dimension must be "
+                f"{_APPROVED_EMBEDDING_DIMENSION}"
+            )
+        if value.get("normalize") is not True:
+            issues.append(f"{path}: runnable embedding requires normalize=true")
         if not verified:
             issues.append(f"{path}: embedding snapshot is not verified")
         revision = value.get("revision")
@@ -318,6 +434,11 @@ def _validate_embedding(
             issues.append(f"{path}: revision must be an immutable 40-character commit digest")
         if not isinstance(tree_sha, str) or not _SHA256.fullmatch(tree_sha):
             issues.append(f"{path}: tree_sha256 must be a lowercase SHA-256 digest")
+        elif tree_sha != _APPROVED_EMBEDDING_TREE_SHA256:
+            issues.append(
+                f"{path}: runnable embedding tree SHA must be "
+                f"{_APPROVED_EMBEDDING_TREE_SHA256}"
+            )
         for field in ("license", "license_url", "local_dir", "verified_by", "verified_at"):
             if not value.get(field):
                 issues.append(f"{path}: verified embedding missing {field}")
@@ -337,13 +458,19 @@ def _validate_embedding(
             local_dir = Path(local_value).expanduser().resolve()
             if not local_dir.is_dir():
                 issues.append(f"{path}: local_dir is not a directory: {local_dir}")
-            elif isinstance(tree_sha, str) and _SHA256.fullmatch(tree_sha):
-                observed = directory_tree_sha256(local_dir)
-                if observed != tree_sha:
-                    issues.append(
-                        f"{path}: embedding tree SHA mismatch; expected {tree_sha}, "
-                        f"observed {observed}"
-                    )
+            else:
+                try:
+                    observed = directory_tree_sha256(local_dir)
+                except (AssetValidationError, OSError) as error:
+                    issues.append(f"{path}: cannot fingerprint local_dir: {error}")
+                else:
+                    if observed != _APPROVED_EMBEDDING_TREE_SHA256:
+                        issues.append(
+                            f"{path}: embedding tree SHA mismatch; expected "
+                            f"{_APPROVED_EMBEDDING_TREE_SHA256}, observed {observed}"
+                        )
+                    elif tree_sha == _APPROVED_EMBEDDING_TREE_SHA256:
+                        issues.extend(_validate_embedding_runtime(path, local_dir))
     return value, issues
 
 

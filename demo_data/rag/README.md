@@ -18,6 +18,7 @@
 demo_data/rag/
 ├── manifest.json
 ├── questions.jsonl
+├── evaluation_contract.json
 ├── README.md
 ├── LICENSE.md
 └── sources/
@@ -36,7 +37,7 @@ demo_data/rag/
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -U pip
-python -m pip install -e '.[rag,analysis,frontend,dev]'
+python -m pip install -e '.[rag,analysis,dev]'
 cp .env.example .env
 alembic upgrade head
 make serve
@@ -56,11 +57,17 @@ python scripts/ingest_demo_knowledge.py \
   --output /tmp/nanoloop-rag-ingest.json
 ```
 
-若启用了 shared-key 或 principal 鉴权，只通过环境变量传递凭据：
+默认命令要求 embedding 与 FAISS 均健康，并在报告中记录最终 generation。若明确只做
+keyword-only 降级演示，必须显式追加 `--allow-keyword-only`。
+
+若启用了 shared-key，只通过环境变量传递凭据：
 
 ```bash
 export NANOLOOP_API_KEY='<runtime-secret>'
 ```
+
+知识文档尚未 tenant 化，因此 `principal` 模式下知识摄取、列表、启停、重建和知识问答都会在
+接触全局语料前安全返回 `503`；真实 RAG 演示应使用受控本机的 disabled/shared-key 模式。
 
 脚本会校验每张知识卡的 SHA-256，逐份调用公开摄取 API，重建索引并核对数据库中的 ready 文档。
 
@@ -86,9 +93,12 @@ python scripts/prepare_embedding_snapshot.py \
 EMBEDDING_MODEL=/absolute/path/to/bge-small-zh-v1.5-13942ee
 EMBEDDING_MODEL_REVISION=
 FAISS_INDEX_PATH=./knowledge_base/index/faiss.index
+FAISS_THREAD_COUNT=1
 ```
 
-重启 API 后再次运行摄取脚本，系统会发布真实 FAISS generation。运行期不会在线下载模型。
+`FAISS_THREAD_COUNT=1` 是默认的确定性设置，也规避 macOS arm64 上 Torch 与 FAISS OpenMP
+运行时组合可能导致的原生崩溃。重启 API 后再次运行摄取脚本，系统会发布真实 FAISS
+generation；运行期不会在线下载模型。
 
 ## 4. 评测知识问答
 
@@ -98,15 +108,19 @@ FAISS_INDEX_PATH=./knowledge_base/index/faiss.index
 python scripts/evaluate_demo_knowledge.py \
   --api-base http://127.0.0.1:8000 \
   --job-id '<job_id>' \
+  --image-id '<selected_image_id>' \
+  --run-id '<completed_run_id>' \
   --questions demo_data/rag/questions.jsonl \
   --output /tmp/nanoloop-rag-evaluation.json
 ```
 
-包含真实分析结果后，追加：
+默认会运行全部 30 题，并把请求类型设为 `AUTO`，从而同时验证路由；不会再把期望
+`query_type` 直接喂给后端。`evaluation_contract.json` 把每题绑定到预期知识资产，并要求
+mixed 回答携带数值工具证据、run 来源、单位和“文献一般规律不能证明当前样品因果机理”的边界。
+其中 q025/q026/q028 必须有明确 `image_id`；复杂环境也可用
+`--scope-map <json>` 为每个 query_id 分别提供 `image_id`/`run_ids`。
 
-```bash
-  --include-mixed
-```
+只想测 26 道纯知识/拒答题时可显式追加 `--exclude-mixed`；这不代表完整 30 题验收。
 
 退出码：`0` 全部通过，`2` 有题目不符合期望，`1` 运行或合同错误。
 

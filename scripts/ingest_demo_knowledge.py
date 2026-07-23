@@ -6,11 +6,16 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sys
 from pathlib import Path, PurePosixPath
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
+
+_GENERATION_PATTERN = re.compile(r"\bgeneration=([0-9a-f]{32})\b")
+_LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
 
 
 def sha256_file(path: Path) -> str:
@@ -101,6 +106,25 @@ def request_headers() -> dict[str, str]:
     return {"X-API-Key": key} if key else {}
 
 
+def normalize_api_base(
+    value: str,
+    *,
+    allow_insecure_remote_http: bool = False,
+) -> str:
+    parsed = urlsplit(value.strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("api base must be an absolute HTTP(S) URL")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError("api base must not contain credentials, query, or fragment")
+    if (
+        parsed.scheme == "http"
+        and parsed.hostname not in _LOOPBACK_HOSTS
+        and not allow_insecure_remote_http
+    ):
+        raise ValueError("remote ingestion requires HTTPS")
+    return value.strip().rstrip("/")
+
+
 def unwrap(response: httpx.Response) -> dict[str, Any]:
     try:
         body = response.json()
@@ -122,6 +146,31 @@ def unwrap(response: httpx.Response) -> dict[str, Any]:
     return data
 
 
+def validate_rag_health(
+    health: dict[str, Any],
+    *,
+    allow_keyword_only: bool,
+) -> tuple[dict[str, Any], str | None]:
+    component = health.get("rag_index")
+    if not isinstance(component, dict):
+        raise RuntimeError("health response has no rag_index component")
+    status = component.get("status")
+    expected = {"healthy", "degraded"} if allow_keyword_only else {"healthy"}
+    if status not in expected:
+        raise RuntimeError(
+            f"RAG health must be {sorted(expected)}, observed {status!r}: "
+            f"{component.get('detail')}"
+        )
+    detail = str(component.get("detail") or "")
+    generation_match = _GENERATION_PATTERN.search(detail)
+    generation = generation_match.group(1) if generation_match else None
+    if status == "healthy" and generation is None:
+        raise RuntimeError(
+            "healthy RAG response does not expose a validated FAISS generation"
+        )
+    return component, generation
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -133,7 +182,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--api-base", default="http://127.0.0.1:8000")
     parser.add_argument("--timeout", type=float, default=120.0)
     parser.add_argument("--skip-reindex", action="store_true")
+    parser.add_argument(
+        "--allow-keyword-only",
+        action="store_true",
+        help="Allow an explicitly degraded run without a validated embedding/FAISS channel.",
+    )
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--allow-insecure-remote-http", action="store_true")
     return parser
 
 
@@ -141,7 +196,10 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     package = args.package.expanduser().resolve(strict=True)
     manifest = load_manifest(package)
-    base = args.api_base.rstrip("/")
+    base = normalize_api_base(
+        args.api_base,
+        allow_insecure_remote_http=args.allow_insecure_remote_http,
+    )
     headers = request_headers()
     results: list[dict[str, Any]] = []
     try:
@@ -195,6 +253,28 @@ def main(argv: list[str] | None = None) -> int:
             if missing:
                 message = f"ingested demo documents missing from ready catalogue: {missing}"
                 raise RuntimeError(message)
+            vector_warnings = [
+                warning
+                for item in results
+                for warning in item.get("warnings", [])
+                if isinstance(warning, str) and warning.startswith("vector_index_degraded:")
+            ]
+            if isinstance(reindex_data, dict):
+                vector_warnings.extend(
+                    warning
+                    for warning in reindex_data.get("warnings", [])
+                    if isinstance(warning, str)
+                    and warning.startswith("vector_index_degraded:")
+                )
+            if vector_warnings and not args.allow_keyword_only:
+                raise RuntimeError(
+                    "vector indexing degraded during ingestion: "
+                    + "; ".join(dict.fromkeys(vector_warnings))
+                )
+            rag_health, faiss_generation = validate_rag_health(
+                unwrap(client.get("/api/v1/health")),
+                allow_keyword_only=args.allow_keyword_only,
+            )
 
         report = {
             "status": "ok",
@@ -202,6 +282,9 @@ def main(argv: list[str] | None = None) -> int:
             "documents": results,
             "reindex": reindex_data,
             "ready_document_count": len(present_shas),
+            "rag_health": rag_health,
+            "faiss_generation": faiss_generation,
+            "keyword_only_allowed": args.allow_keyword_only,
         }
         rendered = json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True)
         if args.output:

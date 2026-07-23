@@ -12,7 +12,7 @@ from collections import Counter
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import StrEnum
-from math import ceil
+from math import ceil, isclose
 from statistics import fmean, median
 from typing import Any
 
@@ -50,6 +50,7 @@ DEFAULT_DISTRIBUTION_EVIDENCE_LIMIT = 200
 class _IntentKind(StrEnum):
     OVERVIEW = "overview"
     PARTICLE_COUNT = "particle_count"
+    NUMBER_DENSITY = "number_density"
     MEAN_DIAMETER = "mean_diameter"
     COVERAGE = "coverage"
     REVIEW = "review"
@@ -63,6 +64,7 @@ class _IntentKind(StrEnum):
 
 class _Metric(StrEnum):
     PARTICLE_COUNT = "particle_count"
+    NUMBER_DENSITY_PX2 = "number_density_px2"
     MEAN_DIAMETER_PX = "mean_equivalent_diameter_px"
     COVERAGE_RATIO = "coverage_ratio"
 
@@ -100,6 +102,8 @@ class _RunDatum:
     stored_particle_rows: int
     stored_particle_nm_rows: int
     roi_area_px: int
+    number_density_px2: float
+    number_density_um2: float | None
     mean_diameter_px: float | None
     mean_diameter_nm: float | None
     coverage_ratio: float
@@ -169,6 +173,7 @@ class SqlAlchemyDataToolService:
                 in {
                     _IntentKind.OVERVIEW,
                     _IntentKind.PARTICLE_COUNT,
+                    _IntentKind.NUMBER_DENSITY,
                     _IntentKind.MEAN_DIAMETER,
                     _IntentKind.COVERAGE,
                     _IntentKind.RANK,
@@ -177,8 +182,7 @@ class SqlAlchemyDataToolService:
                 }
             ):
                 choices = ", ".join(
-                    f"{image_id}=[{', '.join(run_ids)}]"
-                    for image_id, run_ids in ambiguous.items()
+                    f"{image_id}=[{', '.join(run_ids)}]" for image_id, run_ids in ambiguous.items()
                 )
                 return _insufficient_result(
                     tool_name=_tool_name(intent),
@@ -194,12 +198,11 @@ class SqlAlchemyDataToolService:
                 )
             if intent.kind == _IntentKind.OVERVIEW or intent.metric in {
                 _Metric.PARTICLE_COUNT,
+                _Metric.NUMBER_DENSITY_PX2,
                 _Metric.MEAN_DIAMETER_PX,
             }:
                 incomplete_runs = [
-                    run
-                    for run in scope.runs
-                    if run.stored_particle_rows != run.particle_count
+                    run for run in scope.runs if run.stored_particle_rows != run.particle_count
                 ]
                 if incomplete_runs:
                     details = ", ".join(
@@ -222,6 +225,8 @@ class SqlAlchemyDataToolService:
                 return _overview_result(scope, arguments)
             if intent.kind == _IntentKind.PARTICLE_COUNT:
                 return _particle_count_result(scope, arguments)
+            if intent.kind == _IntentKind.NUMBER_DENSITY:
+                return _number_density_result(scope, arguments)
             if intent.kind == _IntentKind.MEAN_DIAMETER:
                 return _mean_diameter_result(scope, arguments)
             if intent.kind == _IntentKind.COVERAGE:
@@ -264,7 +269,7 @@ def _resolve_intent(question: str) -> _Intent:
         if len(metrics) != 1:
             return _Intent(
                 _IntentKind.UNSUPPORTED,
-                error="模型对比必须明确一个指标：颗粒数、平均粒径或覆盖率",
+                error="模型对比必须明确一个指标：颗粒数、颗粒数密度、平均粒径或覆盖率",
             )
         return _Intent(_IntentKind.COMPARE_MODELS, metric=metrics[0])
     distribution_signals = (
@@ -280,7 +285,7 @@ def _resolve_intent(question: str) -> _Intent:
         if len(metrics) != 1:
             return _Intent(
                 _IntentKind.UNSUPPORTED,
-                error="分布问题必须明确一个指标：颗粒数、平均粒径或覆盖率",
+                error="分布问题必须明确一个指标：颗粒数、颗粒数密度、平均粒径或覆盖率",
             )
         return _Intent(
             _IntentKind.DISTRIBUTION,
@@ -294,7 +299,7 @@ def _resolve_intent(question: str) -> _Intent:
         if len(metrics) != 1:
             return _Intent(
                 _IntentKind.UNSUPPORTED,
-                error="分组比较必须明确一个指标：颗粒数、平均粒径或覆盖率",
+                error="分组比较必须明确一个指标：颗粒数、颗粒数密度、平均粒径或覆盖率",
             )
         group_by = _ranking_group(normalized)
         if group_by not in {_GroupBy.SAMPLE, _GroupBy.MATERIAL}:
@@ -312,7 +317,7 @@ def _resolve_intent(question: str) -> _Intent:
         if len(metrics) != 1:
             return _Intent(
                 _IntentKind.UNSUPPORTED,
-                error="排名问题必须明确一个指标：颗粒数、平均粒径或覆盖率",
+                error="排名问题必须明确一个指标：颗粒数、颗粒数密度、平均粒径或覆盖率",
             )
         group_by = _ranking_group(normalized)
         if group_by is None:
@@ -346,21 +351,33 @@ def _resolve_intent(question: str) -> _Intent:
         return _Intent(_IntentKind.OVERVIEW)
     if metrics == [_Metric.PARTICLE_COUNT]:
         return _Intent(_IntentKind.PARTICLE_COUNT, metric=metrics[0])
+    if metrics == [_Metric.NUMBER_DENSITY_PX2]:
+        return _Intent(_IntentKind.NUMBER_DENSITY, metric=metrics[0])
     if metrics == [_Metric.MEAN_DIAMETER_PX]:
         return _Intent(_IntentKind.MEAN_DIAMETER, metric=metrics[0])
     if metrics == [_Metric.COVERAGE_RATIO]:
         return _Intent(_IntentKind.COVERAGE, metric=metrics[0])
     return _Intent(
         _IntentKind.UNSUPPORTED,
-        error=(
-            "仅支持任务概览、指标、分布、异常/复核、明确分组排名或比较，以及模型对比"
-        ),
+        error=("仅支持任务概览、指标、分布、异常/复核、明确分组排名或比较，以及模型对比"),
     )
 
 
 def _mentioned_metrics(question: str) -> list[_Metric]:
     metrics: list[_Metric] = []
-    if any(word in question for word in ("颗粒数", "粒子数", "particle count")):
+    density_signals = (
+        "颗粒数密度",
+        "颗粒密度",
+        "粒子数密度",
+        "粒子密度",
+        "number density",
+    )
+    density_mentioned = any(word in question for word in density_signals)
+    if density_mentioned:
+        metrics.append(_Metric.NUMBER_DENSITY_PX2)
+    if not density_mentioned and any(
+        word in question for word in ("颗粒数", "粒子数", "particle count")
+    ):
         metrics.append(_Metric.PARTICLE_COUNT)
     diameter_signals = ("平均粒径", "粒径均值", "mean diameter", "average diameter")
     if any(word in question for word in diameter_signals):
@@ -373,10 +390,10 @@ def _mentioned_metrics(question: str) -> list[_Metric]:
 def _ranking_group(question: str) -> _GroupBy | None:
     if any(word in question for word in ("图像", "图片", "哪张", "image")):
         return _GroupBy.IMAGE
-    if any(word in question for word in ("材料", "material")):
-        return _GroupBy.MATERIAL
     if any(word in question for word in ("样品", "样本", "哪组", "sample")):
         return _GroupBy.SAMPLE
+    if any(word in question for word in ("材料", "material")):
+        return _GroupBy.MATERIAL
     return None
 
 
@@ -480,9 +497,7 @@ def _load_scope(session: Session, query: DataQuery) -> _Scope:
             filters.append(SegmentationRun.image_id == query.image_id)
         records = session.scalars(statement.where(*filters)).all()
 
-    if query.image_id is not None and any(
-        record.image_id != query.image_id for record in records
-    ):
+    if query.image_id is not None and any(record.image_id != query.image_id for record in records):
         raise _ScopeError("run_ids 与 image_id 筛选条件冲突")
 
     status_counts = dict(sorted(Counter(record.status for record in records).items()))
@@ -539,6 +554,42 @@ def _load_scope(session: Session, query: DataQuery) -> _Scope:
                 effective_particle_mean_nm = None
         else:
             effective_particle_mean_nm = None
+        if summary.roi_area_px > 0:
+            effective_density_px2 = summary.particle_count / summary.roi_area_px
+        else:
+            effective_density_px2 = summary.number_density_px2
+        if not isclose(
+            summary.number_density_px2,
+            effective_density_px2,
+            rel_tol=1e-9,
+            abs_tol=1e-12,
+        ):
+            warnings.append(
+                f"{record.run_id}: persisted number_density_px2="
+                f"{summary.number_density_px2:g} differs from particle_count/roi_area_px="
+                f"{effective_density_px2:g}; using the recomputed value"
+            )
+        effective_density_um2: float | None = None
+        if effective_scale is not None and summary.roi_area_px > 0:
+            physical_area_um2 = summary.roi_area_px * (effective_scale / 1000.0) ** 2
+            effective_density_um2 = summary.particle_count / physical_area_um2
+            if summary.number_density_um2 is not None and not isclose(
+                summary.number_density_um2,
+                effective_density_um2,
+                rel_tol=1e-9,
+                abs_tol=1e-9,
+            ):
+                warnings.append(
+                    f"{record.run_id}: persisted number_density_um2="
+                    f"{summary.number_density_um2:g} differs from the effective "
+                    f"scale-derived value={effective_density_um2:g}; "
+                    "using the recomputed value"
+                )
+        elif summary.number_density_um2 is not None:
+            warnings.append(
+                f"{record.run_id}: persisted number_density_um2 was ignored because "
+                "no valid immutable/effective physical scale is available"
+            )
         data.append(
             _RunDatum(
                 run_id=record.run_id,
@@ -554,14 +605,10 @@ def _load_scope(session: Session, query: DataQuery) -> _Scope:
                 stored_particle_rows=row_count,
                 stored_particle_nm_rows=nm_row_count,
                 roi_area_px=summary.roi_area_px,
-                mean_diameter_px=(
-                    particle_mean_px
-                    if row_count > 0
-                    else None
-                ),
-                mean_diameter_nm=(
-                    effective_particle_mean_nm
-                ),
+                number_density_px2=effective_density_px2,
+                number_density_um2=effective_density_um2,
+                mean_diameter_px=(particle_mean_px if row_count > 0 else None),
+                mean_diameter_nm=(effective_particle_mean_nm),
                 coverage_ratio=summary.coverage_ratio,
                 quality_status=summary.quality_status,
                 quality_reasons=reasons,
@@ -673,6 +720,8 @@ def _overview_result(scope: _Scope, arguments: dict[str, Any]) -> DataQueryResul
         units={
             "particle_count": "count",
             "roi_area_px": "px^2",
+            "number_density_px2": "px^-2",
+            "number_density_um2": "um^-2",
             "mean_equivalent_diameter_px": "px",
             "mean_equivalent_diameter_nm": "nm",
             "coverage_ratio": "ratio",
@@ -710,6 +759,87 @@ def _particle_count_result(scope: _Scope, arguments: dict[str, Any]) -> DataQuer
     )
 
 
+def _number_density_result(
+    scope: _Scope,
+    arguments: dict[str, Any],
+) -> DataQueryResult:
+    if not scope.runs:
+        return _no_completed_data("get_metric", arguments, scope)
+    comparison_unit = _metric_comparison_unit(
+        scope.runs,
+        _Metric.NUMBER_DENSITY_PX2,
+    )
+    if comparison_unit is None:
+        return _incomparable_density_result("get_metric", arguments, scope)
+
+    metric_name = _metric_name(_Metric.NUMBER_DENSITY_PX2, comparison_unit)
+    arguments["metric"] = metric_name
+    density = _group_metric(
+        list(scope.runs),
+        _Metric.NUMBER_DENSITY_PX2,
+        comparison_unit=comparison_unit,
+    )
+    if density is None:
+        return _insufficient_result(
+            tool_name="get_metric",
+            arguments=arguments,
+            reason="完成结果缺少有效 ROI 面积或颗粒数密度，无法汇总",
+            outcome="insufficient_data",
+            warnings=scope.warnings,
+            sources=_source_ids(scope.runs),
+        )
+
+    warnings = list(scope.warnings)
+    for run in scope.runs:
+        if run.number_density_um2 is None:
+            warnings.append(
+                f"{run.run_id}: physical scale unavailable; um^-2 number density omitted"
+            )
+    rows = [
+        {
+            **_identity_row(run),
+            "particle_count": run.particle_count,
+            "roi_area_px": run.roi_area_px,
+            "number_density_px2": run.number_density_px2,
+            "number_density_um2": run.number_density_um2,
+        }
+        for run in scope.runs
+    ]
+    total_roi_area_px = sum(run.roi_area_px for run in scope.runs)
+    aggregates: dict[str, Any] = {
+        metric_name: density,
+        "particle_count": sum(run.particle_count for run in scope.runs),
+        "roi_area_px": total_roi_area_px,
+        "completed_run_count": len(scope.runs),
+    }
+    units = {
+        "number_density_px2": "px^-2",
+        "number_density_um2": "um^-2",
+        "particle_count": "count",
+        "roi_area_px": "px^2",
+    }
+    if comparison_unit == "um^-2":
+        physical_area = sum(
+            area for run in scope.runs if (area := _physical_roi_area_um2(run)) is not None
+        )
+        aggregates["roi_area_um2"] = physical_area
+        units["roi_area_um2"] = "um^2"
+    return _success_result(
+        tool_name="get_metric",
+        arguments=arguments,
+        rows=rows,
+        aggregates=aggregates,
+        units=units,
+        sources=_source_ids(scope.runs),
+        warnings=tuple(dict.fromkeys(warnings)),
+        answer=(
+            f"所选 {len(scope.runs)} 个完成运行按总颗粒数/总 ROI 面积合并的"
+            f"颗粒数密度为 {density:.4g} {comparison_unit}。"
+            "“较高”需要与相同物理尺度、ROI 和分割设置下的对照结果比较。"
+        ),
+    )
+
+
 def _mean_diameter_result(scope: _Scope, arguments: dict[str, Any]) -> DataQueryResult:
     if not scope.runs:
         return _no_completed_data("get_metric", arguments, scope)
@@ -717,27 +847,18 @@ def _mean_diameter_result(scope: _Scope, arguments: dict[str, Any]) -> DataQuery
         (run.mean_diameter_px, _diameter_px_weight(run)) for run in scope.runs
     )
     physical_complete = all(
-        _physical_diameter_complete(run)
-        for run in scope.runs
-        if _diameter_px_weight(run) > 0
+        _physical_diameter_complete(run) for run in scope.runs if _diameter_px_weight(run) > 0
     )
     weighted_nm = (
-        _weighted_mean(
-            (run.mean_diameter_nm, _diameter_nm_weight(run)) for run in scope.runs
-        )
+        _weighted_mean((run.mean_diameter_nm, _diameter_nm_weight(run)) for run in scope.runs)
         if physical_complete
         else None
     )
-    if (
-        len({run.image_id for run in scope.runs}) > 1
-        and weighted_nm is None
-    ):
+    if len({run.image_id for run in scope.runs}) > 1 and weighted_nm is None:
         return _insufficient_result(
             tool_name="get_metric",
             arguments=arguments,
-            reason=(
-                "跨图像平均粒径缺少统一物理尺度；请限定 image_id/run_ids 或补充比例尺"
-            ),
+            reason=("跨图像平均粒径缺少统一物理尺度；请限定 image_id/run_ids 或补充比例尺"),
             outcome="insufficient_data",
             warnings=scope.warnings,
             sources=_source_ids(scope.runs),
@@ -771,9 +892,7 @@ def _mean_diameter_result(scope: _Scope, arguments: dict[str, Any]) -> DataQuery
         "mean_equivalent_diameter_nm": weighted_nm,
         "completed_run_count": len(scope.runs),
     }
-    display = (
-        f"{weighted_nm:.4g} nm" if weighted_nm is not None else f"{weighted_px:.4g} px"
-    )
+    display = f"{weighted_nm:.4g} nm" if weighted_nm is not None else f"{weighted_px:.4g} px"
     return _success_result(
         tool_name="get_metric",
         arguments=arguments,
@@ -833,9 +952,7 @@ def _review_result(scope: _Scope, arguments: dict[str, Any]) -> DataQueryResult:
     if not scope.runs:
         return _no_completed_data("find_review", arguments, scope)
     flagged = [
-        run
-        for run in scope.runs
-        if run.quality_status == QualityStatus.REVIEW_REQUIRED.value
+        run for run in scope.runs if run.quality_status == QualityStatus.REVIEW_REQUIRED.value
     ]
     rows = [
         {
@@ -922,13 +1039,16 @@ def _ranking_result(
             sources=_source_ids(scope.runs),
             needs_clarification=True,
         )
-    diameter_unit = _diameter_comparison_unit(scope.runs, intent.metric)
-    if intent.metric == _Metric.MEAN_DIAMETER_PX and diameter_unit is None:
-        return _incomparable_diameter_result("rank_samples", arguments, scope)
-    metric_name = intent.metric.value
-    if intent.metric == _Metric.MEAN_DIAMETER_PX and diameter_unit == "nm":
-        metric_name = "mean_equivalent_diameter_nm"
-        arguments["metric"] = metric_name
+    comparison_unit = _metric_comparison_unit(scope.runs, intent.metric)
+    if comparison_unit is None:
+        return _incomparable_metric_result(
+            "rank_samples",
+            arguments,
+            scope,
+            intent.metric,
+        )
+    metric_name = _metric_name(intent.metric, comparison_unit)
+    arguments["metric"] = metric_name
 
     grouped: dict[str, list[_RunDatum]] = {}
     warnings = list(scope.warnings)
@@ -942,7 +1062,11 @@ def _ranking_result(
     ranked_rows: list[dict[str, Any]] = []
     used_runs: list[_RunDatum] = []
     for group, runs in grouped.items():
-        value = _group_metric(runs, intent.metric, diameter_unit=diameter_unit)
+        value = _group_metric(
+            runs,
+            intent.metric,
+            comparison_unit=comparison_unit,
+        )
         if value is None:
             warnings.append(f"{group}: metric {intent.metric.value} unavailable; excluded")
             continue
@@ -959,8 +1083,9 @@ def _ranking_result(
                 "weight_total": _ranking_weight_total(
                     runs,
                     intent.metric,
-                    diameter_unit=diameter_unit,
+                    comparison_unit=comparison_unit,
                 ),
+                "weight_unit": _ranking_weight_unit(intent.metric, comparison_unit),
                 "image_ids": sorted({run.image_id for run in runs}),
                 "run_ids": sorted(run.run_id for run in runs),
             }
@@ -983,7 +1108,7 @@ def _ranking_result(
     }
     sources = sorted(run.run_id for run in used_runs if run.run_id in included_run_ids)
     first = ranked_rows[0]
-    unit = _comparison_metric_unit(intent.metric, diameter_unit)
+    unit = _comparison_metric_unit(intent.metric, comparison_unit)
     return _success_result(
         tool_name="rank_samples",
         arguments=arguments,
@@ -996,7 +1121,7 @@ def _ranking_result(
         sources=sources,
         warnings=tuple(dict.fromkeys(warnings)),
         answer=(
-            f"按 {intent.metric.value} {intent.order} 排名，首位是 {first['group']}，"
+            f"按 {metric_name} {intent.order} 排名，首位是 {first['group']}，"
             f"值为 {float(first['value']):.4g}。"
         ),
     )
@@ -1025,13 +1150,16 @@ def _compare_groups_result(
             needs_clarification=True,
         )
 
-    diameter_unit = _diameter_comparison_unit(scope.runs, intent.metric)
-    if intent.metric == _Metric.MEAN_DIAMETER_PX and diameter_unit is None:
-        return _incomparable_diameter_result("compare_groups", arguments, scope)
-    metric_name = intent.metric.value
-    if intent.metric == _Metric.MEAN_DIAMETER_PX and diameter_unit == "nm":
-        metric_name = "mean_equivalent_diameter_nm"
-        arguments["metric"] = metric_name
+    comparison_unit = _metric_comparison_unit(scope.runs, intent.metric)
+    if comparison_unit is None:
+        return _incomparable_metric_result(
+            "compare_groups",
+            arguments,
+            scope,
+            intent.metric,
+        )
+    metric_name = _metric_name(intent.metric, comparison_unit)
+    arguments["metric"] = metric_name
 
     grouped: dict[str, list[_RunDatum]] = {}
     warnings = list(scope.warnings)
@@ -1060,7 +1188,7 @@ def _compare_groups_result(
             value = _run_metric(
                 run,
                 intent.metric,
-                diameter_unit=diameter_unit,
+                comparison_unit=comparison_unit,
             )
             if value is not None:
                 values.append(value)
@@ -1068,16 +1196,29 @@ def _compare_groups_result(
             warnings.append(f"{group}: metric {intent.metric.value} unavailable; excluded")
             continue
         used.extend(runs)
+        value = _statistic(values, intent.statistic)
+        weighting = "unweighted_run_values"
+        if intent.metric == _Metric.NUMBER_DENSITY_PX2 and intent.statistic == "mean":
+            grouped_density = _group_metric(
+                runs,
+                intent.metric,
+                comparison_unit=comparison_unit,
+            )
+            if grouped_density is None:
+                warnings.append(f"{group}: number density lacks a valid ROI area; excluded")
+                continue
+            value = grouped_density
+            weighting = "total_particle_count_over_total_roi_area"
         rows.append(
             {
                 "group": group,
                 "group_by": intent.group_by.value,
                 "metric": metric_name,
                 "statistic": intent.statistic,
-                "value": _statistic(values, intent.statistic),
+                "value": value,
                 "count": len(values),
                 "observation_unit": "run",
-                "weighting": "unweighted_run_values",
+                "weighting": weighting,
                 "min": min(values),
                 "max": max(values),
                 "run_ids": sorted(run.run_id for run in runs),
@@ -1093,7 +1234,12 @@ def _compare_groups_result(
         )
     rows.sort(key=lambda row: (-float(row["value"]), str(row["group"])))
     arguments["groups"] = [str(row["group"]) for row in rows]
-    unit = _comparison_metric_unit(intent.metric, diameter_unit)
+    unit = _comparison_metric_unit(intent.metric, comparison_unit)
+    comparison_method = (
+        "按总颗粒数/总 ROI 面积"
+        if intent.metric == _Metric.NUMBER_DENSITY_PX2 and intent.statistic == "mean"
+        else "按等权运行观测"
+    )
     return _success_result(
         tool_name="compare_groups",
         arguments=arguments,
@@ -1106,8 +1252,8 @@ def _compare_groups_result(
         sources=_source_ids(used),
         warnings=tuple(dict.fromkeys(warnings)),
         answer=(
-            f"已按等权运行观测和 {intent.group_by.value} 比较 {len(rows)} 组的 "
-            f"{intent.metric.value}；{intent.statistic} 最高的是 {rows[0]['group']}。"
+            f"已{comparison_method}，按 {intent.group_by.value} 比较 {len(rows)} 组的 "
+            f"{metric_name}；{intent.statistic} 最高的是 {rows[0]['group']}。"
         ),
     )
 
@@ -1124,27 +1270,39 @@ def _distribution_result(
         return _no_completed_data("describe_distribution", arguments, scope)
     if intent.metric is None:
         raise AssertionError("resolved distribution intent lacks metric")
-    diameter_unit = _diameter_comparison_unit(scope.runs, intent.metric)
-    if intent.metric == _Metric.MEAN_DIAMETER_PX and diameter_unit is None:
-        return _incomparable_diameter_result("describe_distribution", arguments, scope)
+    comparison_unit = _metric_comparison_unit(scope.runs, intent.metric)
+    if comparison_unit is None:
+        return _incomparable_metric_result(
+            "describe_distribution",
+            arguments,
+            scope,
+            intent.metric,
+        )
     if intent.metric == _Metric.MEAN_DIAMETER_PX:
-        assert diameter_unit is not None
-        if diameter_unit == "nm":
+        if comparison_unit == "nm":
             arguments["metric"] = "mean_equivalent_diameter_nm"
         return _particle_distribution_result(
             session,
             scope,
             arguments,
             intent,
-            diameter_unit=diameter_unit,
+            diameter_unit=comparison_unit,
             evidence_limit=evidence_limit,
         )
 
-    metric_key = intent.metric.value
+    metric_key = _metric_name(intent.metric, comparison_unit)
+    arguments["metric"] = metric_key
     pairs = [
         (run, value)
         for run in scope.runs
-        if (value := _run_metric(run, intent.metric)) is not None
+        if (
+            value := _run_metric(
+                run,
+                intent.metric,
+                comparison_unit=comparison_unit,
+            )
+        )
+        is not None
     ]
     values = [float(value) for _, value in pairs]
     rows = [{**_identity_row(run), metric_key: value} for run, value in pairs]
@@ -1168,7 +1326,7 @@ def _distribution_result(
         "max": ordered[-1],
         "histogram": _histogram(ordered, intent.bins),
     }
-    unit = _comparison_metric_unit(intent.metric, diameter_unit)
+    unit = _comparison_metric_unit(intent.metric, comparison_unit)
     return _success_result(
         tool_name="describe_distribution",
         arguments=arguments,
@@ -1474,9 +1632,14 @@ def _compare_models_result(
         return _no_completed_data("compare_models", arguments, scope)
     if intent.metric is None:
         raise AssertionError("resolved model comparison lacks metric")
-    diameter_unit = _diameter_comparison_unit(scope.runs, intent.metric)
-    if intent.metric == _Metric.MEAN_DIAMETER_PX and diameter_unit is None:
-        return _incomparable_diameter_result("compare_models", arguments, scope)
+    comparison_unit = _metric_comparison_unit(scope.runs, intent.metric)
+    if comparison_unit is None:
+        return _incomparable_metric_result(
+            "compare_models",
+            arguments,
+            scope,
+            intent.metric,
+        )
     image_ids = {run.image_id for run in scope.runs}
     if len(image_ids) != 1:
         return _insufficient_result(
@@ -1513,7 +1676,11 @@ def _compare_models_result(
         )
     rows = []
     for _model_id, run in sorted(by_model.items()):
-        value = _run_metric(run, intent.metric, diameter_unit=diameter_unit)
+        value = _run_metric(
+            run,
+            intent.metric,
+            comparison_unit=comparison_unit,
+        )
         if value is None:
             continue
         rows.append(
@@ -1533,9 +1700,7 @@ def _compare_models_result(
             warnings=scope.warnings,
         )
     rows.sort(key=lambda row: (-float(row["value"]), str(row["model_id"])))
-    metric_name = intent.metric.value
-    if intent.metric == _Metric.MEAN_DIAMETER_PX and diameter_unit == "nm":
-        metric_name = "mean_equivalent_diameter_nm"
+    metric_name = _metric_name(intent.metric, comparison_unit)
     for row in rows:
         row["metric"] = metric_name
     arguments.update(
@@ -1545,7 +1710,7 @@ def _compare_models_result(
             "metric": metric_name,
         }
     )
-    unit = _comparison_metric_unit(intent.metric, diameter_unit)
+    unit = _comparison_metric_unit(intent.metric, comparison_unit)
     return _success_result(
         tool_name="compare_models",
         arguments=arguments,
@@ -1558,7 +1723,7 @@ def _compare_models_result(
         sources=[str(row["run_id"]) for row in rows],
         warnings=scope.warnings,
         answer=(
-            f"已比较同一图像的 {len(rows)} 个模型运行；按 {intent.metric.value}，"
+            f"已比较同一图像的 {len(rows)} 个模型运行；按 {metric_name}，"
             f"最高的是 {rows[0]['model_id']}。"
         ),
     )
@@ -1576,18 +1741,27 @@ def _group_metric(
     runs: list[_RunDatum],
     metric: _Metric,
     *,
-    diameter_unit: str | None = None,
+    comparison_unit: str | None = None,
 ) -> float | None:
     if metric == _Metric.PARTICLE_COUNT:
         return float(sum(run.particle_count for run in runs))
+    if metric == _Metric.NUMBER_DENSITY_PX2:
+        if comparison_unit == "um^-2":
+            physical_areas = [_physical_roi_area_um2(run) for run in runs]
+            if any(area is None for area in physical_areas):
+                return None
+            total_area_um2 = sum(area for area in physical_areas if area is not None)
+            if total_area_um2 <= 0:
+                return None
+            return sum(run.particle_count for run in runs) / total_area_um2
+        total_area_px = sum(run.roi_area_px for run in runs)
+        if total_area_px <= 0:
+            return None
+        return sum(run.particle_count for run in runs) / total_area_px
     if metric == _Metric.MEAN_DIAMETER_PX:
-        if diameter_unit == "nm":
-            return _weighted_mean(
-                (run.mean_diameter_nm, _diameter_nm_weight(run)) for run in runs
-            )
-        return _weighted_mean(
-            (run.mean_diameter_px, _diameter_px_weight(run)) for run in runs
-        )
+        if comparison_unit == "nm":
+            return _weighted_mean((run.mean_diameter_nm, _diameter_nm_weight(run)) for run in runs)
+        return _weighted_mean((run.mean_diameter_px, _diameter_px_weight(run)) for run in runs)
     total_area = sum(run.roi_area_px for run in runs)
     if total_area <= 0:
         return None
@@ -1597,6 +1771,8 @@ def _group_metric(
 def _ranking_aggregation(metric: _Metric) -> str:
     if metric == _Metric.PARTICLE_COUNT:
         return "sum_across_runs"
+    if metric == _Metric.NUMBER_DENSITY_PX2:
+        return "total_particle_count_over_total_roi_area"
     if metric == _Metric.MEAN_DIAMETER_PX:
         return "particle_weighted_mean"
     return "roi_area_weighted_mean"
@@ -1606,27 +1782,45 @@ def _ranking_weight_total(
     runs: list[_RunDatum],
     metric: _Metric,
     *,
-    diameter_unit: str | None,
-) -> int:
+    comparison_unit: str | None,
+) -> float | int:
     if metric == _Metric.PARTICLE_COUNT:
         return len(runs)
+    if metric == _Metric.NUMBER_DENSITY_PX2:
+        if comparison_unit == "um^-2":
+            return sum(_physical_roi_area_um2(run) or 0.0 for run in runs)
+        return sum(run.roi_area_px for run in runs)
     if metric == _Metric.MEAN_DIAMETER_PX:
-        if diameter_unit == "nm":
+        if comparison_unit == "nm":
             return sum(_diameter_nm_weight(run) for run in runs)
         return sum(_diameter_px_weight(run) for run in runs)
     return sum(run.roi_area_px for run in runs)
+
+
+def _ranking_weight_unit(metric: _Metric, comparison_unit: str | None) -> str:
+    if metric == _Metric.NUMBER_DENSITY_PX2:
+        return "um^2" if comparison_unit == "um^-2" else "px^2"
+    if metric == _Metric.MEAN_DIAMETER_PX:
+        return "particle_count"
+    if metric == _Metric.COVERAGE_RATIO:
+        return "px^2"
+    return "run_count"
 
 
 def _run_metric(
     run: _RunDatum,
     metric: _Metric,
     *,
-    diameter_unit: str | None = None,
+    comparison_unit: str | None = None,
 ) -> float | None:
     if metric == _Metric.PARTICLE_COUNT:
         return float(run.particle_count)
+    if metric == _Metric.NUMBER_DENSITY_PX2:
+        if comparison_unit == "um^-2":
+            return run.number_density_um2
+        return run.number_density_px2
     if metric == _Metric.MEAN_DIAMETER_PX:
-        if diameter_unit == "nm":
+        if comparison_unit == "nm":
             return run.mean_diameter_nm
         return run.mean_diameter_px
     return run.coverage_ratio
@@ -1676,32 +1870,47 @@ def _histogram(values: list[float], bins: int) -> list[dict[str, float | int]]:
 def _metric_unit(metric: _Metric) -> str:
     if metric == _Metric.PARTICLE_COUNT:
         return "count"
+    if metric == _Metric.NUMBER_DENSITY_PX2:
+        return "px^-2"
     if metric == _Metric.MEAN_DIAMETER_PX:
         return "px"
     return "ratio"
 
 
-def _comparison_metric_unit(metric: _Metric, diameter_unit: str | None) -> str:
-    if metric == _Metric.MEAN_DIAMETER_PX:
-        return diameter_unit or "px"
+def _comparison_metric_unit(metric: _Metric, comparison_unit: str | None) -> str:
+    if metric in {
+        _Metric.MEAN_DIAMETER_PX,
+        _Metric.NUMBER_DENSITY_PX2,
+    }:
+        return comparison_unit or _metric_unit(metric)
     return _metric_unit(metric)
 
 
-def _diameter_comparison_unit(
+def _metric_comparison_unit(
     runs: tuple[_RunDatum, ...],
     metric: _Metric,
 ) -> str | None:
+    if metric == _Metric.NUMBER_DENSITY_PX2:
+        if runs and all(_physical_density_complete(run) for run in runs):
+            return "um^-2"
+        if len({run.image_id for run in runs}) == 1 or _has_one_known_scale(runs):
+            return "px^-2"
+        return None
     if metric != _Metric.MEAN_DIAMETER_PX:
         return _metric_unit(metric)
-    if all(
-        _physical_diameter_complete(run)
-        for run in runs
-        if _diameter_px_weight(run) > 0
-    ):
+    if all(_physical_diameter_complete(run) for run in runs if _diameter_px_weight(run) > 0):
         return "nm"
     if len({run.image_id for run in runs}) == 1 or _has_one_known_scale(runs):
         return "px"
     return None
+
+
+def _metric_name(metric: _Metric, comparison_unit: str | None) -> str:
+    if metric == _Metric.MEAN_DIAMETER_PX and comparison_unit == "nm":
+        return "mean_equivalent_diameter_nm"
+    if metric == _Metric.NUMBER_DENSITY_PX2 and comparison_unit == "um^-2":
+        return "number_density_um2"
+    return metric.value
 
 
 def _has_one_known_scale(runs: Iterable[_RunDatum]) -> bool:
@@ -1720,6 +1929,17 @@ def _ambiguous_images(scope: _Scope) -> dict[str, list[str]]:
     }
 
 
+def _incomparable_metric_result(
+    tool_name: str,
+    arguments: dict[str, Any],
+    scope: _Scope,
+    metric: _Metric,
+) -> DataQueryResult:
+    if metric == _Metric.NUMBER_DENSITY_PX2:
+        return _incomparable_density_result(tool_name, arguments, scope)
+    return _incomparable_diameter_result(tool_name, arguments, scope)
+
+
 def _incomparable_diameter_result(
     tool_name: str,
     arguments: dict[str, Any],
@@ -1728,14 +1948,41 @@ def _incomparable_diameter_result(
     return _insufficient_result(
         tool_name=tool_name,
         arguments=arguments,
+        reason=("跨图像粒径比较缺少统一物理尺度；请补充比例尺，或限定同一图像的 run_ids"),
+        outcome="insufficient_data",
+        warnings=scope.warnings,
+        sources=_source_ids(scope.runs),
+        needs_clarification=True,
+    )
+
+
+def _incomparable_density_result(
+    tool_name: str,
+    arguments: dict[str, Any],
+    scope: _Scope,
+) -> DataQueryResult:
+    return _insufficient_result(
+        tool_name=tool_name,
+        arguments=arguments,
         reason=(
-            "跨图像粒径比较缺少统一物理尺度；请补充比例尺，或限定同一图像的 run_ids"
+            "跨图像颗粒数密度比较缺少可统一的物理面积尺度；请补充比例尺，"
+            "或限定同一图像/相同像素尺度的 run_ids"
         ),
         outcome="insufficient_data",
         warnings=scope.warnings,
         sources=_source_ids(scope.runs),
         needs_clarification=True,
     )
+
+
+def _physical_roi_area_um2(run: _RunDatum) -> float | None:
+    if run.scale_nm_per_pixel is None or run.roi_area_px <= 0:
+        return None
+    return run.roi_area_px * (run.scale_nm_per_pixel / 1000.0) ** 2
+
+
+def _physical_density_complete(run: _RunDatum) -> bool:
+    return run.number_density_um2 is not None and _physical_roi_area_um2(run) is not None
 
 
 def _diameter_px_weight(run: _RunDatum) -> int:
@@ -1810,6 +2057,8 @@ def _overview_row(run: _RunDatum) -> dict[str, Any]:
         **_identity_row(run),
         "particle_count": run.particle_count,
         "roi_area_px": run.roi_area_px,
+        "number_density_px2": run.number_density_px2,
+        "number_density_um2": run.number_density_um2,
         "mean_equivalent_diameter_px": run.mean_diameter_px,
         "mean_equivalent_diameter_nm": run.mean_diameter_nm,
         "coverage_ratio": run.coverage_ratio,
@@ -1825,6 +2074,7 @@ def _tool_name(intent: _Intent) -> str:
         return "get_job_overview"
     if intent.kind in {
         _IntentKind.PARTICLE_COUNT,
+        _IntentKind.NUMBER_DENSITY,
         _IntentKind.MEAN_DIAMETER,
         _IntentKind.COVERAGE,
     }:

@@ -145,6 +145,7 @@ class SentenceTransformerEmbeddingProvider:
         self._model: object | None = None
         self._load_error: EmbeddingUnavailableError | None = None
         self._dimension: int | None = None
+        self._warmed_up = False
         self._lock = RLock()
 
     @property
@@ -170,29 +171,36 @@ class SentenceTransformerEmbeddingProvider:
         with self._lock:
             if self._load_error is not None:
                 return HealthComponent(status="unavailable", detail=str(self._load_error))
-            if self._model is not None:
-                dimension = self._dimension
-                suffix = f", dimension={dimension}" if dimension is not None else ""
-                return HealthComponent(
-                    status="healthy",
-                    detail=f"local-only SentenceTransformers model ready{suffix}",
-                )
             if self._uses_default_factory and not self._dependency_available():
                 return HealthComponent(
                     status="unavailable",
                     detail="optional sentence-transformers dependency is not installed",
                 )
             try:
-                self._ensure_model_source_locked()
-            except EmbeddingUnavailableError as error:
-                return HealthComponent(status="unavailable", detail=str(error))
-            fingerprint = self._fingerprint or "unknown"
+                # A verified snapshot is not sufficient readiness: loading can still
+                # fail because of an incompatible optional runtime.  The first encode
+                # also establishes the ML runtime before FAISS is imported by retrieval
+                # health checks; loading weights alone is insufficient on supported
+                # macOS/arm64 deployments where the first encode initializes native
+                # thread-pool state.
+                if not self._warmed_up:
+                    self._embed(["NanoLoop RAG embedding readiness probe"])
+            except Exception as error:
+                unavailable = (
+                    error
+                    if isinstance(error, EmbeddingUnavailableError)
+                    else EmbeddingUnavailableError(
+                        "local embedding readiness failed: "
+                        f"{type(error).__name__}: {error}"
+                    )
+                )
+                self._load_error = unavailable
+                return HealthComponent(status="unavailable", detail=str(unavailable))
+            dimension = self._dimension
+            suffix = f", dimension={dimension}" if dimension is not None else ""
             return HealthComponent(
-                status="degraded",
-                detail=(
-                    "local-only embedding model snapshot verified; lazy load not yet "
-                    f"verified, fingerprint={fingerprint}"
-                ),
+                status="healthy",
+                detail=f"local-only SentenceTransformers model ready{suffix}",
             )
 
     @staticmethod
@@ -236,6 +244,7 @@ class SentenceTransformerEmbeddingProvider:
                 ) from error
             matrix = self._validate_matrix(raw_vectors, expected_rows=len(normalized_texts))
             self._record_dimension(int(matrix.shape[1]))
+            self._warmed_up = True
             return [tuple(float(value) for value in row) for row in matrix]
 
     def _ensure_model_locked(self) -> object:
@@ -352,7 +361,9 @@ class SentenceTransformerEmbeddingProvider:
 
     @staticmethod
     def _reported_dimension(model: object) -> int | None:
-        getter = getattr(model, "get_sentence_embedding_dimension", None)
+        getter = getattr(model, "get_embedding_dimension", None)
+        if not callable(getter):
+            getter = getattr(model, "get_sentence_embedding_dimension", None)
         if not callable(getter):
             return None
         value = getter()

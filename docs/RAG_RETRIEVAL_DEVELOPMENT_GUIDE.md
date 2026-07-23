@@ -182,11 +182,17 @@ curl --fail-with-body "$RAG_API_BASE/api/v1/health"
 
 当前每次成功摄取/启停会刷新完整 ready corpus 的向量 projection。首批 5～10 份语料规模适合验证；在没有容量基准前不要批量导入上千文档。
 
-## 5.4 中文关键词检索是首周必须测的风险
+## 5.4 中文关键词检索必须单独验收
 
-当前 FTS5 迁移没有显式指定 tokenizer，因此使用 SQLite 默认 `unicode61`。SQLite 官方说明该 tokenizer 会把连续字母/数字类字符组成 token；连续中文、两字材料名、化学式和英文缩写的实际召回不能沿用英文 fixture 的结论。
+FTS5 迁移仍使用 SQLite 默认 `unicode61`。为避免连续中文被当作整段 token 后完全漏召回，
+`SQLiteFTS5KeywordStore` 会在标准 `MATCH` 无结果时，用参数化、最多 96 个 2～6 字 CJK
+n-gram 选取有界候选，再按重叠长度确定性排序；disabled 文档仍在 SQL 层排除。健康检查同时核对
+ready chunk 数和 FTS 行数，缺行时报告 parity mismatch，而不是继续宣称 healthy；错误数据库路径
+以只读方式打开，不会静默创建空库。
 
-首周必须建立中文名、英文名、化学式、别名和中英混合问题的 keyword-only 对照。若默认 FTS 明显漏召回，可在独立实验表上 A/B 测试 `trigram` 或确定性预分词字段，但不能直接覆盖现有权威 FTS 表。`trigram` 对少于三个 Unicode 字符的 MATCH 也有限制，所以 Ti、Al、两字中文名等仍需单独策略。任何 tokenizer 迁移都属于公共数据库变化，必须由 D 提案、C 评审、F 验收，并保留旧索引重建与降级证据。
+这只是小语料的诚实降级策略，不替代正式检索评测。仍须分别建立中文名、英文名、化学式、别名和
+中英混合问题的 keyword-only 对照，并记录回退路径的延迟和误召回。若未来 A/B 证据支持
+`trigram` 或确定性预分词字段，必须通过数据库迁移和重建流程交付；不能就地覆盖权威 FTS 表。
 
 # 6. P1：固定 embedding 并完成真实 FAISS 闭环
 

@@ -380,6 +380,59 @@ def test_query_resolves_image_material_metadata_and_preserves_explicit_context(
         database.dispose()
 
 
+def test_selected_image_without_material_clarifies_before_knowledge_retrieval(
+    tmp_path: Path,
+) -> None:
+    service, database, _store, unified_query = _service(tmp_path)
+    try:
+        with database.session() as session:
+            image = session.get(ImageAsset, "image_1")
+            assert image is not None
+            image.material_formula = None
+            image.material_name = None
+
+        response = _answer(
+            service,
+            "job_1",
+            UnifiedQueryRequest(
+                question="这个材料有什么性质？",
+                query_type=QueryType.MATERIAL_KNOWLEDGE,
+                image_id="image_1",
+            ),
+        )
+
+        assert response.needs_clarification is True
+        assert response.outcome_code == "INSUFFICIENT_EVIDENCE"
+        assert response.citations == []
+        assert not unified_query.requests
+    finally:
+        database.dispose()
+
+
+def test_client_cannot_claim_image_metadata_provenance(tmp_path: Path) -> None:
+    service, database, _store, unified_query = _service(tmp_path)
+    try:
+        _answer(
+            service,
+            "job_1",
+            UnifiedQueryRequest(
+                question="SrNi 有什么性质？",
+                query_type=QueryType.MATERIAL_KNOWLEDGE,
+                material_context=MaterialContext(
+                    formula="SrNi",
+                    source="image_metadata",
+                ),
+            ),
+        )
+
+        assert unified_query.requests[-1].material_context == MaterialContext(
+            formula="SrNi",
+            source="request",
+        )
+    finally:
+        database.dispose()
+
+
 def test_query_without_image_uses_the_jobs_unique_material(tmp_path: Path) -> None:
     service, database, _store, unified_query = _service(tmp_path)
     try:

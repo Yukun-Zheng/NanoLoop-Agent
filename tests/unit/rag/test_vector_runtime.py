@@ -116,7 +116,7 @@ def test_sentence_transformer_provider_rejects_dimension_changes() -> None:
         provider.embed_query("second")
 
 
-def test_sentence_transformer_load_failure_is_cached_as_unavailable() -> None:
+def test_sentence_transformer_health_loads_and_caches_failure_as_unavailable() -> None:
     calls = 0
 
     def unavailable(*_args: object, **_kwargs: object) -> object:
@@ -130,13 +130,37 @@ def test_sentence_transformer_load_failure_is_cached_as_unavailable() -> None:
         model_factory=unavailable,
     )
 
-    assert provider.health().status == "degraded"
-    assert calls == 0
+    assert provider.health().status == "unavailable"
+    assert calls == 1
     with pytest.raises(EmbeddingUnavailableError, match="not installed"):
         provider.embed_query("query")
     assert provider.health().status == "unavailable"
     assert provider.health().status == "unavailable"
     assert calls == 1
+
+
+def test_sentence_transformer_health_loads_once_and_reports_dimension() -> None:
+    model = _FakeSentenceModel([[[1.0, 0.0]]], reported_dimension=2)
+    calls = 0
+
+    def factory(*_args: object, **_kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        return model
+
+    provider = SentenceTransformerEmbeddingProvider(
+        "local/model",
+        model_fingerprint="a" * 64,
+        model_factory=factory,
+    )
+
+    first = provider.health()
+    second = provider.health()
+
+    assert first.status == second.status == "healthy"
+    assert first.detail == "local-only SentenceTransformers model ready, dimension=2"
+    assert calls == 1
+    assert len(model.encode_calls) == 1
 
 
 def test_embedding_identity_requires_revision_or_hashes_local_snapshot(
@@ -355,6 +379,27 @@ def test_failed_faiss_publish_keeps_previous_generation(tmp_path: Path) -> None:
 
     assert store.manifest_path.read_bytes() == previous_manifest
     assert store.search([1.0, 0.0], limit=2) == previous_hits
+
+
+def test_faiss_publish_cleanup_preserves_unrelated_similarly_named_files(
+    tmp_path: Path,
+) -> None:
+    backend = _FakeFaiss()
+    unrelated = tmp_path / "faiss.operator-backup.index"
+    unrelated.write_text("must survive", encoding="utf-8")
+    old_generation = tmp_path / f"faiss.{'a' * 32}.index"
+    old_generation.write_text("obsolete generation", encoding="utf-8")
+    store = PersistentFaissVectorStore(
+        tmp_path / "faiss.index",
+        model_id="local/model",
+        model_fingerprint="a" * 64,
+        faiss_loader=lambda: backend,
+    )
+
+    store.publish([_record("chunk_1", [1.0, 0.0], "alpha")])
+
+    assert unrelated.read_text(encoding="utf-8") == "must survive"
+    assert not old_generation.exists()
 
 
 def test_faiss_store_serializes_search_and_empty_publish_needs_no_dependency(
