@@ -15,7 +15,7 @@
 | 缺少可选模型/语料时的诚实降级启动 | 支持 | 已接入 Large bundle 可单独保持 `ready`；缺失的其余模型保持 `unavailable`，RAG 可保持 keyword-only/unavailable，健康接口不会把缺失资产报告为正常科学闭环。 |
 | Next.js 科研 Agent Command Center | 工程可用 | `/`、`/workspace/{job_id}`、`/knowledge` 与严格同源 BFF 已实现；Vitest/Playwright/生产构建和非 root 容器门禁已进入 CI。目标后端真实业务演示仍受资产和部署验收约束。 |
 | 人工矩形 ROI 编辑 | 工程可用、待新前端 live 复验 | React-Konva 与数值编辑器使用原图半开坐标、有效区校验和 revision CAS；纯几何已有单测。旧前端的 live REST round-trip 不能替代重写后的目标后端复验。 |
-| 真实 SEM 单模型分割 | 部分可用 | Large TorchScript 已通过 CPU 载入和重复推理检查；仍缺许可明确的共同 SEM/GT、机器可读独立评测和目标部署完整 Analysis 冷启动证据，见 [FR-06](requirements-traceability.md)。 |
+| 真实 SEM 单模型分割 | 部分可用 | Large TorchScript 已通过 CPU 载入和重复推理检查；历史三视野 prediction/GT 的像素计数与指标已从交付字节独立复核。历史运行的 Adapter/config/card 与当前 `main` 不同，仍缺许可/资产台账、split、显式 tolerance policy、当前 bundle 完整 Analysis 重跑和目标部署冷启动证据，见 [FR-06](requirements-traceability.md) 与[资产接入审计](model-assets-large-a-b-acceptance-2026-07-23.md)。 |
 | 真实多模型对比演示 | 阻塞 | 只有 Large 一个运行 bundle；其余四个模型无可用 checkpoint，不能形成真实 2～3 模型共同图像闭环。 |
 | 生产向量 RAG | 资产阻塞 | FTS5 与引用摘录是稳定基线；可选向量 runtime 已实现持久恢复、模型/维度/数据库映射、原子发布和降级测试，但没有固定真实 embedding 模型与正式许可语料完成资产级验收。 |
 | 公网或多租户服务 | 不支持 | 可撤销 principal credential、Analysis/Query tenant scope，以及 subject-bound file-token v2、artifact registry 与 pinned-fd 下载已接通；但知识文档租户化、分布式限流、调用/磁盘 quota 和 retention 尚未完成。 |

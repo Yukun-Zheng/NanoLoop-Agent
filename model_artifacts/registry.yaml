@@ -53,12 +53,24 @@ models:
         developer_reported_threshold_micro_dice: 0.722377672920259
         developer_reported_threshold_micro_iou: 0.5654078342317297
         developer_reported_min_area_gt_retention: 1.0
+        historical_bundle_verified_pixel_macro_dice: 0.8053234061081441
+        historical_bundle_verified_pixel_macro_iou: 0.6854416626935307
+        historical_bundle_verified_pixel_micro_dice: 0.7734422618347466
+        historical_bundle_verified_pixel_micro_iou: 0.630579578741805
       metric_context:
-        evidence_status: developer_reported_not_independently_verified
+        evidence_status: historical_pixel_metrics_verified_current_bundle_acceptance_pending
         runtime_asset_delivered: true
         runtime_asset_verified: true
         runtime_verification_device: cpu
         evidence_bundle_delivered: false
+        developer_evidence_archives_delivered: true
+        historical_pixel_metrics_independently_recomputed: true
+        historical_run_matches_current_source_contract: false
+        independent_test_scope: field_of_view
+        independent_test_image_count: 3
+        current_bundle_scientific_rerun_status: pending
+        license_review_status: missing
+        tolerance_policy_status: missing
         asset_ledger_delivered: false
         redistribution_permission_delivered: false
         training_split_verification: unknown
@@ -76,7 +88,7 @@ models:
         perimeter_neighborhood: 8
         bottom_crop_px: 180
         scale_nm_per_pixel: 0.5434782608695652
-      notes: The delivered TorchScript is runtime-verified; parameters and metrics remain developer-reported pending independent scientific and license review.
+      notes: The TorchScript is runtime-verified and historical pixel metrics were independently recomputed from delivered bytes; current-bundle scientific rerun, policy, split, and license review remain pending.
     adapter_path: app.inference.adapters.unet:UNetAdapter
     weight_path: weights/unet-large-optimized-v1.pt
     weight_sha256: 007d9a16bf31e5f960160c52eefa938b83feeac2e6c0d7dec9c8670a38626e05

@@ -1,15 +1,17 @@
 # 模型与 RAG 后续接入交接
 
-本文是 v4.0 的模型/RAG 专项合同，事实基线为最新全绿 `main`，五人集成快照为 `bfb48d4`；人员任务、依赖顺序和里程碑以
-[v4.0 协同开发文档](NanoLoop_Agent_协同开发规格与接口总文档_v4.0.md) 为准。公共 DTO、REST 路径和
-持久化约束以当前 `app/contracts`、OpenAPI 与 ADR 为准；本交接不授权通过伪造 ready 状态、测试输出
+当前工程事实以 `main`、可执行代码、OpenAPI、ADR、
+[需求追踪矩阵](requirements-traceability.md) 和[开发日志](DEVELOPMENT_LOG.md)为准。公共 DTO、
+REST 路径和持久化约束以当前 `app/contracts`、OpenAPI 与 ADR 为准。
+[v4.0 协同开发文档](NanoLoop_Agent_协同开发规格与接口总文档_v4.0.md) 是已暂停维护的历史团队
+分发快照，只用于追溯当时人员任务、依赖顺序和里程碑。本交接不授权通过伪造 ready 状态、测试输出
 或引用来绕过验收。
 
 ## 1. 当前真实状态
 
 | 子系统 | 已有接缝 | 尚未交付 |
 | --- | --- | --- |
-| 模型 | `InferenceGateway`、三类 Adapter、`AdapterCache.lease()` 并发保护、注册表健康校验、不可变运行、统一后处理、canonical `pred_mask.png`/`instances.json` 和过滤前边界诊断已接通。正常运行的 schema v3 冻结原图/尺度、resolved 科学设置及权重/配置/模型卡/Adapter 源码完整 bundle；执行时核对 build identity 并单独保存实际设备/seed/后端证据。U-Net 已有灰度/百分位预处理、底部无效区和 overlap tiling。2026-07-23 接入 Large TorchScript，SHA-256、源 checkpoint 的 56 个 tensor、CPU 载入、有限输出和重复推理一致性均已独立复核；安装 `models` 依赖时 Large 登记为 `ready`。 | Large 仍缺资产/许可台账、无泄漏 split manifest、固定 SEM/GT、机器可读评测和目标部署完整 Analysis 冷启动证据，因此只达到运行就绪，不是科学验收。Small/Agglomerated U-Net、YOLO-Seg、SAM2 四项仍为 `unavailable`，真实多模型闭环未成立。 |
+| 模型 | `InferenceGateway`、三类 Adapter、`AdapterCache.lease()` 并发保护、注册表健康校验、不可变运行、统一后处理、canonical `pred_mask.png`/`instances.json` 和过滤前边界诊断已接通。正常运行的 schema v3 冻结原图/尺度、resolved 科学设置及权重/配置/模型卡/Adapter 源码完整 bundle；执行时核对 build identity 并单独保存实际设备/seed/后端证据。U-Net 已有灰度/百分位预处理、底部无效区和 overlap tiling。2026-07-23 接入 Large TorchScript，SHA-256、源 checkpoint 的 56 个 tensor、CPU 载入、有限输出和重复推理一致性均已独立复核；安装 `models` 依赖时 Large 登记为 `ready`。A/B 后续交付中的权重相同，历史三视野 prediction/GT 的像素指标已独立重算并记录在[资产接入审计](model-assets-large-a-b-acceptance-2026-07-23.md)。 | 历史运行绑定的 Adapter/config/card 与当前 `main` 不同。Large 仍缺资产/许可台账、无泄漏 split manifest、显式 tolerance policy、当前 bundle 完整 Analysis 重跑及目标部署冷启动证据，因此只达到运行就绪，不是科学验收。Small/Agglomerated U-Net、YOLO-Seg、SAM2 四项仍为 `unavailable`，真实多模型闭环未成立。 |
 | RAG | 文档摄取/切块、SQLite FTS5、RRF、严格材料标签、多材料澄清、摘录/OpenAI-compatible 提供器、引用 provenance 与文档启停已实现。页数/字符/chunk/别名/向量语料有界，embedding 分批。可选向量 runtime 已接通 local-files-only SentenceTransformers、不可变 FAISS generation、原子 manifest、数据库映射校验和失败降级。 | 当前环境没有固定真实 embedding 模型及经许可并覆盖演示材料的正式语料包；fake backend 门禁不能替代真实资产的重启/检索冒烟，因此不得宣称生产向量 RAG 已交付。 |
 
 关键入口：

@@ -9,14 +9,15 @@ IDENTITY_ARGS ?=
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install lint typecheck test frontend-install frontend frontend-check frontend-build frontend-e2e \
+.PHONY: help install install-models lint typecheck test frontend-install frontend frontend-check frontend-build frontend-e2e \
 	openapi migration-check check mvp-smoke serve db-upgrade \
 	handoff-doc handoff-doc-v3 backup-create backup-verify backup-restore backup-drill docker-build compose-config compose-up \
-	compose-down compose-logs identity-manage rag-guide-doc
+	compose-up-models compose-down compose-logs identity-manage rag-guide-doc
 
 help:
 	@echo "NanoLoop Agent development commands"
 	@echo "  make install          Create .venv and install backend development dependencies"
+	@echo "  make install-models   Install development dependencies plus real model runtimes"
 	@echo "  make check            Run Ruff, Mypy, Pytest, and fresh Alembic checks"
 	@echo "  make mvp-smoke        Run the offline engineering-fixture backend loop"
 	@echo "  make serve            Run the local API with reload"
@@ -36,6 +37,7 @@ help:
 	@echo "  make identity-manage  Run the operator identity CLI with IDENTITY_ARGS"
 	@echo "  make docker-build     Build the CPU API image"
 	@echo "  make compose-up       Start the hardened local container stack"
+	@echo "  make compose-up-models Build and start the stack with model runtimes"
 	@echo "  make compose-down     Stop the local container stack"
 
 $(PYTHON_BIN):
@@ -44,6 +46,10 @@ $(PYTHON_BIN):
 install: $(PYTHON_BIN)
 	$(PYTHON_BIN) -m pip install --upgrade pip
 	$(PYTHON_BIN) -m pip install -e '.[dev,analysis,docs]'
+
+install-models: $(PYTHON_BIN)
+	$(PYTHON_BIN) -m pip install --upgrade pip
+	$(PYTHON_BIN) -m pip install -e '.[dev,analysis,docs,models]'
 
 lint:
 	$(PYTHON_BIN) -m ruff check .
@@ -127,6 +133,9 @@ compose-config:
 
 compose-up:
 	docker compose up --build --detach
+
+compose-up-models:
+	NANOLOOP_API_EXTRAS=models docker compose up --build --detach
 
 compose-down:
 	docker compose down

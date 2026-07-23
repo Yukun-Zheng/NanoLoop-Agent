@@ -1,6 +1,6 @@
 # NanoLoop Agent 文档索引
 
-`main` 是唯一长期开发基线；最新协作状态以 `main` HEAD 和本索引所列开发日志为准。所有功能分支从最新全绿 `origin/main` 创建，并通过 PR 合回 `main`。当前发布等级是 **M1 工程 MVP / 内部 Alpha**。仓库已用 Next.js 16 / React 19 / TypeScript 重建前端 Command Center，并把浏览器访问收敛到同源 BFF；Large U-Net 的部署用 TorchScript 已接入并通过 CPU 运行检查，其余四个登记模型仍为 `unavailable`。Large 的许可/资产台账与独立科学证据、正式语料、固定 embedding、真实向量索引和无降级 E2E 尚未完成。
+`main` 是唯一长期开发基线；最新协作状态以 `main` HEAD 和本索引所列开发日志为准。所有功能分支从最新全绿 `origin/main` 创建，并通过 PR 合回 `main`。当前发布等级是 **M1 工程 MVP / 内部 Alpha**。仓库已用 Next.js 16 / React 19 / TypeScript 重建前端 Command Center，并把浏览器访问收敛到同源 BFF；Large U-Net 的部署用 TorchScript 已接入并通过 CPU 运行检查，历史独立集像素指标也已从交付字节复核，其余四个登记模型仍为 `unavailable`。Large 的许可/资产台账、当前 bundle 科学重跑、正式语料、固定 embedding、真实向量索引和无降级 E2E 尚未完成。
 
 ## 当前必读
 
@@ -20,6 +20,7 @@
 | 前端本地开发、BFF 与测试 | [前端 README](../frontend/README.md)、[开发与交接指南](DEVELOPMENT.md) |
 | 部署、备份与外部资产挂载 | [部署与运维边界](DEPLOYMENT.md) |
 | 模型与 RAG 接入合同 | [模型与 RAG 后续接入交接](model-rag-handoff.md) |
+| Large U-Net A/B 资产验收 | [2026-07-23 接入审计](model-assets-large-a-b-acceptance-2026-07-23.md)、[机器可读 manifest](../model_artifacts/evidence/unet-large-optimized-v1/delivery-audit-2026-07-23.json) |
 | RAG 工程与验收细节 | [RAG 与检索功能开发指南](RAG_RETRIEVAL_DEVELOPMENT_GUIDE.md) |
 | 历史 A+B 模型接入资料 | [模型冻结、接入与 AI 协作指南](developer_handoffs/guo-jinghao-ab-model-integration-guide.md)、[交付审计](developer_handoffs/guo-jinghao-ab-delivery-audit-2026-07-21.md)；仅用于复用技术合同和追溯交付 |
 | 五人集成审计快照 | [2026-07-23 团队集成状态](developer_handoffs/team-integration-status-2026-07-23.md)；仅用于追溯当时分工 |
