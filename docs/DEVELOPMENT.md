@@ -2,7 +2,7 @@
 
 ## 接手前必读
 
-先阅读 [v4.0 交接 DOCX](NanoLoop_Agent_协同开发规格与接口总文档_v4.0.docx)；检索代码路径、评审或修改内容时使用 [Markdown 源文件](NanoLoop_Agent_协同开发规格与接口总文档_v4.0.md)。v4.0 依据五人集成快照 `bfb48d4` 及其代码、迁移、路由和测试生成，并给出当前实名分工、优先级、依赖和统一验收；后续事实以最新 `main` 为准。RAG 开发者同时阅读 [RAG 与检索功能开发指南](RAG_RETRIEVAL_DEVELOPMENT_GUIDE.md)，但其中旧时间表与旧人员分工由 v4.0 取代；A+B 开发者使用 [模型冻结、接入与 AI 协作指南](developer_handoffs/guo-jinghao-ab-model-integration-guide.md)；后续语音输入探索见 [FunASR Nano POC 记录](experiments/funasr-nano-poc.md)。v3/v2 保留为历史资料；若旧计划与当前实现冲突，以代码、测试和 v4.0 为准。
+先阅读 [v4.0 交接 DOCX](NanoLoop_Agent_协同开发规格与接口总文档_v4.0.docx)；检索代码路径、评审或修改内容时使用 [Markdown 源文件](NanoLoop_Agent_协同开发规格与接口总文档_v4.0.md)。v4.0 依据五人集成快照 `bfb48d4` 及其代码、迁移、路由和测试生成，并给出当前实名分工、优先级、依赖和统一验收；每次开工的唯一具体任务、分支和非目标从第 0.4 节领取，并按第 0.5 节先回执，后续事实以最新 `main` 为准。RAG 开发者同时阅读 [RAG 与检索功能开发指南](RAG_RETRIEVAL_DEVELOPMENT_GUIDE.md)，但其中旧时间表与旧人员分工由 v4.0 取代；A+B 开发者使用 [模型冻结、接入与 AI 协作指南](developer_handoffs/guo-jinghao-ab-model-integration-guide.md)；后续语音输入探索见 [FunASR Nano POC 记录](experiments/funasr-nano-poc.md)。v3/v2 保留为历史资料；若旧计划与当前实现冲突，以代码、测试和 v4.0 为准。
 
 ## 分支与合并基线
 
@@ -29,7 +29,7 @@
 | E | 前端 | `frontend` | 只依赖 `/api/v1` |
 | F | QA / 交付 | CI、`scripts`、集成测试、`demo_data`、`docs`、Docker 文件 | 黑盒 API、OpenAPI 与发布门禁 |
 
-当前实名分工与 P0/P1 优先级以 [v4.0 第 0.3 节](NanoLoop_Agent_协同开发规格与接口总文档_v4.0.md#03-全员速览) 为准，避免在多个文件重复维护人员安排。
+当前实名分工与 P0/P1 优先级以 [v4.0 第 0.3 节](NanoLoop_Agent_协同开发规格与接口总文档_v4.0.md#03-全员速览) 为准；本批精确工单和分支以第 0.4 节为准，避免在多个文件重复维护人员安排。
 
 `app/contracts` 是共享事实源。若修改其中字段，必须同步更新持久化所需的 Alembic 迁移、
 生成的 `docs/api/openapi-v1.json`、相关 `tests/fixtures/api`，以及 v2.0 规格未覆盖行为所需的

@@ -7,7 +7,7 @@
 | 文档 | 用途 |
 | --- | --- |
 | [v4.0 协同开发总文档（Markdown）](NanoLoop_Agent_协同开发规格与接口总文档_v4.0.md) | 当前任务分工、需求矩阵、依赖、里程碑、验收标准和 AI 提示词的事实入口 |
-| [v4.0 协同开发总文档（DOCX）](NanoLoop_Agent_协同开发规格与接口总文档_v4.0.docx) | 直接分发给全体开发者的排版版 |
+| [v4.0 协同开发总文档（DOCX）](NanoLoop_Agent_协同开发规格与接口总文档_v4.0.docx) | 唯一需要直接分发给全体开发者的排版任务书；当前工单见第 0.4 节 |
 | [开发与交接指南](DEVELOPMENT.md) | 分支、模块边界、公共合同、测试和文档维护 |
 | [需求追踪矩阵](requirements-traceability.md) | FR-01～FR-14 的当前状态、代码证据和退出条件 |
 | [生产就绪说明](PRODUCTION_READINESS.md) | 当前可以安全承诺的能力及不能宣称的边界 |
@@ -20,7 +20,7 @@
 | 模型与 RAG 接入合同 | [模型与 RAG 后续接入交接](model-rag-handoff.md) |
 | RAG 工程与验收细节 | [RAG 与检索功能开发指南](RAG_RETRIEVAL_DEVELOPMENT_GUIDE.md) |
 | 郭境濠 A+B 接手 | [模型冻结、接入与 AI 协作指南](developer_handoffs/guo-jinghao-ab-model-integration-guide.md)、[交付审计](developer_handoffs/guo-jinghao-ab-delivery-audit-2026-07-21.md) |
-| 五人当前进度与下一步 | [2026-07-23 团队集成状态](developer_handoffs/team-integration-status-2026-07-23.md) |
+| 五人集成审计快照 | [2026-07-23 团队集成状态](developer_handoffs/team-integration-status-2026-07-23.md)；当前开工工单统一见 v4.0 第 0.4 节 |
 | 姚承志 ASR 探索 | [FunASR Nano POC](experiments/funasr-nano-poc.md) |
 | API 合同 | [OpenAPI 快照](api/openapi-v1.json) |
 | 架构决策 | [ADR 目录](adr/) |
