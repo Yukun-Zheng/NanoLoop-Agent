@@ -1,7 +1,16 @@
 # Small-A controlled cloud validation
 
-This checklist completes the runtime evidence that cannot be produced in the local Windows
-environment. It does not perform Small-B calibration or scientific evaluation.
+> Status on 2026-07-23: repository intake is complete. The source checkpoint was strictly loaded,
+> and the checked-in runtime was re-exported with PyTorch 2.6.0, verified again with PyTorch 2.13.0,
+> and exercised through the real registry/snapshot/Gateway lifecycle on CPU. The public registry
+> now truthfully reports runtime `ready`. The exact artifact has also passed a minimal
+> Debian 12 Linux ARM64 load/forward check with `torch 2.6.0+cpu`; the checklist below remains for
+> the complete target-host Gateway/Analysis rerun. See the
+> [Small-A acceptance audit](model-assets-small-a-acceptance-2026-07-23.md). This checklist remains
+> the target-Linux reproduction procedure and does not represent Small-B scientific acceptance.
+
+This checklist reproduces the accepted repository runtime on the frozen target-Linux baseline.
+It does not re-export the model and does not perform Small-B calibration or scientific evaluation.
 
 ## Frozen environment
 
@@ -11,8 +20,8 @@ environment. It does not perform Small-B calibration or scientific evaluation.
 - torchvision: 0.21.0
 - Device for acceptance: CPU
 - Model ID: `unet-small-balanced-v1`
-- Expected checkpoint SHA-256:
-  `915911107c82c01ff7d37746f4fcce6db39d40659cfb93e059e14b18134ba008`
+- Expected repository TorchScript SHA-256:
+  `09d1818c72652179e2590897cf409f7691e18e5e1a0f55476f90f7369a03171d`
 - Expected image size: `2048 x 1536 px`
 
 PyTorch 2.6.0 and torchvision 0.21.0 are the lowest exact pair allowed by the current
@@ -26,19 +35,11 @@ Use a private filesystem unavailable to public web serving:
 
 ```bash
 export SMALL_ROOT=/srv/nanoloop-private/unet-small-balanced-v1
-export SMALL_SOURCE="$SMALL_ROOT/source"
-export SMALL_BUNDLE="$SMALL_ROOT/private-model-bundle"
 export SMALL_RECORD="$SMALL_ROOT/run-record"
-export SMALL_CHECKPOINT="$SMALL_SOURCE/best_unet_small.pth"
-export SMALL_TORCHSCRIPT="$SMALL_BUNDLE/weights/unet-small-balanced-v1.pt"
-export SMALL_REGISTRY="$SMALL_BUNDLE/registry.yaml"
+export SMALL_TORCHSCRIPT="$PWD/model_artifacts/weights/unet-small-balanced-v1.pt"
+export SMALL_REGISTRY="$PWD/model_artifacts/registry.yaml"
 export SMALL_IMAGE=/srv/nanoloop-private/authorized-images/SrNi-1.tif
 ```
-
-The corresponding Windows custody root is
-`C:\Users\22290\Desktop\AI4S\NanoLoop-ModelAssets\unet-small-balanced-v1`. Creating that directory
-or copying the checkpoint requires explicit operator authorization and is not performed by the
-repository changes.
 
 ## Environment and source record
 
@@ -46,10 +47,9 @@ Run from the checked-out NanoLoop-Agent repository:
 
 ```bash
 set -euo pipefail
-test "$(git branch --show-current)" = "feat/a-small-unet-v1"
 test -z "$(git status --porcelain)"
 git rev-parse HEAD
-git rev-parse main
+git merge-base --is-ancestor origin/main HEAD
 
 python3.11 -m venv .venv-small-a-cloud
 source .venv-small-a-cloud/bin/activate
@@ -61,10 +61,6 @@ python -m pip install -e ".[analysis,dev]"
 python -m pip check
 
 install -d -m 0750 \
-  "$SMALL_SOURCE" \
-  "$SMALL_BUNDLE/configs" \
-  "$SMALL_BUNDLE/model_cards" \
-  "$SMALL_BUNDLE/weights" \
   "$SMALL_RECORD"
 
 {
@@ -80,97 +76,28 @@ install -d -m 0750 \
 } > "$SMALL_RECORD/environment.txt"
 ```
 
-Upload `best_unet_small.pth` to `$SMALL_CHECKPOINT` through the approved private channel, then
-verify custody before any load:
+## Repository artifact and registry identity
+
+The deployment validation uses the exact checked-in runtime, not a newly exported candidate.
+Verify both the artifact and registry identity before any load:
 
 ```bash
-test -f "$SMALL_CHECKPOINT"
+test -f "$SMALL_TORCHSCRIPT"
 printf '%s  %s\n' \
-  '915911107c82c01ff7d37746f4fcce6db39d40659cfb93e059e14b18134ba008' \
-  "$SMALL_CHECKPOINT" | sha256sum --check -
+  '09d1818c72652179e2590897cf409f7691e18e5e1a0f55476f90f7369a03171d' \
+  "$SMALL_TORCHSCRIPT" | sha256sum --check -
+grep -F 'model_id: unet-small-balanced-v1' "$SMALL_REGISTRY"
+grep -F \
+  'weight_sha256: 09d1818c72652179e2590897cf409f7691e18e5e1a0f55476f90f7369a03171d' \
+  "$SMALL_REGISTRY"
+sha256sum "$SMALL_TORCHSCRIPT" > "$SMALL_RECORD/torchscript.sha256"
 ```
 
-## Strict load, export, reload, and repeatability
-
-The export command performs the 128-key/shape diagnosis, strict load, eager/TorchScript comparison,
-save/reload, exact repeated logits/probability inference, and both SHA calculations:
-
-```bash
-test ! -e "$SMALL_TORCHSCRIPT"
-python scripts/models/export_unet_small_torchscript.py \
-  --checkpoint "$SMALL_CHECKPOINT" \
-  --output "$SMALL_TORCHSCRIPT" \
-  --architecture-profile small_batchnorm \
-  --expected-checkpoint-sha256 \
-    915911107c82c01ff7d37746f4fcce6db39d40659cfb93e059e14b18134ba008 \
-  | tee "$SMALL_RECORD/export-report.json"
-
-test -s "$SMALL_TORCHSCRIPT"
-sha256sum "$SMALL_TORCHSCRIPT" | tee "$SMALL_RECORD/torchscript.sha256"
-```
-
-Do not copy a historical or expected TorchScript SHA into the registry. Use only the digest produced
-by the command above.
-
-## Candidate private ready bundle
-
-Copy only public text contracts from the exact validation commit:
-
-```bash
-cp model_artifacts/configs/unet-small-balanced-v1.yaml \
-  "$SMALL_BUNDLE/configs/unet-small-balanced-v1.yaml"
-cp model_artifacts/model_cards/unet-small-balanced-v1.md \
-  "$SMALL_BUNDLE/model_cards/unet-small-balanced-v1.md"
-
-export SMALL_TORCHSCRIPT_SHA
-SMALL_TORCHSCRIPT_SHA="$(sha256sum "$SMALL_TORCHSCRIPT" | awk '{print $1}')"
-```
-
-Create `$SMALL_REGISTRY` with the computed digest:
-
-```bash
-cat > "$SMALL_REGISTRY" <<YAML
-schema_version: "2.0"
-models:
-  - metadata:
-      model_id: unet-small-balanced-v1
-      family: unet
-      variant: small_particle
-      quality_tier: balanced
-      version: "1"
-      status: ready
-      supports_box_prompt: false
-      default_threshold: 0.30
-      preprocess_profile: sem-gray-unit-crop-bottom-130-v1
-      postprocess_profile: semantic-mask-v1
-      inference_invalid_bottom_px: 130
-      expected_input_width: 2048
-      expected_input_height: 1536
-      applicable_materials: []
-      metrics: {}
-      metric_context:
-        engineering_default_threshold: 0.30
-        threshold_comparison: gt
-        scientific_calibration_status: pending_small_b
-        cloud_validation_status: candidate
-      notes: Controlled Small-A cloud-validation candidate; not Small-B scientific acceptance.
-    adapter_path: app.inference.adapters.unet:UNetAdapter
-    weight_path: weights/unet-small-balanced-v1.pt
-    weight_sha256: ${SMALL_TORCHSCRIPT_SHA}
-    config_path: configs/unet-small-balanced-v1.yaml
-    model_card_path: model_cards/unet-small-balanced-v1.md
-    required_modules:
-      - torch
-YAML
-```
-
-Verify the generated registry:
-
-```bash
-chmod 0640 "$SMALL_REGISTRY"
-grep -F "weight_sha256: $SMALL_TORCHSCRIPT_SHA" "$SMALL_REGISTRY"
-test "$(grep -c 'status: ready' "$SMALL_REGISTRY")" -eq 1
-```
+The checkpoint identity, strict 128-key load, compatibility re-export and eager/TorchScript
+comparison are frozen in the
+[machine-readable delivery audit](../model_artifacts/evidence/unet-small-balanced-v1/delivery-audit-2026-07-23.json).
+Reproducing the export is a separate provenance exercise; it must not replace the checked-in
+runtime during deployment validation.
 
 ## Gateway lifecycle, full image, BOXES ROI, and determinism
 
@@ -248,8 +175,9 @@ cp docs/small-a-cloud-validation.md "$SMALL_RECORD/commands.txt"
 
 ## Finalization rule
 
-After every command passes, update the repository model card and registry metadata with the actual
-TorchScript SHA and summarized engineering results, copy the final text contracts into the private
-bundle, and rerun the registry/Gateway/smoke commands once more. Until that final rerun is recorded,
-all runtime results remain `pending cloud validation` and the public registry remains
-`unavailable`.
+Repository runtime acceptance is already recorded against TorchScript SHA-256
+`09d1818c72652179e2590897cf409f7691e18e5e1a0f55476f90f7369a03171d`. A target-Linux rerun must
+use that exact repository artifact and preserve its output manifest outside Git. A failed or
+different target deployment must be reported as a deployment-specific failure and must not mutate
+the recorded asset identity. Small-B scientific acceptance remains pending until an authorized
+independent test set, masks, split, calibrated settings and reproducible metrics are delivered.

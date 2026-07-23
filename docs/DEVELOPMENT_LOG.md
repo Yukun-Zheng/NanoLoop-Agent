@@ -549,3 +549,32 @@
   台面坐标，JSON/SQLite 含服务器路径。未提交原图、GT、概率、SQLite、重复权重/checkpoint、派生
   误差图或包内旧脚本；只提交不含私有二进制的审计事实。后续需补许可/custody、split、tolerance
   policy，并使用当前 bundle 在目标环境完成完整 Analysis 重跑。
+
+## 2026-07-23 — 接入 Small-A 真实运行权重
+
+- 输入资产：接收郭境濠的 `ModelAssets-small-a.zip`，包大小 24,964,343 字节、SHA-256
+  `b88da3904b7e03d20779088df24838d794e0cb29b17d75547ed4d0479182a5fe`。包内源 checkpoint
+  `best_unet_small.pth` 的 SHA-256 为
+  `915911107c82c01ff7d37746f4fcce6db39d40659cfb93e059e14b18134ba008`；使用
+  `weights_only=True` 安全读取后，128 个 tensor key 与仓库 `small_batchnorm` 架构严格匹配，
+  missing/unexpected/shape mismatch 均为空，3,355,667 个参数/状态元素全部有限。
+- 兼容性修复：交付 TorchScript `e31bd710...d6d28` 在 PyTorch 2.13.0 下与 eager 输出完全一致，
+  但在项目支持下限 PyTorch 2.6.0 下因序列化的
+  `aten::_upsample_lanczos2d_aa` 无法载入。使用当前仓库导出器和同一 checkpoint 在 PyTorch
+  2.6.0 CPU 重导出兼容制品，最终提交的 13,560,272 字节权重 SHA-256 为
+  `09d1818c72652179e2590897cf409f7691e18e5e1a0f55476f90f7369a03171d`。该制品在 2.6.0 与
+  2.13.0 均可加载；eager、原交付制品与兼容制品两两最大绝对误差均为 `0.0`。
+- Linux 制品检查：把最终权重只读挂载到一次性 Debian 12 Linux ARM64 容器，在 Python 3.12.13
+  与 `torch 2.6.0+cpu` 下再次核对仓库 SHA、载入并执行 `[1,1,256,256]` float32 forward；输出
+  全部有限，两次推理最大绝对差 `0.0`。该检查不包含完整目标主机 Gateway/Analysis 性能验收。
+- 工程验证：真实 registry → 内容寻址 snapshot → `InferenceGateway` → `UNetAdapter` 链路在
+  CPU 上完成全图两次确定性推理和 BOXES ROI；输出尺寸/有限性、底部 130 行清零、框外清零、
+  bundle 冻结、health 与显式 unload 均通过。使用的是确定性合成工程图，只证明接入合同，不是
+  模型准确率或材料科学证据。
+- 状态与边界：Small registry 从 `unavailable` 上调为运行 `ready`，与 Large 一起形成两个真实
+  U-Net 工程候选；Agglomerated U-Net、YOLO-Seg、SAM2 仍为 `unavailable`。交付未含授权 SEM/GT、
+  Small-B 测试与校准、像素/实例指标、目标 Linux 完整 Analysis 记录或独立许可/custody 台账，
+  因此 Small 科学验收继续为 pending，FR-06/FR-12 不上调为 `implemented`。
+- 公开仓库策略：只提交兼容运行权重和不含私有路径/图像的审计事实，不提交 ZIP、checkpoint 或
+  重复脚本。项目负责人已明确要求把该模型接入并推送本仓库；该要求不推定第三方再分发、商业使用
+  或再许可权利。

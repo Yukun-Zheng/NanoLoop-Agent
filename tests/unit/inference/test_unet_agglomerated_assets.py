@@ -182,5 +182,5 @@ def test_existing_small_and_large_configs_do_not_enable_agglomerated_behavior() 
         assert "fusion_weight_floor" not in config
 
     registry = _registry_models()
-    assert registry["unet-small-balanced-v1"]["metadata"]["status"] == "unavailable"
+    assert registry["unet-small-balanced-v1"]["metadata"]["status"] == "ready"
     assert registry["unet-large-optimized-v1"]["metadata"]["status"] == "ready"

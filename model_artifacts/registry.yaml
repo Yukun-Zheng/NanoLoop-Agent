@@ -6,7 +6,7 @@ models:
       variant: small_particle
       quality_tier: balanced
       version: "1"
-      status: unavailable
+      status: ready
       supports_box_prompt: false
       default_threshold: 0.30
       preprocess_profile: sem-gray-unit-crop-bottom-130-v1
@@ -20,12 +20,23 @@ models:
         engineering_default_threshold: 0.30
         threshold_comparison: gt
         scientific_calibration_status: pending_small_b
-        cloud_validation_status: pending
-      notes: Small-particle U-Net engineering contract; private TorchScript cloud validation is pending.
-      health_error: Private TorchScript is not bundled with this repository.
+        runtime_asset_delivered: true
+        runtime_asset_verified: true
+        runtime_verification_device: cpu
+        compatible_torch_minimum_verified: "2.6.0"
+        current_torch_verified: "2.13.0"
+        target_linux_artifact_load_verified: true
+        target_linux_torch_verified: "2.6.0+cpu"
+        checkpoint_strict_load_verified: true
+        eager_torchscript_max_abs_diff: 0.0
+        deterministic_repeat_max_abs_diff: 0.0
+        evidence_bundle_delivered: false
+        scientific_acceptance_status: pending_small_b
+        redistribution_permission_status: project_owner_requested_repository_integration
+      notes: Small-particle U-Net runtime bundle is verified; threshold 0.30 remains an engineering default and Small-B scientific acceptance is pending.
     adapter_path: app.inference.adapters.unet:UNetAdapter
     weight_path: weights/unet-small-balanced-v1.pt
-    weight_sha256: null
+    weight_sha256: 09d1818c72652179e2590897cf409f7691e18e5e1a0f55476f90f7369a03171d
     config_path: configs/unet-small-balanced-v1.yaml
     model_card_path: model_cards/unet-small-balanced-v1.md
     required_modules:
