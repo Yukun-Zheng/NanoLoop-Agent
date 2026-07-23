@@ -53,6 +53,7 @@ class Settings(BaseSettings):
         le=1_000_000,
     )
     embedding_index_batch_size: int = Field(default=128, ge=1, le=4_096)
+    faiss_thread_count: int = Field(default=1, ge=1, le=64)
     data_distribution_evidence_limit: int = Field(default=200, ge=10, le=1_000)
     llm_provider: Literal["openai_compatible", "extractive"] = "extractive"
     llm_base_url: str | None = None

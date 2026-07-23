@@ -1,5 +1,8 @@
 """Tests for deterministic query classification and clarification."""
 
+import json
+from pathlib import Path
+
 import pytest
 
 from app.agent.router import QueryRouter
@@ -47,3 +50,34 @@ def test_unknown_intent_requests_clarification_without_guessing() -> None:
     assert decision.query_type == QueryType.AUTO
     assert decision.needs_clarification
     assert decision.confidence == 0
+
+
+def test_curated_questions_route_from_auto_without_using_expected_type_as_input() -> None:
+    questions_path = (
+        Path(__file__).resolve().parents[3] / "demo_data" / "rag" / "questions.jsonl"
+    )
+    records = [
+        json.loads(line)
+        for line in questions_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    observed: dict[str, QueryType] = {}
+    for record in records:
+        raw_context = record.get("material_context")
+        context = MaterialContext.model_validate(raw_context) if raw_context else None
+        observed[record["query_id"]] = QueryRouter().classify(
+            record["question"],
+            material_context=context,
+        ).query_type
+
+    assert len(observed) == 30
+    assert {
+        query_id: query_type.value
+        for query_id, query_type in observed.items()
+        if query_type.value
+        != next(
+            record["query_type"]
+            for record in records
+            if record["query_id"] == query_id
+        )
+    } == {}

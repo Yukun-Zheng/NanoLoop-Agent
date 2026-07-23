@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import sys
@@ -29,6 +30,9 @@ from scripts.validate_rag_assets import (
 )
 
 _RUN_LABEL = re.compile(r"^[a-z0-9][a-z0-9_-]{1,30}$")
+_FAISS_GENERATION = re.compile(r"\bgeneration=([0-9a-f]{32})\b")
+_CITATION_ID = re.compile(r"C[1-9]\d*")
+_CITATION_MARKER = re.compile(r"\[(C\d+)\]")
 _LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
 
 
@@ -78,11 +82,11 @@ def _response_payload(response: httpx.Response, *, operation: str) -> tuple[str,
     request_id = payload.get("request_id")
     status = payload.get("status")
     data = payload.get("data")
-    error = payload.get("error")
+    envelope_error = payload.get("error")
     if not isinstance(request_id, str) or not request_id:
         raise AcceptanceRunError(f"{operation} response is missing request_id")
     expected_status = "accepted" if response.status_code == 202 else "success"
-    if status != expected_status or error is not None:
+    if status != expected_status or envelope_error is not None:
         raise AcceptanceRunError(
             f"{operation} returned an invalid success envelope: "
             f"expected status={expected_status!r} and error=null"
@@ -96,6 +100,13 @@ def fetch_health(client: HttpClient, api_base: str) -> dict[str, Any]:
     response = client.get(f"{api_base}/api/v1/health", timeout=30.0)
     request_id, data = _response_payload(response, operation="health")
     return {"request_id": request_id, "data": data}
+
+
+def faiss_generation(health: Mapping[str, Any]) -> str | None:
+    component = health.get("rag_index")
+    detail = component.get("detail") if isinstance(component, Mapping) else None
+    match = _FAISS_GENERATION.search(str(detail or ""))
+    return match.group(1) if match else None
 
 
 def _material_aliases(row: Mapping[str, str]) -> list[str]:
@@ -301,12 +312,45 @@ def _citation_records(
     records: list[dict[str, Any]] = []
     asset_ids: list[str] = []
     unmapped: list[str] = []
+    citation_ids: set[str] = set()
     for citation in citations:
         if not isinstance(citation, dict):
             raise AcceptanceRunError("query response citation must be an object")
+        citation_id = citation.get("citation_id")
+        if not isinstance(citation_id, str) or not _CITATION_ID.fullmatch(citation_id):
+            raise AcceptanceRunError(
+                "query response citation_id must match C[1-9][0-9]*"
+            )
+        if citation_id in citation_ids:
+            raise AcceptanceRunError(
+                f"query response repeats citation_id: {citation_id}"
+            )
+        citation_ids.add(citation_id)
         doc_id = citation.get("doc_id")
         if not isinstance(doc_id, str) or not doc_id:
             raise AcceptanceRunError("query response citation is missing doc_id")
+        page = citation.get("page")
+        if not isinstance(page, int) or isinstance(page, bool) or page < 1:
+            raise AcceptanceRunError(
+                f"query response citation {citation_id} requires page >= 1"
+            )
+        for field in ("chunk_id", "excerpt", "citation_text"):
+            field_value = citation.get(field)
+            if not isinstance(field_value, str) or not field_value.strip():
+                raise AcceptanceRunError(
+                    f"query response citation {citation_id} is missing {field}"
+                )
+        score = citation.get("retrieval_score")
+        if (
+            not isinstance(score, (int, float))
+            or isinstance(score, bool)
+            or not math.isfinite(float(score))
+            or not 0 <= float(score) <= 1
+        ):
+            raise AcceptanceRunError(
+                f"query response citation {citation_id} retrieval_score "
+                "must be finite and in [0, 1]"
+            )
         asset_id = doc_to_asset.get(doc_id)
         if asset_id is None:
             unmapped.append(doc_id)
@@ -314,17 +358,82 @@ def _citation_records(
             asset_ids.append(asset_id)
         records.append(
             {
-                "citation_id": citation.get("citation_id"),
+                "citation_id": citation_id,
                 "asset_id": asset_id,
                 "doc_id": doc_id,
-                "page": citation.get("page"),
-                "chunk_id": citation.get("chunk_id"),
-                "excerpt": citation.get("excerpt"),
-                "retrieval_score": citation.get("retrieval_score"),
-                "citation_text": citation.get("citation_text"),
+                "page": page,
+                "chunk_id": citation["chunk_id"],
+                "excerpt": citation["excerpt"],
+                "retrieval_score": float(score),
+                "citation_text": citation["citation_text"],
             }
         )
     return records, asset_ids, unmapped
+
+
+def _citation_markers_match(answer: str, returned_ids: set[str]) -> bool:
+    markers = _CITATION_MARKER.findall(answer)
+    return (
+        all(_CITATION_ID.fullmatch(marker) for marker in markers)
+        and set(markers) == returned_ids
+    )
+
+
+def _is_finite_measure(value: object) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+    )
+
+
+def _mixed_evidence_is_valid(evidence: object) -> bool:
+    if not isinstance(evidence, list) or not evidence:
+        return False
+    for item in evidence:
+        if not isinstance(item, dict):
+            return False
+        tool_name = item.get("tool_name")
+        source_run_ids = item.get("source_run_ids")
+        rows = item.get("rows")
+        aggregates = item.get("aggregates")
+        units = item.get("units")
+        if not isinstance(tool_name, str) or not tool_name.strip():
+            return False
+        if (
+            not isinstance(source_run_ids, list)
+            or not source_run_ids
+            or any(not isinstance(run_id, str) or not run_id for run_id in source_run_ids)
+            or len(set(source_run_ids)) != len(source_run_ids)
+        ):
+            return False
+        if (
+            not isinstance(rows, list)
+            or any(not isinstance(row, dict) for row in rows)
+            or not isinstance(aggregates, dict)
+            or (not rows and not aggregates)
+        ):
+            return False
+        if (
+            not isinstance(units, dict)
+            or not units
+            or any(
+                not isinstance(field, str)
+                or not field
+                or not isinstance(unit, str)
+                or not unit
+                for field, unit in units.items()
+            )
+        ):
+            return False
+        has_unit_bound_measure = any(
+            _is_finite_measure(aggregates.get(field))
+            or any(_is_finite_measure(row.get(field)) for row in rows)
+            for field in units
+        )
+        if not has_unit_bound_measure:
+            return False
+    return True
 
 
 def run_queries(
@@ -346,7 +455,8 @@ def run_queries(
             headers=dict(headers),
             json={
                 "question": question["question"],
-                "query_type": question["query_type"],
+                # Route labels are expectations, not hints to the implementation.
+                "query_type": "auto",
                 "material_context": question["material_context"],
             },
             timeout=120.0,
@@ -360,6 +470,18 @@ def run_queries(
         forbidden = set(cast(Sequence[str], question["must_not_return_asset_ids"]))
         expected_outcome = question["expected_outcome"]
         observed_outcome = data.get("outcome_code")
+        expected_pages = set(cast(Sequence[int], question["relevant_pages"]))
+        observed_pages = {
+            citation["page"]
+            for citation in citations
+            if citation.get("asset_id") in relevant
+            and isinstance(citation.get("page"), int)
+        }
+        answer = str(data.get("answer") or "")
+        returned_ids = {str(citation["citation_id"]) for citation in citations}
+        evidence = data.get("data_evidence")
+        mixed_ok = question["query_type"] == "mixed" and expected_outcome == "OK"
+        limitations = data.get("limitations")
         checks = {
             "query_type_matches": data.get("query_type") == question["query_type"],
             "outcome_matches": observed_outcome == expected_outcome,
@@ -368,8 +490,30 @@ def run_queries(
             ),
             "forbidden_asset_absent": not bool(observed & forbidden),
             "no_unmapped_citation": not unmapped,
+            "ok_has_citation": bool(citations) if expected_outcome == "OK" else True,
+            "citation_markers_match": _citation_markers_match(answer, returned_ids),
+            "relevant_page_retrieved": (
+                bool(observed_pages & expected_pages) if expected_outcome == "OK" else True
+            ),
             "insufficient_has_zero_citations": (
                 not citations if expected_outcome == "INSUFFICIENT_EVIDENCE" else True
+            ),
+            "insufficient_is_low_confidence": (
+                data.get("confidence") == "low"
+                if expected_outcome == "INSUFFICIENT_EVIDENCE"
+                else True
+            ),
+            "mixed_has_numeric_evidence": (
+                _mixed_evidence_is_valid(evidence) if mixed_ok else True
+            ),
+            "mixed_has_causal_boundary": (
+                isinstance(limitations, list)
+                and any(
+                    "不能直接证明当前样品的因果机理" in str(item)
+                    for item in limitations
+                )
+                if mixed_ok
+                else True
             ),
         }
         results.append(
@@ -384,8 +528,9 @@ def run_queries(
                 "forbidden_asset_ids": sorted(forbidden),
                 "unmapped_doc_ids": unmapped,
                 "citations": citations,
-                "answer": data.get("answer"),
-                "limitations": data.get("limitations", []),
+                "answer": answer,
+                "data_evidence": evidence if isinstance(evidence, list) else [],
+                "limitations": limitations if isinstance(limitations, list) else [],
                 "automated_checks": checks,
                 "automated_checks_passed": all(checks.values()),
                 "human_review": {
@@ -423,6 +568,13 @@ def main(argv: list[str] | None = None, *, client: HttpClient | None = None) -> 
     parser.add_argument("--skip-ingest", action="store_true")
     parser.add_argument("--mapping-file", type=Path)
     parser.add_argument(
+        "--expect-generation",
+        help=(
+            "Previously recorded 32-hex FAISS generation. Required with --skip-ingest "
+            "to prove the same published index was reused."
+        ),
+    )
+    parser.add_argument(
         "--expect-rag-health", choices=("healthy", "degraded", "unavailable"), required=True
     )
     parser.add_argument("--allow-insecure-remote-http", action="store_true")
@@ -432,6 +584,10 @@ def main(argv: list[str] | None = None, *, client: HttpClient | None = None) -> 
         parser.error("--run-label must match [a-z0-9][a-z0-9_-]{1,30}")
     if args.skip_ingest != (args.mapping_file is not None):
         parser.error("--skip-ingest and --mapping-file must be supplied together")
+    if args.skip_ingest and not args.expect_generation:
+        parser.error("--skip-ingest requires --expect-generation from the pre-restart run")
+    if args.expect_generation and not re.fullmatch(r"[0-9a-f]{32}", args.expect_generation):
+        parser.error("--expect-generation must be a 32-character lowercase hex generation")
     try:
         package = validate_acceptance_package(
             args.package,
@@ -456,6 +612,16 @@ def main(argv: list[str] | None = None, *, client: HttpClient | None = None) -> 
             raise AcceptanceRunError(
                 "RAG health mismatch: "
                 f"expected {args.expect_rag_health}, observed {observed_health}"
+            )
+        generation_before = faiss_generation(health_before["data"])
+        if args.expect_rag_health == "healthy" and generation_before is None:
+            raise AcceptanceRunError(
+                "healthy RAG health does not expose a validated FAISS generation"
+            )
+        if args.expect_generation and generation_before != args.expect_generation:
+            raise AcceptanceRunError(
+                "FAISS generation mismatch before queries: "
+                f"expected {args.expect_generation}, observed {generation_before}"
             )
         evaluation_dir = package.root / "evaluation"
         if args.skip_ingest:
@@ -493,6 +659,12 @@ def main(argv: list[str] | None = None, *, client: HttpClient | None = None) -> 
                 "RAG health changed during the run: "
                 f"expected {args.expect_rag_health}, observed {observed_health_after}"
             )
+        generation_after = faiss_generation(health_after["data"])
+        if generation_after != generation_before:
+            raise AcceptanceRunError(
+                "FAISS generation changed during the run: "
+                f"before {generation_before}, after {generation_after}"
+            )
         result_path = evaluation_dir / f"query-results.{args.run_label}.jsonl"
         _write_jsonl(result_path, query_results)
         failures = [
@@ -504,6 +676,9 @@ def main(argv: list[str] | None = None, *, client: HttpClient | None = None) -> 
             "run_label": args.run_label,
             "health_before": health_before,
             "health_after": health_after,
+            "faiss_generation_before": generation_before,
+            "faiss_generation_after": generation_after,
+            "expected_reused_generation": args.expect_generation,
             "accepted_assets": sorted(asset_to_doc),
             "verified_runtime_documents": verified_runtime_documents,
             "question_count": len(query_results),

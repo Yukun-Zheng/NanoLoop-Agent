@@ -1,4 +1,12 @@
-"""Deterministic first-pass classifier for data, knowledge, and mixed questions."""
+"""Deterministic first-pass classifier for data, knowledge, and mixed questions.
+
+Metric words such as ``密度`` or ``分布`` occur in both scientific-literature
+questions and requests about the caller's measurements.  Treating those words as
+standalone data intent turns ordinary knowledge questions into mixed queries.  A
+data route therefore requires either an experimental-scope anchor (for example
+``我们这张图``), an explicit quantitative operation, or an overview/review
+command.
+"""
 
 from __future__ import annotations
 
@@ -7,19 +15,64 @@ from dataclasses import dataclass
 from app.contracts.enums import QueryType
 from app.contracts.queries import MaterialContext
 
-_DATA_SIGNALS = (
-    "数量",
+_DATA_METRIC_SIGNALS = (
+    "颗粒数密度",
+    "颗粒密度",
+    "number density",
     "颗粒数",
+    "particle count",
+    "平均粒径",
+    "mean diameter",
     "粒径",
-    "密度",
     "覆盖率",
+    "coverage",
     "周长",
+    "数量",
+    "密度",
+    "分布",
+)
+_DATA_SCOPE_SIGNALS = (
+    "我们这张图",
+    "这张图",
+    "当前样品",
+    "这个样品",
+    "我们的",
+    "我们这批",
+    "我们",
+    "当前",
+    "本次",
     "哪组",
     "哪张",
+    "哪个样品",
+    "任务",
+    "结果",
+    "数据",
+    "模型结果",
+    "our ",
+    "current ",
+    "this image",
+    "this sample",
+    "which image",
+    "which sample",
+    "which group",
+    "job ",
+    "run",
+)
+_DATA_OPERATION_SIGNALS = (
+    "多少",
+    "是多少",
     "最高",
     "最低",
     "排序",
-    "分布",
+    "比较",
+    "差异",
+    "how many",
+    "highest",
+    "lowest",
+    "rank",
+    "compare",
+)
+_DATA_COMMAND_SIGNALS = (
     "当前结果",
     "当前数据",
     "任务概览",
@@ -29,8 +82,10 @@ _DATA_SIGNALS = (
     "我们的结果",
     "我们这批",
     "复核",
+    "质量门控",
     "模型结果",
-    "run",
+    "quality gate",
+    "review",
 )
 _KNOWLEDGE_SIGNALS = (
     "特性",
@@ -50,13 +105,31 @@ _KNOWLEDGE_SIGNALS = (
     "粗化",
     "团聚",
     "应变",
+    "缺位",
+    "高温",
+    "处理时间",
     "已有研究",
     "文献",
+    "知识库",
     "报道",
     "为什么",
     "研究背景",
+    "材料因素",
+    "完整化学式",
+    "化学式",
+    "样品标签",
+    "标签",
+    "谨慎结论",
+    "形貌指标",
+    "掩码",
+    "图像统计",
+    "替代",
+    "电化学性能",
+    "报告",
+    "一致",
     "known",
     "literature",
+    "reported",
     "application",
     "property",
     "mechanism",
@@ -86,7 +159,17 @@ class QueryRouter:
         material_context: MaterialContext | None = None,
     ) -> RouteDecision:
         normalized = question.casefold().strip()
-        data = tuple(signal for signal in _DATA_SIGNALS if signal in normalized)
+        metrics = tuple(signal for signal in _DATA_METRIC_SIGNALS if signal in normalized)
+        scope = tuple(signal for signal in _DATA_SCOPE_SIGNALS if signal in normalized)
+        operations = tuple(
+            signal for signal in _DATA_OPERATION_SIGNALS if signal in normalized
+        )
+        commands = tuple(signal for signal in _DATA_COMMAND_SIGNALS if signal in normalized)
+        data = (
+            tuple(dict.fromkeys((*metrics, *scope, *operations, *commands)))
+            if commands or (metrics and (scope or operations))
+            else ()
+        )
         knowledge = tuple(signal for signal in _KNOWLEDGE_SIGNALS if signal in normalized)
         contextual = self.requires_material_context(question)
         has_material = material_context is not None and bool(

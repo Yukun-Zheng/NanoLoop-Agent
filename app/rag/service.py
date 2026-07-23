@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Literal
 
@@ -15,7 +16,10 @@ from app.rag.providers import (
     CitationContext,
     CitationValidationError,
     ExtractiveAnswerProvider,
+    is_pure_insufficient_answer,
+    validate_provider_answer,
 )
+from app.rag.query_concepts import CONCEPT_EXPANSIONS, cjk_expansions
 from app.rag.retrieval import RetrievalService
 
 _UNGROUNDED_INSTRUCTION_MARKERS = (
@@ -31,6 +35,45 @@ _UNGROUNDED_INSTRUCTION_MARKERS = (
     "ignore the literature",
     "ignore citations",
 )
+_ASCII_QUERY_TERM = re.compile(r"[a-z][a-z0-9_.+-]*", flags=re.IGNORECASE)
+_HAN_QUERY_SEQUENCE = re.compile(r"[\u3400-\u9fff]+")
+_ENGLISH_RETRIEVAL_STOP_TERMS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "are",
+        "availability",
+        "available",
+        "can",
+        "could",
+        "did",
+        "do",
+        "does",
+        "for",
+        "how",
+        "in",
+        "is",
+        "may",
+        "might",
+        "of",
+        "on",
+        "or",
+        "should",
+        "the",
+        "to",
+        "was",
+        "were",
+        "what",
+        "whether",
+        "which",
+        "why",
+        "will",
+        "with",
+        "would",
+    }
+)
+_ENGLISH_RETRIEVAL_PRESERVE_TERMS = frozenset({"evidence", "proof"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,7 +119,13 @@ class KnowledgeService:
                     f"fallback={fallback.status}"
                 ),
             )
-        return HealthComponent(status="healthy", detail="retrieval and answer provider available")
+        return HealthComponent(
+            status="healthy",
+            detail=(
+                f"retrieval={retrieval.detail or retrieval.status}; "
+                f"provider={provider.detail or provider.status}"
+            ),
+        )
 
     def answer(
         self,
@@ -96,7 +145,10 @@ class KnowledgeService:
 
         aliases = _material_aliases(material_context)
         report = self.retrieval.retrieve_with_report(
-            RetrievalRequest(query=question, material_aliases=aliases)
+            RetrievalRequest(
+                query=_expanded_retrieval_query(question),
+                material_aliases=aliases,
+            )
         )
         base_limitations = list(report.warnings)
         base_limitations.append("知识库仅包含团队已导入文档，不代表完整文献综述")
@@ -116,6 +168,7 @@ class KnowledgeService:
             CitationContext(citation_id=f"C{index}", chunk=chunk)
             for index, chunk in enumerate(report.chunks, start=1)
         )
+        valid_citation_ids = {context.citation_id for context in contexts}
         provider = self.provider
         provider_fallback = False
         if provider.health().status != "healthy":
@@ -127,6 +180,7 @@ class KnowledgeService:
                 contexts=contexts,
                 material_context=material_context,
             )
+            validate_provider_answer(generated, valid_citation_ids)
         except (AnswerProviderError, CitationValidationError) as error:
             if provider is self.fallback_provider:
                 return KnowledgeAnswer(
@@ -139,12 +193,42 @@ class KnowledgeService:
                     outcome_code="INSUFFICIENT_EVIDENCE",
                     material_context=material_context,
                 )
-            generated = self.fallback_provider.generate(
-                question=question,
-                contexts=contexts,
+            try:
+                generated = self.fallback_provider.generate(
+                    question=question,
+                    contexts=contexts,
+                    material_context=material_context,
+                )
+                validate_provider_answer(generated, valid_citation_ids)
+            except (AnswerProviderError, CitationValidationError) as fallback_error:
+                return KnowledgeAnswer(
+                    answer="知识库证据已检索，但回答提供器未能产生可验证引用。",
+                    citations=(),
+                    confidence="low",
+                    limitations=tuple(
+                        dict.fromkeys(
+                            [
+                                *base_limitations,
+                                f"answer provider failure: {error}",
+                                f"fallback answer provider failure: {fallback_error}",
+                            ]
+                        )
+                    ),
+                    outcome_code="INSUFFICIENT_EVIDENCE",
+                    material_context=material_context,
+                )
+            provider_fallback = True
+
+        limitations = [*base_limitations, *generated.limitations]
+        if is_pure_insufficient_answer(generated):
+            return KnowledgeAnswer(
+                answer=generated.answer,
+                citations=(),
+                confidence="low",
+                limitations=tuple(dict.fromkeys(limitations)),
+                outcome_code="INSUFFICIENT_EVIDENCE",
                 material_context=material_context,
             )
-            provider_fallback = True
 
         used_ids = set(generated.used_citation_ids)
         citations = tuple(
@@ -152,7 +236,19 @@ class KnowledgeService:
             for context in contexts
             if context.citation_id in used_ids
         )
-        limitations = [*base_limitations, *generated.limitations]
+        if not citations:
+            return KnowledgeAnswer(
+                answer="知识库证据已检索，但回答没有可验证的本次检索引用。",
+                citations=(),
+                confidence="low",
+                limitations=tuple(
+                    dict.fromkeys(
+                        [*limitations, "回答提供器未返回可用的本次检索 citation"]
+                    )
+                ),
+                outcome_code="INSUFFICIENT_EVIDENCE",
+                material_context=material_context,
+            )
         if provider_fallback:
             limitations.append("生成式回答不可用，已降级为离线引用摘录")
         return KnowledgeAnswer(
@@ -168,6 +264,26 @@ class KnowledgeService:
 def _requests_ungrounded_answer(question: str) -> bool:
     normalized = " ".join(question.casefold().split())
     return any(marker in normalized for marker in _UNGROUNDED_INSTRUCTION_MARKERS)
+
+
+def _expanded_retrieval_query(question: str) -> str:
+    ascii_terms = _ASCII_QUERY_TERM.findall(question.casefold())
+    expansions = list(cjk_expansions(ascii_terms))
+    if not expansions:
+        return question
+    retained_ascii = [
+        term
+        for term in ascii_terms
+        if term not in _ENGLISH_RETRIEVAL_STOP_TERMS
+        and (
+            term not in CONCEPT_EXPANSIONS
+            or term in _ENGLISH_RETRIEVAL_PRESERVE_TERMS
+        )
+    ]
+    han_sequences = _HAN_QUERY_SEQUENCE.findall(question)
+    return " ".join(
+        dict.fromkeys((*han_sequences, *retained_ascii, *expansions))
+    )
 
 
 def _material_aliases(context: MaterialContext | None) -> list[str]:

@@ -101,13 +101,171 @@ def test_sqlite_fts_health_search_and_chunk_lookup(tmp_path: Path) -> None:
     assert store.get_many(["chunk_1"])["chunk_1"].title == "催化研究"
 
 
+def test_sqlite_keyword_search_falls_back_for_unsegmented_chinese(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "knowledge.db"
+    connection = _knowledge_database(database)
+    _insert_chunk(
+        connection,
+        chunk_id="chunk_relevant",
+        doc_id="doc_relevant",
+        title="析出稳定性",
+        text="析出颗粒嵌入晶格形成锚定界面，因此可能具有更好的抗团聚稳定性。",
+        tags=["钙钛矿氧化物"],
+    )
+    _insert_chunk(
+        connection,
+        chunk_id="chunk_other",
+        doc_id="doc_other",
+        title="其他主题",
+        text="氧化物样品需要记录烧结温度与保温时间。",
+        tags=["钙钛矿氧化物"],
+    )
+    connection.close()
+
+    hits = SQLiteFTS5KeywordStore(database).search(
+        "析出颗粒与外部沉积颗粒相比有什么潜在优势？",
+        limit=5,
+    )
+
+    assert hits
+    assert hits[0].chunk.chunk_id == "chunk_relevant"
+
+
+def test_sqlite_keyword_search_keeps_cjk_ranking_when_ascii_fts_already_matches(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "knowledge.db"
+    connection = _knowledge_database(database)
+    _insert_chunk(
+        connection,
+        chunk_id="chunk_broad_ascii_match",
+        doc_id="doc_broad",
+        title="SEM 通用说明",
+        text="SEM 图像需要保存原始文件。",
+        tags=["钙钛矿氧化物"],
+    )
+    _insert_chunk(
+        connection,
+        chunk_id="chunk_relevant",
+        doc_id="doc_relevant",
+        title="应重点统计的图像指标",
+        text="颗粒形貌指标包括单位面积数密度、平均粒径和粒径分布。",
+        tags=["钙钛矿氧化物"],
+    )
+    connection.close()
+
+    hits = SQLiteFTS5KeywordStore(database).search(
+        "应该从 SEM 掩码计算哪些颗粒形貌指标？",
+        limit=5,
+    )
+
+    assert [hit.chunk.chunk_id for hit in hits[:2]] == [
+        "chunk_relevant",
+        "chunk_broad_ascii_match",
+    ]
+
+
+def test_sqlite_cjk_scoring_happens_before_limit_not_chunk_id_order(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "knowledge.db"
+    connection = _knowledge_database(database)
+    for index in range(8):
+        _insert_chunk(
+            connection,
+            chunk_id=f"a_weak_{index}",
+            doc_id=f"doc_weak_{index}",
+            title="一般颗粒说明",
+            text="颗粒需要结合实验上下文解释。",
+            tags=["钙钛矿氧化物"],
+        )
+    _insert_chunk(
+        connection,
+        chunk_id="z_exact",
+        doc_id="doc_exact",
+        title="颗粒形貌指标",
+        text="颗粒形貌指标包括单位面积数密度、平均粒径和粒径分布。",
+        tags=["钙钛矿氧化物"],
+    )
+    connection.close()
+
+    hits = SQLiteFTS5KeywordStore(database).search(
+        "颗粒形貌指标",
+        limit=1,
+    )
+
+    assert [hit.chunk.chunk_id for hit in hits] == ["z_exact"]
+
+
+def test_sqlite_mixed_query_preserves_specific_ascii_fts_match(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "knowledge.db"
+    connection = _knowledge_database(database)
+    _insert_chunk(
+        connection,
+        chunk_id="chunk_generic_chinese",
+        doc_id="doc_generic",
+        title="材料性质",
+        text="材料性质需要结合实验条件解释。",
+        tags=["氧化物"],
+    )
+    _insert_chunk(
+        connection,
+        chunk_id="chunk_lani",
+        doc_id="doc_lani",
+        title="LaNi",
+        text="LaNi 是项目样品标签。",
+        tags=["LaNi"],
+    )
+    connection.close()
+
+    hits = SQLiteFTS5KeywordStore(database).search(
+        "LaNi 材料性质",
+        limit=1,
+    )
+
+    assert [hit.chunk.chunk_id for hit in hits] == ["chunk_lani"]
+
+
+def test_sqlite_fts_health_detects_ready_chunk_parity_mismatch(tmp_path: Path) -> None:
+    database = tmp_path / "knowledge.db"
+    connection = _knowledge_database(database)
+    connection.execute(
+        """
+        INSERT INTO knowledge_documents(
+            doc_id, title, source_type, citation_text, status
+        ) VALUES ('doc_1', 'title', 'paper', 'citation', 'ready')
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO knowledge_chunks(
+            chunk_id, doc_id, page_start, page_end, section_title, text,
+            material_tags_json
+        ) VALUES ('chunk_1', 'doc_1', 1, 1, 'section', '未索引文本', '[]')
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    health = SQLiteFTS5KeywordStore(database).health()
+
+    assert health.status == "degraded"
+    assert "parity mismatch" in (health.detail or "")
+
+
 def test_sqlite_fts_reports_empty_and_missing_indexes(tmp_path: Path) -> None:
     empty_database = tmp_path / "empty.db"
     connection = _knowledge_database(empty_database)
     connection.close()
 
     assert SQLiteFTS5KeywordStore(empty_database).health().status == "degraded"
-    assert SQLiteFTS5KeywordStore(tmp_path / "missing.db").health().status == "unavailable"
+    missing = tmp_path / "missing.db"
+    assert SQLiteFTS5KeywordStore(missing).health().status == "unavailable"
+    assert not missing.exists()
 
 
 def test_sqlite_fts_excludes_disabled_documents_from_all_retrieval_paths(
@@ -191,6 +349,29 @@ def test_hybrid_rrf_fuses_ranks_and_drops_below_threshold() -> None:
 
     assert [chunk.chunk_id for chunk in chunks] == ["c2"]
     assert chunks[0].retrieval_score > 0.9
+
+
+def test_vector_only_retrieval_applies_raw_cosine_threshold_before_rrf() -> None:
+    chunk = _chunk("weak", tags=[])
+    store = FakeKeywordStore([])
+    embedding = CallableEmbeddingProvider(
+        lambda texts: [[1.0, 0.0] for _ in texts],
+        model_fingerprint="a" * 64,
+    )
+    vectors = InMemoryVectorStore({"weak": [0.001, 1.0]})
+    retrieval = RetrievalService(
+        store,
+        embedding_provider=embedding,
+        vector_store=vectors,
+        chunk_source=FakeKeywordStore([chunk]),
+    )
+
+    report = retrieval.retrieve_with_report(
+        RetrievalRequest(query="unrelated", min_score=0.99)
+    )
+
+    assert report.chunks == ()
+    assert any("minimum cosine similarity" in warning for warning in report.warnings)
 
 
 def test_material_filter_never_falls_back_without_a_matching_tag() -> None:

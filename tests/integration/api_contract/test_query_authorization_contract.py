@@ -334,6 +334,56 @@ def test_principal_knowledge_paths_fail_closed_before_retrieval_or_audit(
     _assert_no_provider_calls(harness)
 
 
+@pytest.mark.parametrize(
+    ("method", "path", "kwargs"),
+    [
+        ("get", "/api/v1/knowledge/documents", {}),
+        (
+            "patch",
+            "/api/v1/knowledge/documents/doc_global",
+            {"json": {"enabled": False}},
+        ),
+        ("post", "/api/v1/knowledge/reindex", {"json": {"force": False}}),
+        (
+            "post",
+            "/api/v1/knowledge/documents",
+            {
+                "files": {"file": ("note.md", b"global evidence", "text/markdown")},
+                "data": {
+                    "metadata_json": json.dumps(
+                        {
+                            "title": "global note",
+                            "source_type": "material_note",
+                            "license_note": "test",
+                            "allowed_for_demo": False,
+                        }
+                    )
+                },
+            },
+        ),
+    ],
+)
+def test_principal_knowledge_management_fails_closed(
+    query_authorization_harness: QueryAuthorizationHarness,
+    method: str,
+    path: str,
+    kwargs: dict[str, object],
+) -> None:
+    harness = query_authorization_harness
+
+    response = getattr(harness.client, method)(
+        path,
+        headers=_headers(harness, "admin"),
+        **kwargs,
+    )
+
+    assert (response.status_code, response.json()["error"]["code"]) == (
+        503,
+        "SERVICE_UNAVAILABLE",
+    )
+    assert response.json()["error"]["details"] == {"component": "knowledge_tenant_scope"}
+
+
 def test_successful_query_performs_one_identity_join(
     query_authorization_harness: QueryAuthorizationHarness,
 ) -> None:

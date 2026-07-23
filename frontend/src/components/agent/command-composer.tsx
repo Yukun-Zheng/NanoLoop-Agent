@@ -29,14 +29,14 @@ export function CommandComposer({
   image,
   runIds,
   writeBlocker,
-  needsClarification,
+  clarification,
   onAnswer
 }: {
   jobId: string;
   image: ImageAsset | null;
   runIds: string[];
   writeBlocker: string | null;
-  needsClarification: boolean;
+  clarification: UnifiedQueryResponse | null;
   onAnswer: (answer: UnifiedQueryResponse, scope: string) => void;
 }) {
   const [question, setQuestion] = useState("");
@@ -53,6 +53,8 @@ export function CommandComposer({
   const hasConfirmedContext = Boolean(
     materialName.trim() || materialFormula.trim() || aliases.length
   );
+  const needsClarification = Boolean(clarification?.needs_clarification);
+  const needsMaterialContext = isMaterialContextClarification(clarification);
 
   const query = useMutation({
     mutationFn: ({
@@ -111,7 +113,7 @@ export function CommandComposer({
           {writeBlocker}
         </p>
       ) : null}
-      {needsClarification ? (
+      {needsMaterialContext ? (
         <section className="clarification-context" aria-label="补充材料上下文">
           <div>
             <strong>需要补充材料上下文</strong>
@@ -141,6 +143,10 @@ export function CommandComposer({
             aria-label="补充材料别名"
           />
         </section>
+      ) : needsClarification ? (
+        <p className="clarification-guidance" role="status">
+          回答需要进一步澄清。请根据上方回答中的限制，补充运行范围、指标或实验条件后重试。
+        </p>
       ) : null}
       <div className="command-composer">
         <div className="composer-modes">
@@ -188,5 +194,15 @@ export function CommandComposer({
         </div>
       </div>
     </div>
+  );
+}
+
+export function isMaterialContextClarification(
+  response: UnifiedQueryResponse | null
+): boolean {
+  if (!response?.needs_clarification) return false;
+  return (response.limitations ?? []).some(
+    (limitation) =>
+      limitation.includes("材料上下文") || limitation.includes("material_context")
   );
 }

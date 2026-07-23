@@ -11,7 +11,7 @@ from fastapi.security import APIKeyHeader
 from app.agent.application import QueryApplicationService
 from app.analysis.application import AnalysisApplicationService, AnalysisCreationService
 from app.authentication import AUTHENTICATION_VERIFIED_STATE_KEY, RequestAuthenticator
-from app.contracts.identity import PrincipalContext
+from app.contracts.identity import AuthMode, PrincipalContext
 from app.core.errors import ApiNotImplementedError, ServiceUnavailableError
 from app.core.logging import bind_log_context, reset_log_context
 from app.db.repositories import SqlAlchemyRepositorySet
@@ -57,6 +57,16 @@ async def require_api_key_contract(
         },
         headers={"Cache-Control": "no-store"},
     )
+
+
+async def require_global_knowledge_access(
+    principal: Annotated[PrincipalContext, Security(require_api_key_contract)],
+) -> PrincipalContext:
+    """Fail closed while the knowledge corpus has no tenant ownership model."""
+
+    if principal.auth_mode is AuthMode.PRINCIPAL:
+        raise ServiceUnavailableError(details={"component": "knowledge_tenant_scope"})
+    return principal
 
 
 async def bind_route_log_context(request: Request) -> AsyncIterator[None]:

@@ -24,5 +24,6 @@ export NANOLOOP_API_KEY='<secure-runtime-value>'
   --job-id '<authorized_job_id>' \
   --run-label restart \
   --expect-rag-health healthy \
+  --expect-generation '<generation recorded by the hybrid run>' \
   --skip-ingest \
   --mapping-file rag-acceptance-v1/evaluation/ingest-results.hybrid.json

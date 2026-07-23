@@ -149,6 +149,20 @@ class QueryApplicationService:
         tenant_id = principal.tenant_id
         if tenant_id is None:
             raise ValueError("principal must carry a tenant ID")
+        # ``image_metadata`` is a server-owned provenance label.  The public
+        # request contract remains backward compatible, but a caller cannot
+        # mint that provenance merely by choosing the matching JSON value.
+        if (
+            request.material_context is not None
+            and request.material_context.source == "image_metadata"
+        ):
+            request = request.model_copy(
+                update={
+                    "material_context": request.material_context.model_copy(
+                        update={"source": "request"}
+                    )
+                }
+            )
         session = self.session_factory()
         try:
             repositories = SqlAlchemyRepositorySet(session)
@@ -208,6 +222,8 @@ class QueryApplicationService:
                         )
                     return request, None
                 if image_context is None:
+                    if _query_requires_material_context(request):
+                        return request, _missing_material_response(request)
                     return request, None
                 return (
                     request.model_copy(update={"material_context": image_context}),

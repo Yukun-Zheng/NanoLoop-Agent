@@ -15,7 +15,7 @@ docs 为准。仓库当前达到 **工程 MVP / 内部 Alpha（M1）**：FastAPI
 
 | 当前阶段 | 已有工程基线 | M2 真实可演示 MVP 的主要阻塞 |
 | --- | --- | --- |
-| M1 工程 MVP / 内部 Alpha | 需求矩阵为 `implemented 10 / partial 4 / external-blocked 0`；Large 与 Small-A U-Net 运行资产已接入，Large 历史独立集像素指标已按交付字节复核 | 两个 U-Net 已通过 CPU 运行校验并登记为 `ready`，其余三个模型仍为 `unavailable`；Small-B 与 Large 当前 bundle 科学重跑、许可/资产台账、正式语料、固定 embedding、真实 FAISS 重启与无降级 E2E 仍未完成 |
+| M1 工程 MVP / 内部 Alpha | 需求矩阵为 `implemented 10 / partial 4 / external-blocked 0`；Large 与 Small-A U-Net 运行资产已接入，Large 历史独立集像素指标已按交付字节复核；仓库内提供 30 题公开 RAG 工程回归包 | 两个 U-Net 已通过 CPU 运行校验并登记为 `ready`，其余三个模型仍为 `unavailable`；仍缺 Small-B 与当前分割 bundle 的完整科学重跑、正式外部语料及许可台账，以及目标部署环境上的正式 FAISS 重启与无降级 E2E |
 
 ## 当前能力边界
 
@@ -29,7 +29,7 @@ docs 为准。仓库当前达到 **工程 MVP / 内部 Alpha（M1）**：FastAPI
 - 缺少比例尺时仅给像素单位，不伪造 nm/µm 结果。
 - 数据问答支持排序、分组比较、分布、异常与模型比较；同图多个完成 run 未显式选择时会先澄清，跨图粒径比较缺少可比物理尺度时会拒绝给出误导结果。
 - 材料不匹配或证据不足时返回明确的澄清/证据不足结果，不跨材料拼接引用；多材料且未选图像时返回候选材料，引用保留页码、chunk、来源类型和规范引文。
-- 知识库支持导入、列出、启用/禁用和重建；前端可管理状态。可选向量 runtime 已实现本地只读 SentenceTransformers、原子 FAISS generation、manifest/数据库映射校验和 keyword-only 降级；当前环境没有真实 embedding 资产与正式语料，因此仍不宣称生产向量 RAG 已交付。
+- 知识库支持导入、列出、启用/禁用和重建；前端可管理状态。可选向量 runtime 已实现本地只读 SentenceTransformers、原子 FAISS generation、manifest/数据库映射校验、原始 cosine 门槛和 keyword-only 降级；连续中文在 `unicode61` 无命中时使用有界 CJK n-gram 回退。仓库不提交 embedding snapshot、FAISS 文件或正式外部语料，因此仍不宣称生产向量 RAG 已交付。
 - 模型 API 支持 family、variant、quality tier、状态和材料筛选，并展示指标上下文、预/后处理、备注与健康原因；前端目录只允许选择后端标记为 `ready` 的条目，推荐和创建运行分开确认。
 - 结果页先展示质量结论、原因和建议，再展示数值；单运行可切换原图、mask、overlay、实例标注和概率制品，不可直接预览的 TIFF/数组只提供下载审查；同一图像还可选择 2～3 个终态运行并排比较。运行创建测试覆盖 2 图像 × 3 个 ready 模型的完整 6-run Cartesian 调度；真实多模型科学演示仍受权重缺失约束。
 - 导出按所选成员路径、精确字节 SHA-256 和长度生成内容地址；同一数据库/制品快照复用完全相同的确定性 ZIP，内容变化生成新地址，已签发令牌对应的旧字节不会被覆盖。
@@ -104,11 +104,11 @@ docker compose logs -f api frontend
 `torch 2.13.0`/`torchvision 0.28.0`，并串行构建 API 与前端，避免 CPU 部署误拉 CUDA
 运行时或并发重型构建。构建期间不要在其他终端重复执行同一目标。
 
-默认只绑定 `127.0.0.1`。API 会拒绝不受信任/歧义的 Host，并对浏览器写请求校验 Origin 与 `Sec-Fetch-Site`；这些网络边界控制本身不构成身份认证。应用已经支持由运维 CLI 预置的 tenant/principal 可撤销凭据，并对 Analysis 聚合、Query 和 v2 文件能力执行相应的租户、主体、角色或用途约束，但仍不提供交互式用户登录，knowledge 尚未完成同等级租户隔离。若要开放到其他机器，仍必须先在受信任反向代理上增加 TLS、所需的用户认证与授权、边缘限速和访问日志，再显式设置 `NANOLOOP_BIND_HOST`。
+默认只绑定 `127.0.0.1`。API 会拒绝不受信任/歧义的 Host，并对浏览器写请求校验 Origin 与 `Sec-Fetch-Site`；这些网络边界控制本身不构成身份认证。应用已经支持由运维 CLI 预置的 tenant/principal 可撤销凭据，并对 Analysis 聚合、Query 和 v2 文件能力执行相应的租户、主体、角色或用途约束，但仍不提供交互式用户登录。knowledge 尚未完成同等级租户隔离，因此 principal 模式下知识管理与知识问答全部 fail-closed 为 `503`；不得用 disabled/shared-key 的全局语料行为冒充多租户授权。若要开放到其他机器，仍必须先在受信任反向代理上增加 TLS、所需的用户认证与授权、边缘限速和访问日志，再显式设置 `NANOLOOP_BIND_HOST`。
 
 API 使用单个 Uvicorn worker、SQLite WAL 和进程内有界 worker pool。数据库中的 `QUEUED` 记录是持久事实来源，队列溢出会由调度器继续领取。当前支持单 API 容器；多副本部署需要把数据库、导出锁和调度所有权迁移到共享基础设施。
 
-认证由 `AUTH_MODE=auto|disabled|shared_key|principal` 选择。默认 `auto` 完全兼容旧部署：存在 `NANOLOOP_API_KEY` 时使用共享门禁，否则关闭认证；`principal` 模式要求稳定的 32 字节以上 `CREDENTIAL_PEPPER`，并通过 `scripts/manage_identity.py` 预置 tenant、principal 和只显示一次的凭据。principal 凭据以摘要入库，可过期、禁用或撤销，请求会得到 tenant/principal/credential 上下文。Analysis job/image/box/run/export 先按 tenant 查询，再按 tenant_admin、owner analyst、peer analyst 与 viewer 执行读写策略；disabled/shared-key 的固定 legacy admin 也走同一策略。Query actor 与数值工具已经在路由和底层 SQL 双重隔离；文件下载 v2 token 已绑定 tenant、principal、job、artifact、purpose/audience、内容哈希和时限，并以固定文件描述符流出。knowledge tenant ownership 和用户 quota 尚未完成，因此仍不是完整多租户隔离。Next.js BFF 只把服务端配置的 `NANOLOOP_API_KEY` 作为 `X-API-Key` 注入允许列表中的上游请求，并丢弃浏览器提供的 Cookie、Authorization 和 API Key；命令行 smoke 客户端继续使用 `NANOLOOP_API_BASE_URL`。凭据只应在 TLS 后使用。principal 限流分两阶段：认证前按直接 socket peer 使用严格有界 LRU 桶，认证成功后复用同一次查询得到的 `principal_id` 使用主体桶；捆绑的 Uvicorn 启动命令禁用 proxy-header 改写。两阶段都只在当前进程生效，不是分布式限流或 quota。
+认证由 `AUTH_MODE=auto|disabled|shared_key|principal` 选择。默认 `auto` 完全兼容旧部署：存在 `NANOLOOP_API_KEY` 时使用共享门禁，否则关闭认证；`principal` 模式要求稳定的 32 字节以上 `CREDENTIAL_PEPPER`，并通过 `scripts/manage_identity.py` 预置 tenant、principal 和只显示一次的凭据。principal 凭据以摘要入库，可过期、禁用或撤销，请求会得到 tenant/principal/credential 上下文。Analysis job/image/box/run/export 先按 tenant 查询，再按 tenant_admin、owner analyst、peer analyst 与 viewer 执行读写策略；disabled/shared-key 的固定 legacy admin 也走同一策略。Query actor 与数值工具已经在路由和底层 SQL 双重隔离；文件下载 v2 token 已绑定 tenant、principal、job、artifact、purpose/audience、内容哈希和时限，并以固定文件描述符流出。knowledge tenant ownership 和用户 quota 尚未完成，所有 principal knowledge 路径均在全局语料访问前返回 `503`，因此仍不是完整多租户隔离。Next.js BFF 只把服务端配置的 `NANOLOOP_API_KEY` 作为 `X-API-Key` 注入允许列表中的上游请求，并丢弃浏览器提供的 Cookie、Authorization 和 API Key；命令行 smoke 客户端继续使用 `NANOLOOP_API_BASE_URL`。凭据只应在 TLS 后使用。principal 限流分两阶段：认证前按直接 socket peer 使用严格有界 LRU 桶，认证成功后复用同一次查询得到的 `principal_id` 使用主体桶；捆绑的 Uvicorn 启动命令禁用 proxy-header 改写。两阶段都只在当前进程生效，不是分布式限流或 quota。
 
 SQLite 同时是 tenant/principal/凭据元数据、任务、运行、查询和 ROI revision 的事实源；原始 principal token 与 pepper 不入库。`query_history.jsonl`、`rag_citations.json` 与 `boxes_revision_*.json` 是可由数据库重建的审计投影；投影写失败会留下结构化降级日志，但不会把已经提交的业务事务伪装成失败。ROI revision ledger 会保留空 revision。
 

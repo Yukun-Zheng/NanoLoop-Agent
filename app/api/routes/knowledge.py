@@ -7,7 +7,11 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
 
-from app.api.deps import get_knowledge_application_service, get_knowledge_source_store
+from app.api.deps import (
+    get_knowledge_application_service,
+    get_knowledge_source_store,
+    require_global_knowledge_access,
+)
 from app.api.responses import success_response
 from app.api.routing import COMMON_ERROR_RESPONSES, BoundedMultipartRoute
 from app.contracts.common import ApiResponse
@@ -48,6 +52,7 @@ router = APIRouter(
     tags=["knowledge"],
     responses=COMMON_ERROR_RESPONSES,
     route_class=BoundedMultipartRoute,
+    dependencies=[Depends(require_global_knowledge_access)],
 )
 
 

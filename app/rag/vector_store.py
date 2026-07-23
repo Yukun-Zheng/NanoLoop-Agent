@@ -7,6 +7,7 @@ import importlib
 import json
 import math
 import os
+import re
 import sqlite3
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -147,6 +148,7 @@ class PersistentFaissVectorStore:
         model_fingerprint: str | Callable[[], str],
         database_path: str | Path | None = None,
         faiss_loader: Callable[[], object] | None = None,
+        thread_count: int = 1,
     ) -> None:
         normalized_model = model_id.strip()
         if not normalized_model:
@@ -159,9 +161,16 @@ class PersistentFaissVectorStore:
         self._model_fingerprint_source = model_fingerprint
         if not callable(model_fingerprint) and not self._is_sha256(model_fingerprint):
             raise ValueError("vector model_fingerprint must be a sha256 digest")
+        if (
+            isinstance(thread_count, bool)
+            or not isinstance(thread_count, int)
+            or thread_count <= 0
+        ):
+            raise ValueError("FAISS thread_count must be a positive integer")
         self.database_path = (
             Path(database_path).expanduser() if database_path is not None else None
         )
+        self.thread_count = thread_count
         self._faiss_loader = faiss_loader or self._default_faiss_loader
         self._backend: object | None = None
         self._index: object | None = None
@@ -581,6 +590,15 @@ class PersistentFaissVectorStore:
             raise VectorStoreUnavailableError(
                 f"optional FAISS dependency unavailable: {type(error).__name__}: {error}"
             ) from error
+        set_threads = getattr(backend, "omp_set_num_threads", None)
+        if callable(set_threads):
+            try:
+                set_threads(self.thread_count)
+            except Exception as error:
+                raise VectorStoreUnavailableError(
+                    "FAISS thread configuration failed: "
+                    f"{type(error).__name__}: {error}"
+                ) from error
         self._backend = backend
         return backend
 
@@ -659,8 +677,15 @@ class PersistentFaissVectorStore:
             else self.index_path.name
         )
         pattern = f"{stem}.*{suffix}"
+        generation_name = re.compile(
+            rf"^{re.escape(stem)}\.[0-9a-f]{{32}}{re.escape(suffix)}$"
+        )
         for candidate in self.index_path.parent.glob(pattern):
-            if candidate.name != keep and candidate.is_file():
+            if (
+                candidate.name != keep
+                and generation_name.fullmatch(candidate.name)
+                and candidate.is_file()
+            ):
                 try:
                     candidate.unlink()
                 except OSError:

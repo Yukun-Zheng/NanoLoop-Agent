@@ -77,7 +77,15 @@ class RetrievalRequest(ContractModel):
     )
     top_k: int = Field(default=6, ge=1, le=50)
     candidate_k: int = Field(default=20, ge=1, le=200)
-    min_score: float = Field(default=0.20, ge=0)
+    min_score: float = Field(
+        default=0.50,
+        ge=0,
+        le=1,
+        description=(
+            "Minimum accepted cosine similarity for vector candidates and minimum "
+            "normalized reciprocal-rank score for fused candidates."
+        ),
+    )
 
 
 class RetrievedChunk(ContractModel):
