@@ -15,7 +15,7 @@ docs 为准。仓库当前达到 **工程 MVP / 内部 Alpha（M1）**：FastAPI
 
 | 当前阶段 | 已有工程基线 | M2 真实可演示 MVP 的主要阻塞 |
 | --- | --- | --- |
-| M1 工程 MVP / 内部 Alpha | 需求矩阵为 `implemented 10 / partial 4 / external-blocked 0`；Large U-Net 运行资产已接入，历史独立集像素指标已按交付字节复核 | Large U-Net 的 TorchScript 已通过 CPU 载入/确定性推理并登记为 `ready`，其余四个模型仍为 `unavailable`；仍缺许可/资产台账、当前 bundle 的完整科学重跑、正式语料、固定 embedding、真实 FAISS 重启与无降级 E2E |
+| M1 工程 MVP / 内部 Alpha | 需求矩阵为 `implemented 10 / partial 4 / external-blocked 0`；Large 与 Small-A U-Net 运行资产已接入，Large 历史独立集像素指标已按交付字节复核 | 两个 U-Net 已通过 CPU 运行校验并登记为 `ready`，其余三个模型仍为 `unavailable`；Small-B 与 Large 当前 bundle 科学重跑、许可/资产台账、正式语料、固定 embedding、真实 FAISS 重启与无降级 E2E 仍未完成 |
 
 ## 当前能力边界
 
@@ -35,7 +35,7 @@ docs 为准。仓库当前达到 **工程 MVP / 内部 Alpha（M1）**：FastAPI
 - 导出按所选成员路径、精确字节 SHA-256 和长度生成内容地址；同一数据库/制品快照复用完全相同的确定性 ZIP，内容变化生成新地址，已签发令牌对应的旧字节不会被覆盖。
 - 图片在深度解码前先检查尺寸/像素数；知识摄取对 PDF 页数、提取字符数、单文档 chunk、材料别名和向量语料规模设有上限，embedding 按批处理；大粒径分布在 SQL 中精确聚合，只返回有上限的确定性证据抽样。
 - 启动恢复对普通陈旧运行复制其不可变科学输入；若人工修正掩膜运行在崩溃后缺少原始外部制品，则父运行明确失败并要求人工处理，不会用 JSON 配置伪造一个不可复现子运行。
-- Large U-Net 的部署用 TorchScript 已按项目负责人要求纳入仓库并由哈希锁定；源 checkpoint 仅记录身份、不重复提交。2026-07-23 的 A/B 交付不是两个模型：Large-B 是同一权重的后处理与验收包。三张历史独立测试视野的像素计数和指标已从交付 prediction/GT 字节重新计算并写入[审计记录](docs/model-assets-large-a-b-acceptance-2026-07-23.md)，但历史运行的 Adapter/config/card 与当前 `main` 不同，且许可、split、tolerance policy 和当前 bundle 重跑仍缺失。其余模型权重、生产知识语料、向量索引和本地大模型仍是外部资产；`ready` 只代表运行 bundle 可用，不代表科研验收通过。
+- Large 与 Small-A U-Net 的部署用 TorchScript 已按项目负责人要求纳入仓库并由哈希锁定；源 checkpoint 只记录身份、不重复提交。Large 的三张历史独立测试视野像素指标已从交付 prediction/GT 字节重新计算，见[Large A/B 审计](docs/model-assets-large-a-b-acceptance-2026-07-23.md)。Small-A 从严格匹配的 checkpoint 以 PyTorch 2.6 重新导出兼容制品，并通过 2.6/2.13、全图/ROI 与确定性运行检查，见[Small-A 审计](docs/model-assets-small-a-acceptance-2026-07-23.md)；Small-B 科学校准与独立评测尚未交付。Agglomerated U-Net、YOLO-Seg、SAM2、生产知识语料、向量索引和本地大模型仍是外部资产；`ready` 只代表运行 bundle 可用，不代表科研验收通过。
 
 详细覆盖情况见 [需求追踪表](docs/requirements-traceability.md)，RAG 技术合同见 [RAG 与检索功能开发指南](docs/RAG_RETRIEVAL_DEVELOPMENT_GUIDE.md)，外部模型与长期接手方式见 [模型与 RAG 交接](docs/model-rag-handoff.md)，单机/公网/多实例的发布边界见 [生产就绪说明](docs/PRODUCTION_READINESS.md)，全部入口见 [文档索引](docs/README.md)。专项指南中的旧时间表、人员分工或旧前端描述只作历史参考。
 
@@ -53,7 +53,7 @@ cp .env.example .env
 alembic upgrade head
 ```
 
-若要让已接入的 Large U-Net 在本地登记为 `ready`，把后端安装命令替换为
+若要让已接入的 Large 与 Small-A U-Net 在本地登记为 `ready`，把后端安装命令替换为
 `python -m pip install -e '.[dev,analysis,docs,models]'`，或直接运行 `make install-models`。
 不安装 `models` extra 时，系统仍可启动，但真实模型会诚实显示为 `unavailable`。
 
@@ -92,7 +92,7 @@ docker compose up --build -d
 docker compose logs -f api frontend
 ```
 
-上面的轻量镜像不包含 PyTorch。完整启用仓库内 Large U-Net 时使用：
+上面的轻量镜像不包含 PyTorch。完整启用仓库内 Large 与 Small-A U-Net 时使用：
 
 ```bash
 make compose-up-models
@@ -124,8 +124,8 @@ python scripts/mvp_fixture_smoke.py
 `--state-dir <目录>` 可保留数据库与制品供排查。fixture 输出会显式带
 `simulated_fixture_output_not_scientific`，只证明工程集成，不代表分割精度或科学有效性。
 默认 `model_artifacts/registry.yaml` 不受影响；资产或运行依赖未到位的模型仍诚实保持
-`unavailable`。仓库内 Large TorchScript 在安装所需依赖且 bundle 校验通过时为 `ready`，不属于
-本段降级说明。实现边界与接手说明见
+`unavailable`。仓库内 Large 与 Small-A TorchScript 在安装所需依赖且 bundle 校验通过时为
+`ready`，不属于本段降级说明。实现边界与接手说明见
 [MVP 后端交接记录](docs/MVP_BACKEND_HANDOFF.md)。
 
 完整本地门禁：

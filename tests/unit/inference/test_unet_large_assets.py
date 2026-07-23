@@ -360,7 +360,7 @@ def test_small_unet_asset_contract_includes_confirmed_input_dimensions() -> None
         "threshold_comparison": "gt",
         "default_threshold": 0.30,
     }
-    assert entry["metadata"]["status"] == "unavailable"
+    assert entry["metadata"]["status"] == "ready"
     assert entry["metadata"]["default_threshold"] == 0.30
     assert entry["metadata"]["inference_invalid_bottom_px"] == 130
     assert entry["metadata"]["expected_input_width"] == 2048

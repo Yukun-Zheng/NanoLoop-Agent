@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 from pathlib import Path
 
 import pytest
@@ -13,20 +14,38 @@ from tests.unit.inference.fakes import FakeAdapter
 from tests.unit.inference.helpers import build_registry, model_entry
 
 
-def test_bundled_registry_declares_three_truthfully_unavailable_families() -> None:
+def test_bundled_registry_exposes_two_runtime_assets_and_three_unavailable_models() -> None:
     project_root = Path(__file__).parents[3]
     registry = ModelRegistryService(project_root / "model_artifacts" / "registry.yaml")
 
     models = registry.list_models()
+    by_id = {model.model_id: model for model in models}
 
     assert {model.family for model in models} == {
         ModelFamily.UNET,
         ModelFamily.YOLO_SEG,
         ModelFamily.SAM2,
     }
-    assert {model.status for model in models} == {ModelStatus.UNAVAILABLE}
-    assert all(model.health_error for model in models)
-    assert registry.list_models(only_ready=True) == []
+    unavailable_ids = {
+        "unet-agglomerated-specialized-v1",
+        "yolo-dense-fast-v1",
+        "sam2-general-balanced-v1",
+    }
+    assert all(by_id[model_id].status == ModelStatus.UNAVAILABLE for model_id in unavailable_ids)
+    assert all(by_id[model_id].health_error for model_id in unavailable_ids)
+
+    runtime_ids = {"unet-large-optimized-v1", "unet-small-balanced-v1"}
+    torch_available = importlib.util.find_spec("torch") is not None
+    expected_runtime_status = ModelStatus.READY if torch_available else ModelStatus.UNAVAILABLE
+    assert all(by_id[model_id].status == expected_runtime_status for model_id in runtime_ids)
+
+    ready_ids = {model.model_id for model in registry.list_models(only_ready=True)}
+    assert ready_ids == (runtime_ids if torch_available else set())
+    if not torch_available:
+        assert all(
+            "optional dependency is missing: torch" in (by_id[model_id].health_error or "")
+            for model_id in runtime_ids
+        )
 
 
 def test_valid_artifacts_become_ready_and_adapter_resolution_is_lazy(tmp_path: Path) -> None:

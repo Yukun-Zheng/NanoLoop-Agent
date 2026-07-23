@@ -1,0 +1,170 @@
+{
+  "schema_version": "1",
+  "model_id": "unet-small-balanced-v1",
+  "model_version": "1",
+  "reviewed_at": "2026-07-23",
+  "repository_base_commit": "8c3afc9cf6180fb4b037c17a853fb3638a2c968e",
+  "review_scope": "runtime_asset_and_engineering_contract_only",
+  "source_package": {
+    "filename": "ModelAssets-small-a.zip",
+    "size_bytes": 24964343,
+    "sha256": "b88da3904b7e03d20779088df24838d794e0cb29b17d75547ed4d0479182a5fe",
+    "entry_count": 14,
+    "crc_verified": true,
+    "archive_safety_verified": true,
+    "retention": "external_private_not_committed"
+  },
+  "source_checkpoint": {
+    "filename": "best_unet_small.pth",
+    "size_bytes": 13467410,
+    "sha256": "915911107c82c01ff7d37746f4fcce6db39d40659cfb93e059e14b18134ba008",
+    "format": "pytorch_state_dict",
+    "weights_only_load_verified": true,
+    "key_count": 128,
+    "tensor_count": 128,
+    "state_value_count": 3355667,
+    "strict_architecture_load_verified": true,
+    "missing_keys": [],
+    "unexpected_keys": [],
+    "shape_mismatches": {},
+    "all_floating_tensors_finite": true,
+    "retention": "external_private_not_committed"
+  },
+  "delivered_torchscript": {
+    "filename": "unet-small-balanced-v1.pt",
+    "size_bytes": 13558733,
+    "sha256": "e31bd7100d410fe3af93041ccf6956e27d562214d9ddcb40ac76b905840d6d28",
+    "torch_2_13_cpu_load_verified": true,
+    "torch_2_6_cpu_load_verified": false,
+    "torch_2_6_failure": "Unknown builtin op: aten::_upsample_lanczos2d_aa",
+    "repository_imported": false
+  },
+  "compatible_runtime_artifact": {
+    "repository_path": "model_artifacts/weights/unet-small-balanced-v1.pt",
+    "size_bytes": 13560272,
+    "sha256": "09d1818c72652179e2590897cf409f7691e18e5e1a0f55476f90f7369a03171d",
+    "exported_from_source_checkpoint": true,
+    "exporter_path": "scripts/models/export_unet_small_torchscript.py",
+    "exporter_matches_delivered_source_after_crlf_normalization": true,
+    "export_environment": {
+      "python": "3.12.13",
+      "torch": "2.6.0",
+      "device": "cpu",
+      "platform": "macos-arm64"
+    },
+    "forward_compatibility_environment": {
+      "python": "3.12.13",
+      "torch": "2.13.0",
+      "device": "cpu",
+      "platform": "macos-arm64"
+    },
+    "input_shape": [
+      1,
+      1,
+      256,
+      256
+    ],
+    "output_shape": [
+      1,
+      1,
+      256,
+      256
+    ],
+    "output_dtype": "torch.float32",
+    "output_finite": true,
+    "eager_torchscript_max_abs_diff": 0.0,
+    "repeat_max_abs_diff": 0.0,
+    "delivered_compatible_max_abs_diff_under_torch_2_13": 0.0,
+    "loads_under_torch_2_6": true,
+    "loads_under_torch_2_13": true
+  },
+  "engineering_contract": {
+    "architecture_profile": "small_batchnorm",
+    "input_channels": 1,
+    "output_channels": 1,
+    "expected_image_size_hw": [
+      1536,
+      2048
+    ],
+    "patch_size_hw": [
+      256,
+      256
+    ],
+    "stride_hw": [
+      128,
+      128
+    ],
+    "bottom_crop_px": 130,
+    "pixel_scale": 255.0,
+    "output_activation": "logits",
+    "threshold_comparison": "gt",
+    "engineering_default_threshold": 0.3,
+    "config_matches_delivered_source_after_crlf_normalization": true,
+    "adapter_sha256_at_review": "6055db452f0a78a0352732d66ea3436f16a558cf19d1a6f022a78627136dfab6",
+    "config_sha256_at_review": "aa2ff9f96202d7aa4a2d6c5ab21baf6784abe65c3e462a5d57501dc752dd528d"
+  },
+  "gateway_smoke": {
+    "fixture_kind": "deterministic_synthetic_2048x1536_not_scientific",
+    "registry_health_ready": true,
+    "bundle_freeze_verified": true,
+    "full_image_prediction_verified": true,
+    "boxes_prediction_verified": true,
+    "bottom_130_rows_zero": true,
+    "boxes_exterior_zero": true,
+    "deterministic_repeat_verified": true,
+    "unload_lifecycle_verified": true
+  },
+  "target_linux_artifact_smoke": {
+    "platform": "debian_12_linux_arm64",
+    "python": "3.12.13",
+    "torch": "2.6.0+cpu",
+    "device": "cpu",
+    "repository_sha256_verified": true,
+    "input_shape": [
+      1,
+      1,
+      256,
+      256
+    ],
+    "output_shape": [
+      1,
+      1,
+      256,
+      256
+    ],
+    "output_dtype": "torch.float32",
+    "output_finite": true,
+    "repeat_max_abs_diff": 0.0,
+    "scope": "artifact_load_and_forward_only_not_full_gateway_or_scientific_acceptance"
+  },
+  "repository_import_policy": {
+    "repository_inclusion_authority": "project_owner_explicit_request_after_model_developer_delivery",
+    "general_redistribution_license_delivered": false,
+    "imported": [
+      "compatible_deployable_torchscript",
+      "sanitized_delivery_audit",
+      "runtime_identity_and_verification_results"
+    ],
+    "not_imported": [
+      "raw_zip",
+      "source_checkpoint",
+      "duplicate_sha_text_files",
+      "duplicate_crlf_source_and_tests"
+    ],
+    "reason": "runtime_minimization_and_compatibility_reexport"
+  },
+  "scientific_acceptance": {
+    "status": "pending_small_b",
+    "metrics": {},
+    "blockers": [
+      "small_b_calibration_and_evaluation_not_delivered",
+      "source_or_sample_split_manifest_missing",
+      "real_sem_smoke_fixture_and_output_missing",
+      "independent_human_ground_truth_missing",
+      "pixel_instance_count_and_morphometry_metrics_missing",
+      "explicit_tolerance_policy_missing",
+      "target_environment_performance_record_missing",
+      "general_public_redistribution_license_missing"
+    ]
+  }
+}

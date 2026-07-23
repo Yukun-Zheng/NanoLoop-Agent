@@ -12,11 +12,11 @@
 | 场景 | 当前结论 | 主要依据 / 阻塞 |
 | --- | --- | --- |
 | 本机或受信任内网、单 API 实例 | 支持 | [Compose](../docker-compose.yml) 默认回环绑定；SQLite WAL、持久 `QUEUED` 行、原子领取和有界 worker pool 已实现；历史快照 `16456a3` 的 CI 已真实构建并启动 API/frontend 双容器，当前 `main` 仍须以自身 CI 为准。 |
-| 缺少可选模型/语料时的诚实降级启动 | 支持 | 已接入 Large bundle 可单独保持 `ready`；缺失的其余模型保持 `unavailable`，RAG 可保持 keyword-only/unavailable，健康接口不会把缺失资产报告为正常科学闭环。 |
+| 缺少可选模型/语料时的诚实降级启动 | 支持 | 已接入 Large 与 Small 两个 U-Net bundle，可分别保持 `ready`；缺失的 Agglomerated U-Net、YOLO-Seg 和 SAM2 保持 `unavailable`，RAG 可保持 keyword-only/unavailable，健康接口不会把缺失资产报告为正常科学闭环。 |
 | Next.js 科研 Agent Command Center | 工程可用 | `/`、`/workspace/{job_id}`、`/knowledge` 与严格同源 BFF 已实现；Vitest/Playwright/生产构建和非 root 容器门禁已进入 CI。目标后端真实业务演示仍受资产和部署验收约束。 |
 | 人工矩形 ROI 编辑 | 工程可用、待新前端 live 复验 | React-Konva 与数值编辑器使用原图半开坐标、有效区校验和 revision CAS；纯几何已有单测。旧前端的 live REST round-trip 不能替代重写后的目标后端复验。 |
-| 真实 SEM 单模型分割 | 部分可用 | Large TorchScript 已通过 CPU 载入和重复推理检查；历史三视野 prediction/GT 的像素计数与指标已从交付字节独立复核。历史运行的 Adapter/config/card 与当前 `main` 不同，仍缺许可/资产台账、split、显式 tolerance policy、当前 bundle 完整 Analysis 重跑和目标部署冷启动证据，见 [FR-06](requirements-traceability.md) 与[资产接入审计](model-assets-large-a-b-acceptance-2026-07-23.md)。 |
-| 真实多模型对比演示 | 阻塞 | 只有 Large 一个运行 bundle；其余四个模型无可用 checkpoint，不能形成真实 2～3 模型共同图像闭环。 |
+| 真实 SEM 单模型分割 | 部分可用 | Large 与 Small TorchScript 均通过 CPU 载入、有限输出、重复推理及真实 Gateway 生命周期检查。Large 的历史三视野 prediction/GT 像素指标已独立复核；Small 仅有工程运行证据，尚无 Small-B 独立测试集和科学指标。两者都仍缺完整许可/资产台账、当前 bundle 的目标部署 Analysis 重跑与科学验收，见 [FR-06](requirements-traceability.md)、[Large A/B 审计](model-assets-large-a-b-acceptance-2026-07-23.md)与[Small-A 审计](model-assets-small-a-acceptance-2026-07-23.md)。 |
+| 真实多模型对比演示 | 工程可用、科学阻塞 | Large 与 Small 两个真实 U-Net bundle 已可供同图创建独立运行，工程编排不再受“只有一个 ready 模型”阻塞；但尚未在共同授权 SEM fixture 上完成两模型端到端 Analysis、浏览器并排结果和科学容差验收，不能宣称真实多模型科学对比已完成。 |
 | 生产向量 RAG | 资产阻塞 | FTS5 与引用摘录是稳定基线；可选向量 runtime 已实现持久恢复、模型/维度/数据库映射、原子发布和降级测试，但没有固定真实 embedding 模型与正式许可语料完成资产级验收。 |
 | 公网或多租户服务 | 不支持 | 可撤销 principal credential、Analysis/Query tenant scope，以及 subject-bound file-token v2、artifact registry 与 pinned-fd 下载已接通；但知识文档租户化、分布式限流、调用/磁盘 quota 和 retention 尚未完成。 |
 | 多 Uvicorn worker / 多 API replica | 不支持 | SQLite 写协调、进程内 dispatcher、Adapter 缓存和导出协调按单进程/单 API 实例设计。 |
