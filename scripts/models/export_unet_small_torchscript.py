@@ -330,6 +330,16 @@ def _tensor_report(eager: Tensor, scripted: Tensor) -> dict[str, object]:
     }
 
 
+def _repeatability_report(first: Tensor, second: Tensor, *, output_name: str) -> dict[str, object]:
+    report = _tensor_report(first, second)
+    if report["max_abs_error"] != 0.0:
+        raise RuntimeError(
+            f"reloaded TorchScript {output_name} is not exactly deterministic: "
+            f"max_abs_error={report['max_abs_error']}"
+        )
+    return report
+
+
 def _temporary_output(output: Path) -> Path:
     descriptor, name = tempfile.mkstemp(
         prefix=f".{output.name}.", suffix=".pending", dir=output.parent
@@ -354,21 +364,20 @@ def export(
     output_path: Path,
     architecture_profile: str = SMALL_BATCHNORM,
     *,
-    expected_checkpoint_sha256: str | None = None,
+    expected_checkpoint_sha256: str,
 ) -> dict[str, object]:
     """Export on CPU and return a JSON-serializable eager/TorchScript comparison report."""
 
     checkpoint, output = _validate_paths(checkpoint_path, output_path)
     profile = _architecture_profile(architecture_profile)
     checkpoint_sha256 = _sha256(checkpoint)
-    if profile.name == LARGE_GROUPNORM_OPTIMIZED and expected_checkpoint_sha256 is None:
+    expected_checkpoint_sha256 = _validate_expected_sha256(expected_checkpoint_sha256)
+    if checkpoint_sha256 != expected_checkpoint_sha256:
         raise ValueError(
-            "large profile requires --expected-checkpoint-sha256 from the external custody record"
+            "checkpoint SHA-256 does not match the explicit expected digest: "
+            f"path={checkpoint}, expected={expected_checkpoint_sha256}, "
+            f"observed={checkpoint_sha256}"
         )
-    if expected_checkpoint_sha256 is not None:
-        expected_checkpoint_sha256 = _validate_expected_sha256(expected_checkpoint_sha256)
-        if checkpoint_sha256 != expected_checkpoint_sha256:
-            raise ValueError("checkpoint SHA-256 does not match the explicit expected digest")
     model = profile.build_model().to("cpu")
     checkpoint_state = _load_state_dict(checkpoint)
     state_dict_diagnostic = _diagnose_state_dict(
@@ -400,6 +409,8 @@ def export(
         with torch.inference_mode():
             scripted_logits = reloaded(example)
             scripted_probability = torch.sigmoid(scripted_logits)
+            repeated_logits = reloaded(example)
+            repeated_probability = torch.sigmoid(repeated_logits)
 
         report: dict[str, object] = {
             "checkpoint": str(checkpoint),
@@ -412,6 +423,16 @@ def export(
             "state_dict": state_dict_diagnostic,
             "logits": _tensor_report(eager_logits, scripted_logits),
             "probability": _tensor_report(eager_probability, scripted_probability),
+            "reloaded_logits_repeatability": _repeatability_report(
+                scripted_logits,
+                repeated_logits,
+                output_name="logits",
+            ),
+            "reloaded_probability_repeatability": _repeatability_report(
+                scripted_probability,
+                repeated_probability,
+                output_name="probability",
+            ),
         }
         if profile.known_risks:
             report["known_risks"] = list(profile.known_risks)
@@ -435,10 +456,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--expected-checkpoint-sha256",
-        help=(
-            "Expected external checkpoint digest; mandatory for the Large profile because no "
-            "trusted checkpoint digest is stored in this repository"
-        ),
+        required=True,
+        help="Expected checkpoint digest from the external asset-custody record",
     )
     return parser.parse_args(argv)
 

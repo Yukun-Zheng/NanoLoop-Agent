@@ -1,7 +1,7 @@
-"""Run a provisional small U-Net diagnostic through the public application services.
+"""Run a Small U-Net engineering acceptance smoke through the public application services.
 
-The Small handoff has no delivered size, split, license, or scientific evidence package. This
-script exercises the engineering chain only and must not be used to promote a model to ready.
+The smoke verifies the frozen model bundle and Gateway-to-Analysis chain. It is engineering
+readiness evidence only and must not be presented as Small-B scientific acceptance.
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ class SmokeParameters:
     image: Path
     registry: Path
     output_root: Path
-    scale_nm_per_pixel: float
+    scale_nm_per_pixel: float | None
     sample_id: str
     model_id: str = DEFAULT_MODEL_ID
     threshold: float = 0.30
@@ -86,14 +86,20 @@ def _nonnegative_int(value: str) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Run one real full-image small U-Net engineering diagnostic. The result is not "
-            "readiness or scientific-acceptance evidence."
+            "Run one real full-image small U-Net engineering acceptance smoke. The result is "
+            "not scientific-acceptance evidence."
         )
     )
     parser.add_argument("--image", required=True, type=Path)
     parser.add_argument("--registry", required=True, type=Path)
     parser.add_argument("--output-root", required=True, type=Path)
-    parser.add_argument("--scale-nm-per-pixel", required=True, type=_positive_float)
+    scale = parser.add_mutually_exclusive_group(required=True)
+    scale.add_argument("--scale-nm-per-pixel", type=_positive_float)
+    scale.add_argument(
+        "--pixel-only",
+        action="store_true",
+        help="Run engineering validation without unverified physical-scale claims",
+    )
     parser.add_argument("--sample-id", required=True)
     parser.add_argument("--model-id", default=DEFAULT_MODEL_ID)
     parser.add_argument("--threshold", default=0.30, type=_unit_interval)
@@ -187,6 +193,26 @@ def _bottom_exclusion_evidence(configuration: Any, *, width: int, height: int) -
     }
 
 
+def _ready_health(
+    gateway: InferenceGatewayProtocol,
+    *,
+    model_id: str,
+    stage: str,
+) -> dict[str, Any]:
+    health = next((item for item in gateway.health() if item.model_id == model_id), None)
+    if health is None:
+        raise RuntimeError(
+            f"Small U-Net Gateway health is missing: model_id={model_id}, stage={stage}"
+        )
+    if health.status != ModelStatus.READY:
+        raise RuntimeError(
+            "Small U-Net Gateway health is not ready: "
+            f"model_id={model_id}, stage={stage}, status={health.status.value}, "
+            f"error={health.error_summary}"
+        )
+    return health.model_dump(mode="json")
+
+
 def execute_analysis(
     parameters: SmokeParameters,
     *,
@@ -215,7 +241,11 @@ def execute_analysis(
                         filename=parameters.image.name,
                         sample_id=parameters.sample_id,
                         scale=ScaleInput(
-                            mode=ScaleMode.NM_PER_PIXEL,
+                            mode=(
+                                ScaleMode.NM_PER_PIXEL
+                                if parameters.scale_nm_per_pixel is not None
+                                else ScaleMode.PIXEL_ONLY
+                            ),
                             value=parameters.scale_nm_per_pixel,
                         ),
                     )
@@ -256,6 +286,12 @@ def execute_analysis(
         relative_paths = uow.repositories.runs.get_artifact_paths(completed.run_id)
     paths = _absolute_artifact_paths(file_store, relative_paths)
     configuration = completed.configuration
+    if configuration.schema_version != 3 or configuration.model_bundle is None:
+        raise RuntimeError(
+            "Small U-Net smoke requires a frozen schema-v3 model bundle: "
+            f"model_id={parameters.model_id}, run_id={completed.run_id}, "
+            f"schema_version={configuration.schema_version}"
+        )
     postprocess = configuration.resolved_postprocess
     if postprocess is None:
         raise RuntimeError("run configuration did not freeze resolved_postprocess")
@@ -267,12 +303,13 @@ def execute_analysis(
     if not bottom_evidence["matching_model_bottom_region_present"]:
         raise RuntimeError("run configuration did not freeze the expected bottom 130 px exclusion")
     return {
-        "evidence_class": "engineering_diagnostic_only",
-        "readiness_eligible": False,
+        "evidence_class": "engineering_acceptance",
+        "readiness_eligible": True,
+        "scientific_acceptance_eligible": False,
         "limitations": [
-            "No delivered Small source-image dimension or split/permission evidence.",
             "Operator-supplied threshold, min_area_px, scale, and sample are not a frozen "
             "scientific acceptance contract.",
+            "Small-B calibration and independent scientific evaluation have not started.",
         ],
         "job_id": completed.job_id,
         "image_id": completed.image_id,
@@ -288,6 +325,8 @@ def execute_analysis(
             "config_sha256": configuration.config_sha256,
             "model_card_sha256": configuration.model_card_sha256,
             "adapter_sha256": configuration.adapter_sha256,
+            "adapter_path": configuration.adapter_path,
+            "bundle": configuration.model_bundle.model_dump(mode="json"),
         },
         "scale_nm_per_pixel": configuration.scale_nm_per_pixel,
         "frozen_inference": configuration.inference.model_dump(mode="json"),
@@ -380,12 +419,45 @@ def run_smoke(parameters: SmokeParameters) -> dict[str, Any]:
             StoragePaths(artifact_root),
             max_upload_bytes=max(1, parameters.image.stat().st_size),
         )
-        return execute_analysis(
-            parameters,
-            database=database,
-            file_store=file_store,
-            gateway=InferenceGateway(registry),
+        gateway = InferenceGateway(registry)
+        health_before = _ready_health(
+            gateway,
+            model_id=parameters.model_id,
+            stage="before_predict",
         )
+        try:
+            result = execute_analysis(
+                parameters,
+                database=database,
+                file_store=file_store,
+                gateway=gateway,
+            )
+            health_after_predict = _ready_health(
+                gateway,
+                model_id=parameters.model_id,
+                stage="after_predict",
+            )
+            gateway.cache.unload(parameters.model_id)
+            health_after_unload = _ready_health(
+                gateway,
+                model_id=parameters.model_id,
+                stage="after_unload",
+            )
+            cached_after_unload = len(gateway.cache.loaded())
+            if cached_after_unload != 0:
+                raise RuntimeError(
+                    "Small U-Net cache is not empty after unload: "
+                    f"model_id={parameters.model_id}, cached={cached_after_unload}"
+                )
+            result["gateway_lifecycle"] = {
+                "before_predict": health_before,
+                "after_predict": health_after_predict,
+                "after_unload": health_after_unload,
+                "cached_adapter_count_after_unload": cached_after_unload,
+            }
+            return result
+        finally:
+            gateway.cache.unload(parameters.model_id)
     finally:
         database.dispose()
 

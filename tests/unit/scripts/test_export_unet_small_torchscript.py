@@ -39,6 +39,13 @@ def test_small_unet_export_script_has_external_artifact_and_torchscript_guards()
     assert 'D:\\' not in source
     assert '"checkpoint_sha256": checkpoint_sha256' in source
     assert '"export_sha256": _sha256(temporary_output)' in source
+    assert (
+        'parser.add_argument(\n        "--expected-checkpoint-sha256",\n        required=True'
+        in source
+    )
+    assert "reloaded_logits_repeatability" in source
+    assert "reloaded_probability_repeatability" in source
+    assert "is not exactly deterministic" in source
 
 
 def test_small_profile_preserves_batchnorm_and_128_key_contract() -> None:
@@ -79,8 +86,6 @@ def test_large_profile_matches_confirmed_groupnorm_architecture() -> None:
     assert "LargeUp(128, 32), LargeUp(64, 32)" in unet
     assert "self.outc = nn.Conv2d(32, 1, 1)" in unet
     assert '"--expected-checkpoint-sha256"' in source
-    assert "profile.name == LARGE_GROUPNORM_OPTIMIZED" in source
-    assert "large profile requires --expected-checkpoint-sha256" in source
     assert "checkpoint SHA-256 does not match the explicit expected digest" in source
 
 
