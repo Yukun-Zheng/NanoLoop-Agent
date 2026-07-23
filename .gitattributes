@@ -1,1 +1,2 @@
 demo_data/model_artifacts/weights/*.fixture binary
+model_artifacts/weights/*.pt binary

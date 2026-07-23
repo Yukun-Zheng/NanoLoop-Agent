@@ -1,6 +1,6 @@
 # NanoLoop Agent 文档索引
 
-`main` 是唯一长期开发基线；最新协作状态以 `main` HEAD 和本索引所列开发日志为准。所有功能分支从最新全绿 `origin/main` 创建，并通过 PR 合回 `main`。当前发布等级是 **M1 工程 MVP / 内部 Alpha**。仓库已具备完整工程骨架、六页前端和自动化门禁，但五个登记模型仍为 `unavailable`，正式模型/数据资产、许可语料、固定 embedding、真实向量索引和无降级 E2E 尚未完成。
+`main` 是唯一长期开发基线；最新协作状态以 `main` HEAD 和本索引所列开发日志为准。所有功能分支从最新全绿 `origin/main` 创建，并通过 PR 合回 `main`。当前发布等级是 **M1 工程 MVP / 内部 Alpha**。仓库已具备完整工程骨架、六页前端和自动化门禁；Large U-Net 的部署用 TorchScript 已接入并通过 CPU 运行检查，其余四个登记模型仍为 `unavailable`。Large 的许可/资产台账与独立科学证据、正式语料、固定 embedding、真实向量索引和无降级 E2E 尚未完成。
 
 ## 当前必读
 

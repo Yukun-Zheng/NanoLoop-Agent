@@ -9,7 +9,7 @@
 
 | 子系统 | 已有接缝 | 尚未交付 |
 | --- | --- | --- |
-| 模型 | `InferenceGateway`、三类 Adapter、`AdapterCache.lease()` 并发保护、注册表健康校验、不可变运行、统一后处理、canonical `pred_mask.png`/`instances.json` 和过滤前边界诊断已接通。正常运行的 schema v3 冻结原图/尺度、resolved 科学设置及权重/配置/模型卡/Adapter 源码完整 bundle；执行时核对 build identity 并单独保存实际设备/seed/后端证据。U-Net 已有灰度/百分位预处理、底部无效区和 overlap tiling；Large/Agglomerated 另有校准、独立评测和真实 Analysis smoke 工具，每次状态转换写入事件时间线。 | `model_artifacts/weights` 无真实 checkpoint；Small/Large/Agglomerated U-Net、YOLO-Seg、SAM2 五项均为 `unavailable`。郭境濠 ZIP 未交付完整私有 bundle、资产/许可台账、无泄漏 split manifest 或机器可读运行证据；卡片中的开发者报告指标尚不能归因到当前整合源码，也没有真实 fixture 推理或冷启动结果。 |
+| 模型 | `InferenceGateway`、三类 Adapter、`AdapterCache.lease()` 并发保护、注册表健康校验、不可变运行、统一后处理、canonical `pred_mask.png`/`instances.json` 和过滤前边界诊断已接通。正常运行的 schema v3 冻结原图/尺度、resolved 科学设置及权重/配置/模型卡/Adapter 源码完整 bundle；执行时核对 build identity 并单独保存实际设备/seed/后端证据。U-Net 已有灰度/百分位预处理、底部无效区和 overlap tiling。2026-07-23 接入 Large TorchScript，SHA-256、源 checkpoint 的 56 个 tensor、CPU 载入、有限输出和重复推理一致性均已独立复核；安装 `models` 依赖时 Large 登记为 `ready`。 | Large 仍缺资产/许可台账、无泄漏 split manifest、固定 SEM/GT、机器可读评测和目标部署完整 Analysis 冷启动证据，因此只达到运行就绪，不是科学验收。Small/Agglomerated U-Net、YOLO-Seg、SAM2 四项仍为 `unavailable`，真实多模型闭环未成立。 |
 | RAG | 文档摄取/切块、SQLite FTS5、RRF、严格材料标签、多材料澄清、摘录/OpenAI-compatible 提供器、引用 provenance 与文档启停已实现。页数/字符/chunk/别名/向量语料有界，embedding 分批。可选向量 runtime 已接通 local-files-only SentenceTransformers、不可变 FAISS generation、原子 manifest、数据库映射校验和失败降级。 | 当前环境没有固定真实 embedding 模型及经许可并覆盖演示材料的正式语料包；fake backend 门禁不能替代真实资产的重启/检索冒烟，因此不得宣称生产向量 RAG 已交付。 |
 
 关键入口：

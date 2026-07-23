@@ -62,7 +62,7 @@ TORCHSCRIPT_SHA256 = "007d9a16bf31e5f960160c52eefa938b83feeac2e6c0d7dec9c8670a38
 # These three source-asset digests intentionally live together.  Refresh them only when
 # the corresponding version-1 config/card/adapter is deliberately changed.
 CONFIG_SHA256 = "4e48c75d960faaa17868f0318da5526a6ba72211396ec106c2e57ce7eecc8856"
-MODEL_CARD_SHA256 = "bac2eacbc3569cc24e76aa90edf4a00ed1cfd7149180bf07113a4e905e2d7bfc"
+MODEL_CARD_SHA256 = "5dedae0a718f57805a939484493bd079cc56a78d205fe98c55feebb86581a4ec"
 ADAPTER_SHA256 = "6055db452f0a78a0352732d66ea3436f16a558cf19d1a6f022a78627136dfab6"
 TEST_FILENAMES = ("SrZr-3.tif", "BaCu-2.tif", "PrCu-3.tif")
 IMAGE_WIDTH = 2048

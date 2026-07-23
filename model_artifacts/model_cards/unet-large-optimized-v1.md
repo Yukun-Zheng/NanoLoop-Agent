@@ -1,15 +1,25 @@
 # unet-large-optimized-v1
 
-Status: **unavailable**. The external model artifact is not distributed with this repository, and
-the available evidence is not sufficient to claim scientific readiness.
+Status: **runtime ready; scientific acceptance pending**. The delivered TorchScript is distributed
+with this repository and passes the runtime checks recorded below. The available evidence is still
+not sufficient to claim scientific readiness.
 
 ## Delivery audit boundary
 
-The 2026-07-21 handoff ZIP did **not** contain the checkpoint/TorchScript, the calibration and
-independent-test JSON/CSV named below, a source/sample-level split manifest, or a license and
-custody ledger for the images, masks, and model assets. The numerical values in this card are thus
-developer-reported and have not been independently reproduced from the repository. They are useful
-handoff context, but they are not acceptance evidence and cannot activate the registry entry.
+The 2026-07-21 handoff ZIP did **not** contain the checkpoint/TorchScript, calibration and
+independent-test JSON/CSV, a source/sample-level split manifest, or a license and custody ledger.
+The 2026-07-23 `ModelAssets-large.zip` delivery added the source checkpoint and deployable
+TorchScript. Integration independently verified both SHA-256 values, safely loaded the source
+checkpoint with `weights_only=True`, loaded the TorchScript on CPU, and ran two deterministic
+`[1, 1, 512, 512]` inferences with finite `[1, 1, 512, 512]` outputs and maximum repeat difference
+of `0.0`.
+
+The numerical calibration and test values below remain developer-reported because the machine-
+readable evidence, fixed source/sample split manifest, ground-truth bundle, and execution records
+were not delivered. They are useful handoff context, but they are not acceptance evidence.
+No license or written redistribution/custody record accompanied the model assets; inclusion here
+records the project owner's requested internal project delivery and does not grant third parties
+permission to redistribute or use the model outside the project.
 
 This is the optimized, single-channel large-particle U-Net. Each `DoubleConv` uses two
 `Conv2d(bias=False) + GroupNorm(8) + ReLU` blocks. Decoder upsampling is bilinear with
@@ -24,11 +34,12 @@ This is the optimized, single-channel large-particle U-Net. Each `DoubleConv` us
 - Source SHA-256: `5c5dbcae61f40f8eb1fef27c7b69592a727260898330abc546f7e7a6833035bd`
 - Exported model: `unet-large-optimized-v1.pt`
 - Export format: TorchScript
-- External bundle relative path: `weights/unet-large-optimized-v1.pt`
-- Approximate exported size: `13 MiB`
+- Repository path: `model_artifacts/weights/unet-large-optimized-v1.pt`
+- Exported size: `13,505,917` bytes
 - Export SHA-256: `007d9a16bf31e5f960160c52eefa938b83feeac2e6c0d7dec9c8670a38626e05`
 
-Neither model asset is distributed with this repository.
+The deployable TorchScript is distributed with this repository. The redundant source checkpoint is
+not tracked in Git; its immutable identity is retained above for reconstruction and custody review.
 
 ## Export verification
 
@@ -191,5 +202,6 @@ limits the strength and scope of any later test-set claim.
 The large-specific threshold and postprocessing parameters are calibrated and frozen above. The
 small-model value of 64 px is not a large-model default and must not be reused. Independent
 sample-level evidence remains incomplete even though the real full-Analysis smoke and the frozen
-three-field independent evaluation are complete. This model therefore cannot be described as scientifically ready.
-Its registry status must remain `unavailable`.
+three-field independent evaluation are complete. This model therefore cannot be described as
+scientifically ready. Its authored registry status is `ready` only for the verified runtime bundle;
+scientific acceptance remains pending.

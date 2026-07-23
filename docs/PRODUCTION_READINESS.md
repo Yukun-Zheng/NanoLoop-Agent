@@ -13,7 +13,8 @@
 | 无外部模型/语料的诚实降级启动 | 支持 | 模型保持 `unavailable`，RAG 可保持 keyword-only/unavailable，健康接口不会把缺失资产报告为正常科学闭环。 |
 | 六页 Streamlit 工程工作台 | 支持 | 六页 AppTest 与容器启动已通过；真实业务演示仍受模型和 RAG 外部资产阻塞。 |
 | 人工矩形 ROI 编辑 | 支持 | 前端内置离线 canvas 与同步数值编辑器；单元测试覆盖坐标/载荷，本地 headless Chrome 已验证拖拽、CAS 保存、重载与 REST revision round-trip。 |
-| 真实 SEM 分割与模型对比演示 | 阻塞 | 没有真实 checkpoint、共同 fixture、模型卡评测和冷启动证据，见 [FR-06](requirements-traceability.md)。 |
+| 真实 SEM 单模型分割 | 部分可用 | Large TorchScript 已通过 CPU 载入和重复推理检查；仍缺许可明确的共同 SEM/GT、机器可读独立评测和目标部署完整 Analysis 冷启动证据，见 [FR-06](requirements-traceability.md)。 |
+| 真实多模型对比演示 | 阻塞 | 只有 Large 一个运行 bundle；其余四个模型无可用 checkpoint，不能形成真实 2～3 模型共同图像闭环。 |
 | 生产向量 RAG | 资产阻塞 | FTS5 与引用摘录是稳定基线；可选向量 runtime 已实现持久恢复、模型/维度/数据库映射、原子发布和降级测试，但没有固定真实 embedding 模型与正式许可语料完成资产级验收。 |
 | 公网或多租户服务 | 不支持 | 可撤销 principal credential、Analysis/Query tenant scope，以及 subject-bound file-token v2、artifact registry 与 pinned-fd 下载已接通；但知识文档租户化、分布式限流、调用/磁盘 quota 和 retention 尚未完成。 |
 | 多 Uvicorn worker / 多 API replica | 不支持 | SQLite 写协调、进程内 dispatcher、Adapter 缓存和导出协调按单进程/单 API 实例设计。 |

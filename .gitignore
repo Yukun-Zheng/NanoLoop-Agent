@@ -26,6 +26,7 @@ knowledge_base/sources/*
 !knowledge_base/sources/.gitkeep
 model_artifacts/weights/*
 !model_artifacts/weights/.gitkeep
+!model_artifacts/weights/unet-large-optimized-v1.pt
 
 # RAG acceptance: default-deny private inputs and generated evidence.  Only the
 # explicitly listed public contracts/examples may be tracked below.
