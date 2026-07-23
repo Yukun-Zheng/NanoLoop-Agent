@@ -37,7 +37,10 @@ def load_manifest(package: Path) -> dict[str, Any]:
 
 def safe_document_path(package: Path, relative_value: str) -> Path:
     relative = PurePosixPath(relative_value)
-    if relative.is_absolute() or any(part in {"", ".", ".."} for part in relative.parts):
+    unsafe = relative.is_absolute() or any(
+        part in {"", ".", ".."} for part in relative.parts
+    )
+    if unsafe:
         raise ValueError(f"unsafe document path: {relative_value!r}")
     candidate = (package / Path(*relative.parts)).resolve()
     try:
@@ -49,7 +52,10 @@ def safe_document_path(package: Path, relative_value: str) -> Path:
     return candidate
 
 
-def validate_document(package: Path, document: dict[str, Any]) -> tuple[Path, dict[str, Any], str]:
+def validate_document(
+    package: Path,
+    document: dict[str, Any],
+) -> tuple[Path, dict[str, Any], str]:
     asset_id = document.get("asset_id")
     if not isinstance(asset_id, str) or not asset_id.strip():
         raise ValueError("each document requires asset_id")
@@ -78,9 +84,12 @@ def validate_document(package: Path, document: dict[str, Any]) -> tuple[Path, di
     if missing:
         raise ValueError(f"{asset_id}: metadata missing {missing}")
     aliases = metadata.get("material_aliases")
-    if not isinstance(aliases, list) or not aliases or not all(
-        isinstance(item, str) and item.strip() for item in aliases
-    ):
+    valid_aliases = (
+        isinstance(aliases, list)
+        and bool(aliases)
+        and all(isinstance(item, str) and item.strip() for item in aliases)
+    )
+    if not valid_aliases:
         raise ValueError(f"{asset_id}: material_aliases must be non-empty strings")
     if metadata.get("allowed_for_demo") is not True:
         raise ValueError(f"{asset_id}: curated demo document must be allowed_for_demo=true")
@@ -166,7 +175,11 @@ def main(argv: list[str] | None = None) -> int:
 
             reindex_data: dict[str, Any] | None = None
             if not args.skip_reindex:
-                reindex_data = unwrap(client.post("/api/v1/knowledge/reindex", json={"force": False}))
+                response = client.post(
+                    "/api/v1/knowledge/reindex",
+                    json={"force": False},
+                )
+                reindex_data = unwrap(response)
 
             catalogue = unwrap(client.get("/api/v1/knowledge/documents"))
             indexed = catalogue.get("documents", [])
@@ -180,7 +193,8 @@ def main(argv: list[str] | None = None) -> int:
             }
             missing = sorted(expected_shas - present_shas)
             if missing:
-                raise RuntimeError(f"ingested demo documents missing from ready catalogue: {missing}")
+                message = f"ingested demo documents missing from ready catalogue: {missing}"
+                raise RuntimeError(message)
 
         report = {
             "status": "ok",
@@ -196,12 +210,13 @@ def main(argv: list[str] | None = None) -> int:
         print(rendered)
         return 0
     except Exception as error:
+        error_payload = {
+            "status": "error",
+            "error_type": type(error).__name__,
+            "message": str(error),
+        }
         print(
-            json.dumps(
-                {"status": "error", "error_type": type(error).__name__, "message": str(error)},
-                ensure_ascii=False,
-                indent=2,
-            ),
+            json.dumps(error_payload, ensure_ascii=False, indent=2),
             file=sys.stderr,
         )
         return 1
