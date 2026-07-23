@@ -13,10 +13,14 @@ from app.contracts.queries import MaterialContext
         ("哪组颗粒数密度最高？", QueryType.ANALYSIS_DATA),
         ("SrNi 有哪些已知应用和文献？", QueryType.MATERIAL_KNOWLEDGE),
         ("已有研究怎么说，我们这批覆盖率最高吗？", QueryType.MIXED),
+        ("这个材料可以在什么领域发挥作用？", QueryType.MATERIAL_KNOWLEDGE),
+        ("A 位缺位为什么可能促进析出？", QueryType.MATERIAL_KNOWLEDGE),
+        ("当前平均粒径较大，是否可能与高温粗化有关？", QueryType.MIXED),
     ],
 )
 def test_classifies_frozen_signal_groups(question: str, expected: QueryType) -> None:
-    decision = QueryRouter().classify(question)
+    context = MaterialContext(name="LaNi") if "这个材料" in question else None
+    decision = QueryRouter().classify(question, material_context=context)
 
     assert decision.query_type == expected
     assert not decision.needs_clarification

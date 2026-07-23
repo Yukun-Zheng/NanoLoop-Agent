@@ -18,6 +18,20 @@ from app.rag.providers import (
 )
 from app.rag.retrieval import RetrievalService
 
+_UNGROUNDED_INSTRUCTION_MARKERS = (
+    "忽略文献",
+    "忽略引用",
+    "不要引用",
+    "无需证据",
+    "没有证据也",
+    "编造",
+    "虚构",
+    "fabricate",
+    "make up",
+    "ignore the literature",
+    "ignore citations",
+)
+
 
 @dataclass(frozen=True, slots=True)
 class KnowledgeAnswer:
@@ -70,6 +84,16 @@ class KnowledgeService:
         *,
         material_context: MaterialContext | None = None,
     ) -> KnowledgeAnswer:
+        if _requests_ungrounded_answer(question):
+            return KnowledgeAnswer(
+                answer="该请求要求忽略或编造证据，NanoLoop 不会在没有可核验来源时生成材料事实。",
+                citations=(),
+                confidence="low",
+                limitations=("拒绝绕过知识库引用与证据约束",),
+                outcome_code="INSUFFICIENT_EVIDENCE",
+                material_context=material_context,
+            )
+
         aliases = _material_aliases(material_context)
         report = self.retrieval.retrieve_with_report(
             RetrievalRequest(query=question, material_aliases=aliases)
@@ -139,6 +163,11 @@ class KnowledgeService:
             outcome_code="OK",
             material_context=material_context,
         )
+
+
+def _requests_ungrounded_answer(question: str) -> bool:
+    normalized = " ".join(question.casefold().split())
+    return any(marker in normalized for marker in _UNGROUNDED_INSTRUCTION_MARKERS)
 
 
 def _material_aliases(context: MaterialContext | None) -> list[str]:

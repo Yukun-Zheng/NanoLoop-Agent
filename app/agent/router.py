@@ -38,6 +38,18 @@ _KNOWLEDGE_SIGNALS = (
     "机理",
     "用途",
     "应用",
+    "作用",
+    "领域",
+    "优势",
+    "结构",
+    "稳定性",
+    "催化",
+    "氧空位",
+    "析出",
+    "成核",
+    "粗化",
+    "团聚",
+    "应变",
     "已有研究",
     "文献",
     "报道",
@@ -47,6 +59,7 @@ _KNOWLEDGE_SIGNALS = (
     "literature",
     "application",
     "property",
+    "mechanism",
 )
 _CONTEXTUAL_MATERIAL_QUESTIONS = ("这个材料", "该材料", "这种材料")
 

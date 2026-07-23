@@ -16,7 +16,7 @@ from app.rag.keyword_store import (
 from app.rag.vector_store import UnavailableVectorStore, VectorStore
 
 _RRF_K = 60
-_ALIAS_SEPARATORS = re.compile(r"[\s_-]+")
+_ALIAS_SEPARATORS = re.compile(r"[\s_\-–—/·]+")
 
 
 @dataclass(frozen=True, slots=True)
