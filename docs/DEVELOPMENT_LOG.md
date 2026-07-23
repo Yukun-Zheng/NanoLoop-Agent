@@ -654,3 +654,18 @@
 - 用户入口：新增[图文测试与演示指南](USER_ACCEPTANCE_GUIDE.md)和
   [2026-07-23/24 事实验收报告](acceptance-report-2026-07-23.md)；截图只显示项目自制公开资产，
   已去除个人浏览器标签、书签、头像和私人显微图像。
+
+## 2026-07-24 — 响应 PostCSS 安全公告并恢复前端门禁
+
+- 触发事实：图文验收批次的 GitHub Actions run `30028955174` 中，Python 3.11、Python 3.12
+  及 Ruff/Mypy/OpenAPI/Alembic 均通过；前端任务在执行代码检查前被生产依赖审计阻断。根因是
+  `GHSA-6g55-p6wh-862q` 新披露的 PostCSS 任意文件读取/信息泄露问题，受影响版本为
+  `<=8.5.11`，仓库当时通过 pnpm override 固定在 `8.5.10`。
+- 修复范围：只把现有 PostCSS override 和锁文件解析从 `8.5.10` 提升到当前补丁版本
+  `8.5.22`；Next.js、React、Tailwind 和其他直接依赖均未升级，避免把安全修复扩大成无关的依赖
+  迁移。
+- 本地证据：使用仓库声明的 Node 24 与 pnpm 10.34.5 从锁文件安装后，`pnpm audit --prod`
+  报告无已知漏洞；OpenAPI TypeScript 生成结果无漂移，ESLint、严格 TypeScript、17 个 Vitest
+  文件共 82 项测试和 Next.js production build 全部通过。
+- 发布状态：本条所在提交推送后仍必须由新的 GitHub Actions run 复验；旧 run 的失败结论保留，
+  不通过隐藏或跳过审计来制造全绿。
