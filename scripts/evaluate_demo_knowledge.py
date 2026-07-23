@@ -14,7 +14,8 @@ import httpx
 
 def load_questions(path: Path) -> list[dict[str, Any]]:
     questions: list[dict[str, Any]] = []
-    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+    lines = path.read_text(encoding="utf-8").splitlines()
+    for line_number, line in enumerate(lines, start=1):
         if not line.strip():
             continue
         try:
@@ -63,7 +64,9 @@ def evaluate_one(question: dict[str, Any], data: dict[str, Any]) -> dict[str, An
         )
     expected_type = question.get("query_type")
     if data.get("query_type") != expected_type:
-        errors.append(f"query_type expected {expected_type}, observed {data.get('query_type')}")
+        errors.append(
+            f"query_type expected {expected_type}, observed {data.get('query_type')}"
+        )
     citations = data.get("citations", [])
     if not isinstance(citations, list):
         errors.append("citations is not a list")
@@ -75,12 +78,12 @@ def evaluate_one(question: dict[str, Any], data: dict[str, Any]) -> dict[str, An
         errors.append("insufficient-evidence answer must not contain citations")
     answer = str(data.get("answer", ""))
     expected_tokens = question.get("expected_answer_contains_any", [])
-    if expected_outcome == "OK" and isinstance(expected_tokens, list) and expected_tokens:
-        if not any(
-            isinstance(token, str) and token.casefold() in answer.casefold()
-            for token in expected_tokens
-        ):
-            errors.append(f"answer contains none of expected tokens: {expected_tokens}")
+    token_match = isinstance(expected_tokens, list) and any(
+        isinstance(token, str) and token.casefold() in answer.casefold()
+        for token in expected_tokens
+    )
+    if expected_outcome == "OK" and expected_tokens and not token_match:
+        errors.append(f"answer contains none of expected tokens: {expected_tokens}")
     unknown_citations = [
         citation
         for citation in citations
@@ -129,7 +132,11 @@ def main(argv: list[str] | None = None) -> int:
     results: list[dict[str, Any]] = []
     base = args.api_base.rstrip("/")
     try:
-        with httpx.Client(base_url=base, headers=request_headers(), timeout=args.timeout) as client:
+        with httpx.Client(
+            base_url=base,
+            headers=request_headers(),
+            timeout=args.timeout,
+        ) as client:
             for question in selected:
                 payload = {
                     "question": question["question"],
@@ -155,21 +162,17 @@ def main(argv: list[str] | None = None) -> int:
             json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-        print(
-            json.dumps(
-                {key: report[key] for key in report if key != "results"},
-                ensure_ascii=False,
-                indent=2,
-            )
-        )
+        summary = {key: report[key] for key in report if key != "results"}
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
         return 0 if not failed else 2
     except Exception as error:
+        error_payload = {
+            "status": "error",
+            "error_type": type(error).__name__,
+            "message": str(error),
+        }
         print(
-            json.dumps(
-                {"status": "error", "error_type": type(error).__name__, "message": str(error)},
-                ensure_ascii=False,
-                indent=2,
-            ),
+            json.dumps(error_payload, ensure_ascii=False, indent=2),
             file=sys.stderr,
         )
         return 1
