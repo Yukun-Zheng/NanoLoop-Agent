@@ -523,3 +523,29 @@
 - 验收边界：mock 浏览器场景和工程构建不证明目标后端、Large U-Net 科学性能、多模型共同图像、
   正式 RAG 语料/embedding 或知识租户隔离。旧前端的 live ROI round-trip 不能自动转移到重写版本；
   仍需在目标环境完成真实后端 ROI、制品、复核、导出、RAG 和错误/降级路径验收。
+
+## 2026-07-23 19:26 +08:00 — 合并当前主线并审计 Large A/B 模型交付
+
+- 主线收束：RAG 正式知识卡与可复现摄取 [PR #18](https://github.com/Yukun-Zheng/NanoLoop-Agent/pull/18)、
+  Small-A 私有资产合同 [PR #19](https://github.com/Yukun-Zheng/NanoLoop-Agent/pull/19) 和 Next.js
+  Command Center [PR #20](https://github.com/Yukun-Zheng/NanoLoop-Agent/pull/20) 已依次合入 `main`，
+  源分支删除；合并后 `main` 的
+  [Actions run 30002138826](https://github.com/Yukun-Zheng/NanoLoop-Agent/actions/runs/30002138826)
+  全绿，包括 Python 3.11/3.12、Ruff/严格 Mypy/OpenAPI/Alembic、Next.js lint/type/unit/build/
+  Playwright，以及 API + Next.js 双容器、备份恢复冒烟。
+- 新交付：审计 `ModelAssets-large-a.zip`（SHA-256 `4173d797...d4815`）、
+  `ModelAssets-large-b.zip`（`c23a1000...06351`）和独立评估 tar（`5f2de1c2...5b2b8`）。
+  三包无路径穿越、链接、加密成员或解压炸弹；Large-A/B 中的 TorchScript 与仓库现有
+  `007d9a16...26e05` 权重逐字节相同。Large-B 是同一模型的 B 模块后处理/验收包，不新增
+  `model_id`。
+- 独立复核：直接读取外部交付中的三张历史 prediction 和人工 GT，重算全部像素混淆计数及
+  Dice/IoU/Precision/Recall；结果与 JSON/CSV 完全一致。清洗后的哈希、计数、指标和限制进入
+  `model_artifacts/evidence/unet-large-optimized-v1/delivery-audit-2026-07-23.json`，测试会从计数
+  再计算逐图、Macro 和 Micro 指标。
+- 未覆盖当前科学合同：历史运行的 weight 与当前一致，但 Adapter/config/card 摘要不同，执行
+  Git commit 未记录；threshold 报告未从概率数组独立重算，min-area 缺完整机器证据。因此 registry
+  的 `ready` 仍只表示 runtime，`evidence_bundle_delivered=false`，科学验收保持 pending。
+- 公开仓库最小化：三包没有模型/数据再分发授权；原始 TIF 还含仪器序列号、采集时间、内部路径和
+  台面坐标，JSON/SQLite 含服务器路径。未提交原图、GT、概率、SQLite、重复权重/checkpoint、派生
+  误差图或包内旧脚本；只提交不含私有二进制的审计事实。后续需补许可/custody、split、tolerance
+  policy，并使用当前 bundle 在目标环境完成完整 Analysis 重跑。

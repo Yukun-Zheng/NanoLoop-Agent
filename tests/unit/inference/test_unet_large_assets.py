@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import math
 import shutil
 from copy import deepcopy
 from pathlib import Path
@@ -22,6 +24,15 @@ def _registry_models() -> dict[str, dict[str, object]]:
     return {entry["metadata"]["model_id"]: entry for entry in payload["models"]}
 
 
+def _large_delivery_audit() -> dict[str, object]:
+    path = (
+        _artifact_root() / "evidence" / "unet-large-optimized-v1" / "delivery-audit-2026-07-23.json"
+    )
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert isinstance(payload, dict)
+    return payload
+
+
 def test_large_runtime_weight_matches_registered_identity() -> None:
     weight_path = _artifact_root() / "weights" / "unet-large-optimized-v1.pt"
 
@@ -31,11 +42,124 @@ def test_large_runtime_weight_matches_registered_identity() -> None:
     )
 
 
+def test_large_delivery_audit_recomputes_historical_pixel_metrics() -> None:
+    audit = _large_delivery_audit()
+
+    assert audit["schema_version"] == "1"
+    assert audit["model_id"] == "unet-large-optimized-v1"
+    assert audit["review_scope"] == "historical_bundle_pixel_metrics_only"
+    assert audit["source_packages"] == [
+        {
+            "filename": "ModelAssets-large-a.zip",
+            "size_bytes": 173_627_966,
+            "sha256": "4173d7979d444fb1e74a7f5d3894a85f1feaed62e8c9443bdb9d7216dddd4815",
+            "retention": "external_private_not_committed",
+            "purpose": "runtime_and_historical_analysis_bundle",
+        },
+        {
+            "filename": "ModelAssets-large-b.zip",
+            "size_bytes": 72_236_041,
+            "sha256": "c23a1000c27b2290950661cff5b2d7716d6f4ffcfb5c657f13d640c656306351",
+            "retention": "external_private_not_committed",
+            "purpose": "historical_b_module_outputs_and_scripts",
+        },
+        {
+            "filename": "large-unet-independent-evaluation-v1.tar.gz",
+            "size_bytes": 60_753,
+            "sha256": "5f2de1c2db12a87e7396b434382c75b050770da234c56906c46a0352bf05b2b8",
+            "retention": "external_private_not_committed",
+            "purpose": "historical_pixel_metrics_and_review_images",
+        },
+    ]
+
+    runtime = audit["runtime_identity"]
+    assert isinstance(runtime, dict)
+    weight_path = _artifact_root() / str(runtime["repository_path"]).removeprefix(
+        "model_artifacts/"
+    )
+    assert weight_path.stat().st_size == runtime["torchscript_size_bytes"]
+    assert hashlib.sha256(weight_path.read_bytes()).hexdigest() == runtime["torchscript_sha256"]
+    assert runtime["large_a_torchscript_matches_repository"] is True
+
+    historical = audit["historical_run_bundle"]
+    assert isinstance(historical, dict)
+    assert historical["weight_sha256"] == runtime["torchscript_sha256"]
+    assert historical["matches_current_runtime_weight"] is True
+    assert historical["matches_current_source_contract"] is False
+    current_hashes = {
+        "adapter_sha256": hashlib.sha256(
+            (Path(__file__).parents[3] / "app" / "inference" / "adapters" / "unet.py").read_bytes()
+        ).hexdigest(),
+        "config_sha256": hashlib.sha256(
+            (_artifact_root() / "configs" / "unet-large-optimized-v1.yaml").read_bytes()
+        ).hexdigest(),
+        "model_card_sha256": hashlib.sha256(
+            (_artifact_root() / "model_cards" / "unet-large-optimized-v1.md").read_bytes()
+        ).hexdigest(),
+    }
+    for field, current_sha256 in current_hashes.items():
+        assert historical[field] != current_sha256
+
+    evaluation = audit["independent_pixel_evaluation"]
+    assert isinstance(evaluation, dict)
+    assert evaluation["all_reported_hashes_and_counts_matched"] is True
+    samples = evaluation["samples"]
+    assert isinstance(samples, list)
+    assert [sample["sample_id"] for sample in samples] == ["SrZr-3", "BaCu-2", "PrCu-3"]
+    assert len({sample["filename"] for sample in samples}) == 3
+
+    totals = {"tp": 0, "fp": 0, "fn": 0, "tn": 0}
+    metric_names = ("dice", "iou", "precision", "recall")
+    observed_metrics: dict[str, list[float]] = {name: [] for name in metric_names}
+    for sample in samples:
+        counts = sample["counts"]
+        metrics = sample["metrics"]
+        tp = counts["tp"]
+        fp = counts["fp"]
+        fn = counts["fn"]
+        expected = {
+            "dice": (2 * tp) / ((2 * tp) + fp + fn),
+            "iou": tp / (tp + fp + fn),
+            "precision": tp / (tp + fp),
+            "recall": tp / (tp + fn),
+        }
+        for name in metric_names:
+            assert metrics[name] == pytest.approx(expected[name], rel=0.0, abs=1e-15)
+            observed_metrics[name].append(metrics[name])
+        for name in totals:
+            totals[name] += counts[name]
+
+    macro = evaluation["macro_average"]
+    for name in metric_names:
+        assert macro[name] == pytest.approx(
+            sum(observed_metrics[name]) / len(observed_metrics[name]),
+            rel=0.0,
+            abs=1e-15,
+        )
+
+    micro = evaluation["micro_average"]
+    assert {name: micro[name] for name in totals} == totals
+    tp = totals["tp"]
+    fp = totals["fp"]
+    fn = totals["fn"]
+    expected_micro = {
+        "dice": (2 * tp) / ((2 * tp) + fp + fn),
+        "iou": tp / (tp + fp + fn),
+        "precision": tp / (tp + fp),
+        "recall": tp / (tp + fn),
+    }
+    for name in metric_names:
+        assert math.isclose(micro[name], expected_micro[name], rel_tol=0.0, abs_tol=1e-15)
+
+    acceptance = audit["scientific_acceptance"]
+    assert isinstance(acceptance, dict)
+    assert acceptance["status"] == "pending_current_bundle_rerun_and_policy"
+    assert "license_or_written_authorization_missing" in acceptance["blockers"]
+
+
 def test_large_unet_config_freezes_confirmed_inference_contract() -> None:
     config = yaml.safe_load(
-        (_artifact_root() / "configs" / "unet-large-optimized-v1.yaml").read_text(
-            encoding="utf-8"
-        )
+        (_artifact_root() / "configs" / "unet-large-optimized-v1.yaml").read_text(encoding="utf-8")
     )
 
     assert config == {
@@ -82,13 +206,31 @@ def test_large_public_registry_is_runtime_ready_with_180_px_invalid_bottom() -> 
     assert metadata["default_min_area_px"] == 512
     assert metadata["expected_input_width"] == 2048
     assert metadata["expected_input_height"] == 1536
-    assert metadata["metrics"]["developer_reported_min_area_gt_retention"] == 1.0
+    assert metadata["metrics"] == {
+        "developer_reported_threshold_macro_dice": 0.7086369503967919,
+        "developer_reported_threshold_macro_iou": 0.6023708166699938,
+        "developer_reported_threshold_micro_dice": 0.722377672920259,
+        "developer_reported_threshold_micro_iou": 0.5654078342317297,
+        "developer_reported_min_area_gt_retention": 1.0,
+        "historical_bundle_verified_pixel_macro_dice": 0.8053234061081441,
+        "historical_bundle_verified_pixel_macro_iou": 0.6854416626935307,
+        "historical_bundle_verified_pixel_micro_dice": 0.7734422618347466,
+        "historical_bundle_verified_pixel_micro_iou": 0.630579578741805,
+    }
     assert metadata["metric_context"] == {
-        "evidence_status": "developer_reported_not_independently_verified",
+        "evidence_status": "historical_pixel_metrics_verified_current_bundle_acceptance_pending",
         "runtime_asset_delivered": True,
         "runtime_asset_verified": True,
         "runtime_verification_device": "cpu",
         "evidence_bundle_delivered": False,
+        "developer_evidence_archives_delivered": True,
+        "historical_pixel_metrics_independently_recomputed": True,
+        "historical_run_matches_current_source_contract": False,
+        "independent_test_scope": "field_of_view",
+        "independent_test_image_count": 3,
+        "current_bundle_scientific_rerun_status": "pending",
+        "license_review_status": "missing",
+        "tolerance_policy_status": "missing",
         "asset_ledger_delivered": False,
         "redistribution_permission_delivered": False,
         "training_split_verification": "unknown",
@@ -196,9 +338,7 @@ def test_large_external_bundle_resolves_relative_assets_and_fails_closed(
 
 def test_small_unet_asset_contract_includes_confirmed_input_dimensions() -> None:
     config = yaml.safe_load(
-        (_artifact_root() / "configs" / "unet-small-balanced-v1.yaml").read_text(
-            encoding="utf-8"
-        )
+        (_artifact_root() / "configs" / "unet-small-balanced-v1.yaml").read_text(encoding="utf-8")
     )
     entry = _registry_models()["unet-small-balanced-v1"]
 
@@ -264,9 +404,11 @@ def test_large_model_card_records_export_and_scientific_readiness_limits() -> No
     assert "`perimeter_neighborhood=8`" in card
     assert "not sample-level independent" in card
     assert "scientific acceptance remains pending" in card
-    assert "developer-reported" in card
-    assert "not acceptance evidence" in card
+    assert "historical run's pixel metrics" in card
+    assert "current-bundle rerun" in card
+    assert "not independently recomputed" in card
     assert "`expected_image_size=[1536, 2048]`" in card
+
 
 def test_large_model_card_records_frozen_independent_test_evidence() -> None:
     card = (_artifact_root() / "model_cards" / "unet-large-optimized-v1.md").read_text(
@@ -316,7 +458,7 @@ def test_large_model_card_records_frozen_independent_test_evidence() -> None:
     assert "`TN=8101856`" in card
     assert "top `2048 x 1356 px`" in card
     assert "bottom 180 px (`y=1356..1536`)" in card
-    assert "`pred_mask.png`" in card and "`test_mask_human`" in card
+    assert "`pred_mask.png`" in card and "corresponding human mask" in card
     assert "did not repeat inference" in card
     assert "must not be used to tune" in card
     assert "under-detection limitation" in card
@@ -324,4 +466,7 @@ def test_large_model_card_records_frozen_independent_test_evidence() -> None:
 
     metadata = _registry_models()["unet-large-optimized-v1"]["metadata"]
     assert metadata["status"] == "ready"
+    assert metadata["metric_context"]["historical_pixel_metrics_independently_recomputed"] is True
+    assert metadata["metric_context"]["historical_run_matches_current_source_contract"] is False
+    assert metadata["metric_context"]["evidence_bundle_delivered"] is False
     assert "scientific acceptance remains pending" in card

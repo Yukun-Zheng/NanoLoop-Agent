@@ -7,7 +7,7 @@
 Uvicorn worker，内部分析线程数由 `ANALYSIS_WORKER_COUNT` 控制。不要用增加 Uvicorn worker
 的方式提高模型并发。
 
-当前部署基线为最新全绿 `main`，发布等级是 **M1 工程 MVP / 内部 Alpha**。默认资产目录已包含 Large U-Net TorchScript；安装 `models` extra 且 bundle 校验通过时该项为 `ready`，其余四个模型仍为 `unavailable`。示例 smoke fixture 仍需替换为许可明确的真实数据，Large 的许可/独立科学证据、正式 RAG 语料与固定 embedding 尚未交付。基础设施和单模型运行可用不等于科学闭环已经验收；当前真实资产门槛见 [需求追踪矩阵](requirements-traceability.md) 和 [生产就绪说明](PRODUCTION_READINESS.md)。
+当前部署基线为最新全绿 `main`，发布等级是 **M1 工程 MVP / 内部 Alpha**。默认资产目录已包含 Large U-Net TorchScript；安装 `models` extra 且 bundle 校验通过时该项为 `ready`，其余四个模型仍为 `unavailable`。示例 smoke fixture 仍需替换为许可明确的真实数据。Large 的历史独立集像素指标已从交付字节复核，但许可/custody、split、tolerance policy 和当前 bundle 完整科学重跑仍未交付；正式 RAG 语料与固定 embedding 也尚未验收。基础设施和单模型运行可用不等于科学闭环已经验收；当前真实资产门槛见 [需求追踪矩阵](requirements-traceability.md)、[Large A/B 接入审计](model-assets-large-a-b-acceptance-2026-07-23.md) 和 [生产就绪说明](PRODUCTION_READINESS.md)。
 
 默认端口只发布到 `127.0.0.1`。API 依据 `TRUSTED_HOSTS` 拒绝异常 Host，并依据
 `CORS_ALLOW_ORIGINS`/同站 fetch metadata 保护浏览器写请求。`AUTH_MODE` 支持

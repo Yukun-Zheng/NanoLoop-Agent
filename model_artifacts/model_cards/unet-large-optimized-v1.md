@@ -6,17 +6,25 @@ not sufficient to claim scientific readiness.
 
 ## Delivery audit boundary
 
-The 2026-07-21 handoff ZIP did **not** contain the checkpoint/TorchScript, calibration and
-independent-test JSON/CSV, a source/sample-level split manifest, or a license and custody ledger.
-The 2026-07-23 `ModelAssets-large.zip` delivery added the source checkpoint and deployable
-TorchScript. Integration independently verified both SHA-256 values, safely loaded the source
-checkpoint with `weights_only=True`, loaded the TorchScript on CPU, and ran two deterministic
-`[1, 1, 512, 512]` inferences with finite `[1, 1, 512, 512]` outputs and maximum repeat difference
-of `0.0`.
+The 2026-07-21 handoff ZIP did **not** contain the checkpoint/TorchScript or machine-readable
+calibration and independent-test evidence. The 2026-07-23 deliveries subsequently supplied a
+source checkpoint, the deployable TorchScript, historical full-Analysis outputs, three test images
+and human masks, threshold JSON/CSV, and a compact independent-evaluation bundle. Integration
+independently verified the model SHA-256 values, safely loaded the source checkpoint with
+`weights_only=True`, loaded the TorchScript on CPU, and ran two deterministic `[1, 1, 512, 512]`
+inferences with finite `[1, 1, 512, 512]` outputs and maximum repeat difference of `0.0`.
 
-The numerical calibration and test values below remain developer-reported because the machine-
-readable evidence, fixed source/sample split manifest, ground-truth bundle, and execution records
-were not delivered. They are useful handoff context, but they are not acceptance evidence.
+Integration also recalculated every delivered independent-test TP/FP/FN/TN value directly from the
+historical prediction and human-GT bytes. All per-image and aggregate pixel metrics matched the
+delivered JSON/CSV. The sanitized, machine-readable result is recorded in
+[`delivery-audit-2026-07-23.json`](../evidence/unet-large-optimized-v1/delivery-audit-2026-07-23.json).
+The raw inputs, masks, probabilities, SQLite files and derived review figures remain external.
+
+This verifies the historical run's pixel metrics, not the current repository's complete scientific
+bundle. The historical run used the same weight but different Adapter, config and model-card bytes;
+its Git commit is unknown. Threshold selection was delivered but not independently recomputed, and
+machine-readable minimum-area calibration evidence was not delivered. A fixed source/sample split
+manifest, explicit tolerance policy and current-bundle rerun are still missing.
 No license or written redistribution/custody record accompanied the model assets; inclusion here
 records the project owner's requested internal project delivery and does not grant third parties
 permission to redistribute or use the model outside the project.
@@ -40,6 +48,8 @@ This is the optimized, single-channel large-particle U-Net. Each `DoubleConv` us
 
 The deployable TorchScript is distributed with this repository. The redundant source checkpoint is
 not tracked in Git; its immutable identity is retained above for reconstruction and custody review.
+The `ModelAssets-large-b.zip` label describes B-module calibration and analysis evidence for this
+same model; it is not a second checkpoint or a second `model_id`.
 
 ## Export verification
 
@@ -68,7 +78,9 @@ calibrated strict rule `probability > 0.50`.
 
 ## Threshold calibration evidence
 
-Threshold calibration used only these six large validation fields of view:
+The delivered threshold report says calibration used only these six large validation fields of
+view. The delivery status of its JSON/CSV is recorded in the delivery audit, but the threshold scan
+has not yet been independently recomputed from the underlying probability arrays:
 
 - `NdZn-2.tif`
 - `LaMn-3.tif`
@@ -105,8 +117,10 @@ does not establish sample-level independence or cross-material generalization.
 
 ## Large-specific postprocessing calibration
 
-The large `min_area_px` calibration reused the six cached probability arrays from threshold
-calibration and did not repeat model inference. It kept the selected strict threshold
+The developer reports that the large `min_area_px` calibration reused the six cached probability
+arrays from threshold calibration and did not repeat model inference. Machine-readable min-area
+calibration evidence was not included in the reviewed deliveries. The reported procedure kept the
+selected strict threshold
 `probability > 0.50`, bottom exclusion of 180 px, and scale `100/184 nm_per_pixel` fixed. GT used
 the unfiltered `min_area_px=0` baseline; predictions were evaluated at candidate values `0`, `16`,
 `32`, `64`, `128`, `256`, `512`, and `1024`.
@@ -156,10 +170,10 @@ not replace or modify global analysis defaults:
 
 ## Frozen independent test-set evidence
 
-The developer reports that the formal full Analysis workflow completed for the three fixed test fields `SrZr-3.tif`,
-`BaCu-2.tif`, and `PrCu-3.tif`. Independent evaluation then read only each completed Analysis
-`pred_mask.png` and the corresponding human `test_mask_human`; it did not repeat inference, read
-training or validation masks, or use any test result to change a parameter.
+The delivered formal Analysis outputs cover the three fixed test fields `SrZr-3.tif`,
+`BaCu-2.tif`, and `PrCu-3.tif`. Integration independently read each historical `pred_mask.png` and
+the corresponding human mask, recomputed the pixel confusion counts and metrics, and verified all
+reported file hashes. That audit did not repeat inference or read training/validation masks.
 
 Both prediction and GT used nonzero pixels as foreground. TP, FP, FN, and TN were calculated only
 over the top `2048 x 1356 px`. The bottom 180 px (`y=1356..1536`) were excluded completely. The
@@ -185,7 +199,8 @@ under-detection limitation.
 These are three independent, non-overlapping fields of view, not three sample-level independent
 observations. The results evaluate only the already frozen model and must not be used to tune the
 threshold, `min_area_px`, or any other scientific parameter. They do not establish cross-material
-stability or scientific readiness.
+stability or scientific readiness. They are historical-bundle evidence: the weight matches the
+current runtime asset, while the Adapter/config/model-card bytes do not match current `main`.
 
 ## Data split and current evidence limits
 
@@ -202,6 +217,7 @@ limits the strength and scope of any later test-set claim.
 The large-specific threshold and postprocessing parameters are calibrated and frozen above. The
 small-model value of 64 px is not a large-model default and must not be reused. Independent
 sample-level evidence remains incomplete even though the real full-Analysis smoke and the frozen
-three-field independent evaluation are complete. This model therefore cannot be described as
+three-field historical independent evaluation are byte-verifiable. The current repository bundle
+has not been rerun under an approved tolerance policy. This model therefore cannot be described as
 scientifically ready. Its authored registry status is `ready` only for the verified runtime bundle;
 scientific acceptance remains pending.

@@ -1,0 +1,189 @@
+{
+  "schema_version": "1",
+  "model_id": "unet-large-optimized-v1",
+  "model_version": "1",
+  "reviewed_at": "2026-07-23",
+  "repository_base_commit": "46ecde0ebfe5fe0706623236a7cb7c1351523482",
+  "review_scope": "historical_bundle_pixel_metrics_only",
+  "source_packages": [
+    {
+      "filename": "ModelAssets-large-a.zip",
+      "size_bytes": 173627966,
+      "sha256": "4173d7979d444fb1e74a7f5d3894a85f1feaed62e8c9443bdb9d7216dddd4815",
+      "retention": "external_private_not_committed",
+      "purpose": "runtime_and_historical_analysis_bundle"
+    },
+    {
+      "filename": "ModelAssets-large-b.zip",
+      "size_bytes": 72236041,
+      "sha256": "c23a1000c27b2290950661cff5b2d7716d6f4ffcfb5c657f13d640c656306351",
+      "retention": "external_private_not_committed",
+      "purpose": "historical_b_module_outputs_and_scripts"
+    },
+    {
+      "filename": "large-unet-independent-evaluation-v1.tar.gz",
+      "size_bytes": 60753,
+      "sha256": "5f2de1c2db12a87e7396b434382c75b050770da234c56906c46a0352bf05b2b8",
+      "retention": "external_private_not_committed",
+      "purpose": "historical_pixel_metrics_and_review_images"
+    }
+  ],
+  "runtime_identity": {
+    "repository_path": "model_artifacts/weights/unet-large-optimized-v1.pt",
+    "source_checkpoint_sha256": "5c5dbcae61f40f8eb1fef27c7b69592a727260898330abc546f7e7a6833035bd",
+    "torchscript_sha256": "007d9a16bf31e5f960160c52eefa938b83feeac2e6c0d7dec9c8670a38626e05",
+    "torchscript_size_bytes": 13505917,
+    "large_a_torchscript_matches_repository": true,
+    "already_integrated": true
+  },
+  "historical_run_bundle": {
+    "weight_sha256": "007d9a16bf31e5f960160c52eefa938b83feeac2e6c0d7dec9c8670a38626e05",
+    "config_sha256": "94f61c6ec5a5603889b5ac84864eff9270313b8132c1a04684bda28a62594e77",
+    "model_card_sha256": "8290615267b9a860a469114892f0a2c0869d34dae6b71d4f1a7f7c5824a3e0ed",
+    "adapter_sha256": "a382e93987eda89839a87605da42402c315d77c0806ba8e186a24d095a5ade94",
+    "bundle_manifest_sha256": "6844a2107e148173377ab8be11b6b0e1bc97d133592e83f0baa174e2841a5931",
+    "matches_current_runtime_weight": true,
+    "matches_current_source_contract": false,
+    "execution_git_commit": "unknown",
+    "actual_device": "cpu"
+  },
+  "independent_pixel_evaluation": {
+    "verification_method": "independent_recalculation_from_delivered_prediction_and_human_gt_bytes",
+    "evaluated_rect_half_open": [
+      0,
+      0,
+      2048,
+      1356
+    ],
+    "excluded_bottom_rect_half_open": [
+      0,
+      1356,
+      2048,
+      1536
+    ],
+    "foreground_rule": "nonzero_pixel",
+    "all_reported_hashes_and_counts_matched": true,
+    "samples": [
+      {
+        "sample_id": "SrZr-3",
+        "filename": "SrZr-3.tif",
+        "image_sha256": "9bfd594fff30dce6b898281c6e9f4cb84a0183ba82c8d974f38a510a9092d885",
+        "ground_truth_sha256": "bdc1455729c8b133e6b0d7750068bb72f7b15aac83bd6004358b8f2d5627dbe7",
+        "prediction_sha256": "a0c802e56192299fe5d116aa39e167e606ee6d3018fca95481b0b88c8a43e559",
+        "metadata_sha256": "ff8355bc79909d0521171edd416df6d1a90a9955eee6311963465364ad3249d2",
+        "run_config_sha256": "6dc906dfdeaaec9c846465faabb26cdda1af127f392766b34ea45c7e229fdddc",
+        "execution_provenance_sha256": "2f04590106c7676abffe41c84e3080dd74fd4def2b90e3b4a7b01a4e36174bf5",
+        "counts": {
+          "tp": 33554,
+          "fp": 2763,
+          "fn": 1575,
+          "tn": 2739196
+        },
+        "metrics": {
+          "dice": 0.9392828149931417,
+          "iou": 0.8855167317639607,
+          "precision": 0.923919927306771,
+          "recall": 0.9551652480856273
+        }
+      },
+      {
+        "sample_id": "BaCu-2",
+        "filename": "BaCu-2.tif",
+        "image_sha256": "e681b5fc83de729353241303b0ee96fce48ce62b8026923607ee51765d0a50b0",
+        "ground_truth_sha256": "6576bf31bc3f94375299890b0db13a71935dbdb387f1066a0c8da7316ffe4e0b",
+        "prediction_sha256": "05ddde37ea93cc2d92aa3c7015c4f606083daa5d92ddc07ab1f27be8cc48f137",
+        "metadata_sha256": "a6c052467fab65891e91b402c366a0e3636d626e6c439f023c85b82da6de967f",
+        "run_config_sha256": "ae3549a56f5ab26db189d2d57cc6b1761dece69999cfac7f9655518f714ead93",
+        "execution_provenance_sha256": "a6cb7b19146acf4ce0ba6f739b49bc2da0e468436c900a8fc0ca475d9c0ed694",
+        "counts": {
+          "tp": 71077,
+          "fp": 16466,
+          "fn": 37545,
+          "tn": 2652000
+        },
+        "metrics": {
+          "dice": 0.724665460199322,
+          "iou": 0.5682159759529292,
+          "precision": 0.8119095758655747,
+          "recall": 0.654351788772072
+        }
+      },
+      {
+        "sample_id": "PrCu-3",
+        "filename": "PrCu-3.tif",
+        "image_sha256": "a73a7b80bbad59c2bfc0b2d81e83e64faa58ef3f8d7c59b29dd19eecc1591c71",
+        "ground_truth_sha256": "c2cd74ac3afd04928f06ae09f5b603c7da9d80a5090be5ae4e40948ce170be92",
+        "prediction_sha256": "63bbbeff6b3c10944414ca7bf7d93d9303f62023f323b6f13449eb8f706eaf50",
+        "metadata_sha256": "2376b7e04e5fda30b9cbd12eca8abc382d606a1cb1d4f77f76771b971031a266",
+        "run_config_sha256": "7d177a2878054380d6533a542b2d8ad7b1a3b03ea1f5fe6eb36e29238cce709a",
+        "execution_provenance_sha256": "8c33e1f1b328e45c28777674d84b969577af88b1a13349c36887b7d45a2e0d54",
+        "counts": {
+          "tp": 40029,
+          "fp": 12275,
+          "fn": 14124,
+          "tn": 2710660
+        },
+        "metrics": {
+          "dice": 0.7520219431319688,
+          "iou": 0.602592280363702,
+          "precision": 0.7653143163046803,
+          "recall": 0.7391834247410116
+        }
+      }
+    ],
+    "macro_average": {
+      "dice": 0.8053234061081441,
+      "iou": 0.6854416626935307,
+      "precision": 0.8337146064923419,
+      "recall": 0.7829001538662369
+    },
+    "micro_average": {
+      "tp": 144660,
+      "fp": 31504,
+      "fn": 53244,
+      "tn": 8101856,
+      "dice": 0.7734422618347466,
+      "iou": 0.630579578741805,
+      "precision": 0.8211666401761994,
+      "recall": 0.7309604656803299
+    }
+  },
+  "calibration_evidence": {
+    "threshold_json_csv_delivered": true,
+    "threshold_independently_recomputed": false,
+    "min_area_machine_readable_evidence_delivered": false
+  },
+  "repository_import_policy": {
+    "imported": [
+      "runtime_identity",
+      "sanitized_hash_ledger",
+      "independently_recomputed_pixel_counts_and_metrics"
+    ],
+    "not_imported": [
+      "duplicate_torchscript",
+      "source_checkpoint",
+      "raw_sem_images",
+      "human_ground_truth_masks",
+      "probability_arrays",
+      "sqlite_databases",
+      "run_output_trees",
+      "review_images_derived_from_private_inputs",
+      "historical_scripts_older_than_main",
+      "ipynb_checkpoints"
+    ],
+    "reason": "public_repository_minimization_and_missing_redistribution_authorization"
+  },
+  "scientific_acceptance": {
+    "status": "pending_current_bundle_rerun_and_policy",
+    "blockers": [
+      "license_or_written_authorization_missing",
+      "custody_ledger_missing",
+      "source_or_sample_split_manifest_missing",
+      "target_environment_and_commands_missing",
+      "historical_execution_git_commit_unknown",
+      "explicit_tolerance_policy_missing",
+      "current_adapter_config_card_bundle_not_rerun",
+      "current_scientific_instance_and_morphometry_gate_not_run"
+    ]
+  }
+}

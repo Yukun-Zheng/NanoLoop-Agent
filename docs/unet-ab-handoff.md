@@ -8,8 +8,14 @@
 - `model_artifacts/registry.yaml` now authors Large U-Net as `ready` because the 2026-07-23
   delivery supplied the actual TorchScript and its matching SHA-256; runtime health still fails
   closed when the optional Torch dependency or any bundle byte is missing.
-- Runtime readiness does not upgrade the developer-reported metrics to scientific acceptance.
-  License/custody, split/GT and machine-readable evaluation evidence remain required.
+- The later `ModelAssets-large-a.zip` and `ModelAssets-large-b.zip` deliveries describe one Large
+  model, not two model IDs. Their TorchScript bytes are identical to the checked-in runtime asset.
+- Historical three-field prediction/GT pixel counts and metrics have now been independently
+  recalculated and recorded in the
+  [A/B asset acceptance audit](model-assets-large-a-b-acceptance-2026-07-23.md).
+- Runtime readiness and historical pixel verification do not upgrade the current bundle to
+  scientific acceptance. License/custody, source/sample split, explicit tolerance policy and a
+  current Adapter/config/card rerun remain required.
 
 The deployable Large TorchScript is tracked in this repository at the project owner's request. The
 redundant source checkpoint is not tracked, but its immutable SHA-256 remains recorded. This
@@ -45,7 +51,7 @@ record the actual digest.
 - Large validation evidence is field-of-view-level, not sample-level independent. Known material
   sensitivity remains; do not claim cross-material stability or full scientific readiness.
 
-## What this PR verifies
+## What the repository verifies
 
 - `UNetAdapter` emits the thresholded semantic mask without applying B-module minimum-area
   filtering. Canonical postprocessing and morphometry remain in `app/analysis/`.
@@ -54,25 +60,28 @@ record the actual digest.
 - The checked-in registry exposes Large as ready only when the delivered runtime bundle and Torch
   dependency validate; missing or changed assets remain fail closed.
 
-These repository tests verify integration contracts. They do not independently reproduce the
-developer-reported scientific metrics or prove that the private checkpoint has been accepted by the
-project owner.
+Repository tests verify integration contracts and recompute the delivered historical pixel metrics
+from their recorded confusion counts. The one-time delivery audit also recalculated those counts
+directly from the external prediction and human-GT bytes. The historical execution bundle used the
+same weight but different Adapter/config/card bytes, so this is not a current-bundle scientific
+acceptance result.
 
 ## Required private acceptance package
 
-The model owner must separately provide:
+The runtime weight, historical outputs, three fixed SEM/GT pairs, per-image pixel metrics and a
+non-degraded historical Analysis run have been delivered externally. The remaining acceptance
+package must separately provide:
 
-1. The deployable Large TorchScript file and, when required for reproducibility, the source training
-   checkpoint.
-2. A private `registry.yaml` entry declaring `ready`, with the exact TorchScript SHA-256.
-3. Matching config and model card, plus Python/Torch/CUDA or CPU runtime details.
-4. Model/data license or authorization records.
-5. Source-image or sample-level split manifest, fixed SEM images and human GT masks.
-6. Machine-readable per-image metrics, threshold/min-area evidence and known failure cases.
-7. A real, non-degraded Gateway-to-Analysis smoke record and generated artifact manifest.
+1. Model/data license or written authorization plus a custody ledger.
+2. Source-image or sample-level split manifest.
+3. Target Python/Torch/CUDA or CPU environment, exact command and identifiable Git commit.
+4. Project-owner-approved tolerance policy.
+5. Complete machine-readable threshold and minimum-area evidence.
+6. A current-bundle, non-degraded Gateway-to-Analysis rerun and generated artifact manifest.
+7. Current-bundle instance, morphometry, quality and export acceptance results.
 
-Weights, SEM images, GT masks, probabilities, predictions, SQLite files and run outputs remain
-external and must not enter Git.
+The duplicate TorchScript, source checkpoint, later unapproved weights, SEM images, GT masks,
+probabilities, predictions, SQLite files and run outputs remain external and must not enter Git.
 
 ## Reproduction on the controlled Linux host
 
