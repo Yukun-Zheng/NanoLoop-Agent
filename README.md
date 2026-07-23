@@ -11,11 +11,19 @@ NanoLoop Agent 是一套面向 SEM 纳米颗粒图像的可追溯分析工作台
 > 仍描述已退役实现；当前已暂停分发文档维护，不得用 v4/v3/v2 覆盖代码和上述 operational docs。
 
 项目产品目标源于 v2.0，v3/v4 记录阶段性协作与工程形成过程；当前开发与接手以代码和 operational
-docs 为准。仓库当前达到 **工程 MVP / 内部 Alpha（M1）**：FastAPI 后端、SQLite/Alembic、文件制品存储、后台运行调度、U-Net/YOLO-Seg/SAM2 适配器、分析与报告、FTS5/向量检索接缝、统一查询服务、Next.js 科研 Agent Command Center、OpenAPI、容器和自动化测试均已成形；但尚不是经过真实模型、真实数据和真实语料验收的科学产品 MVP。
+docs 为准。仓库当前达到 **工程 MVP / 内部 Alpha（M1）**：FastAPI 后端、SQLite/Alembic、文件制品存储、后台运行调度、U-Net/YOLO-Seg/SAM2 适配器、分析与报告、FTS5/向量检索接缝、统一查询服务、Next.js 科研 Agent Command Center、OpenAPI、容器和自动化测试均已成形；但尚不是经过共同授权 SEM/GT、正式语料和固定独立集验收的科学产品 MVP。
+2026-07-23 至 2026-07-24 已用项目自制公开工程图完成一次本机 live UI 验收：Large 与 Small-A
+真实 U-Net、ROI 持久化、同图比较、修正掩码子运行、数据 Agent、本机受管知识文档、FTS5 引用与
+可信导出均实际通过。该结果消除了“新前端从未连接真实后端”的缺口，但不把合成图、关键词检索或
+本机全局知识卷升级为科学准确率、完整向量 RAG 或租户私有数据库的证据。
 
 | 当前阶段 | 已有工程基线 | M2 真实可演示 MVP 的主要阻塞 |
 | --- | --- | --- |
-| M1 工程 MVP / 内部 Alpha | 需求矩阵为 `implemented 10 / partial 4 / external-blocked 0`；Large 与 Small-A U-Net 运行资产已接入，Large 历史独立集像素指标已按交付字节复核；仓库内提供 30 题公开 RAG 工程回归包 | 两个 U-Net 已通过 CPU 运行校验并登记为 `ready`，其余三个模型仍为 `unavailable`；仍缺 Small-B 与当前分割 bundle 的完整科学重跑、正式外部语料及许可台账，以及目标部署环境上的正式 FAISS 重启与无降级 E2E |
+| M1 工程 MVP / 内部 Alpha | 需求矩阵为 `implemented 10 / partial 4 / external-blocked 0`；Large 与 Small-A U-Net 运行资产已接入，并在本机公开合成图上完成 live UI 运行、比较与导出；Large 历史独立集像素指标已按交付字节复核；仓库内提供 30 题公开 RAG 工程回归包 | 两个 U-Net 已通过 CPU 运行校验并登记为 `ready`，其余三个模型仍为 `unavailable`；仍缺 Small-B、共同授权 SEM/GT 与当前分割 bundle 的完整科学重跑、正式外部语料及许可台账，以及目标部署环境上的正式 FAISS 重启与无降级 E2E |
+
+第一次演示请从[用户测试与演示指南](docs/USER_ACCEPTANCE_GUIDE.md)开始；本次真实操作对象、运行
+ID、数值、数据库回查、自动化结果和限制见
+[2026-07-23/24 全功能用户验收报告](docs/acceptance-report-2026-07-23.md)。
 
 ## 当前能力边界
 
@@ -25,13 +33,13 @@ docs 为准。仓库当前达到 **工程 MVP / 内部 Alpha（M1）**：FastAPI
 - 执行时重新核对 schema v3 的科学 build identity，先把 `auto` 解析为实际设备，再在串行确定性边界内设置 Python/NumPy/Torch seed；实际设备、控制开关、后端类、执行 build、bundle/Adapter 摘要和时间另存为 `execution_provenance.json`，不以排队时的请求值代替观测事实。
 - 公开 `pred_mask.png`、canonical `instances.json`、叠加图、颗粒表和数据库统计使用同一份后处理实例；边界排除前后的诊断分开记录。
 - 模型注册会校验权重并计算配置、模型卡和 Adapter 源码哈希；通过验证的完整 bundle 先发布到只读、内容寻址的本地 snapshot，再由 Adapter 加载。推理只消费一次读取并核对过的原图字节，相同 model/device/provenance 的可变 Adapter 通过 prediction lease 串行使用，预测期间不会被并发卸载。U-Net 已支持可配置 patch/stride 的重叠滑窗与加权融合。
-- ROI 页使用 React-Konva 画布与数值编辑器，支持拖拽建框、选择/删除、有效/无效区显示、原图半开坐标换算及 revision CAS 保存；纯几何已有 Vitest，重写后的目标后端 live round-trip 仍需单独验收。
+- ROI 页使用 React-Konva 画布与数值编辑器，支持拖拽建框、选择/删除、有效/无效区显示、原图半开坐标换算及 revision CAS 保存；纯几何有 Vitest，本机 Next.js → BFF → FastAPI → SQLite 的数值框保存、revision 1 与刷新持久化已 live 验收。多浏览器矩阵、409 并发冲突的目标环境演练仍需单独留证。
 - 缺少比例尺时仅给像素单位，不伪造 nm/µm 结果。
 - 数据问答支持排序、分组比较、分布、异常与模型比较；同图多个完成 run 未显式选择时会先澄清，跨图粒径比较缺少可比物理尺度时会拒绝给出误导结果。
 - 材料不匹配或证据不足时返回明确的澄清/证据不足结果，不跨材料拼接引用；多材料且未选图像时返回候选材料，引用保留页码、chunk、来源类型和规范引文。
 - 知识库支持导入、列出、启用/禁用和重建；前端可管理状态。可选向量 runtime 已实现本地只读 SentenceTransformers、原子 FAISS generation、manifest/数据库映射校验、原始 cosine 门槛和 keyword-only 降级；连续中文在 `unicode61` 无命中时使用有界 CJK n-gram 回退。仓库不提交 embedding snapshot、FAISS 文件或正式外部语料，因此仍不宣称生产向量 RAG 已交付。
 - 模型 API 支持 family、variant、quality tier、状态和材料筛选，并展示指标上下文、预/后处理、备注与健康原因；前端目录只允许选择后端标记为 `ready` 的条目，推荐和创建运行分开确认。
-- 结果页先展示质量结论、原因和建议，再展示数值；单运行可切换原图、mask、overlay、实例标注和概率制品，不可直接预览的 TIFF/数组只提供下载审查；同一图像还可选择 2～3 个终态运行并排比较。运行创建测试覆盖 2 图像 × 3 个 ready 模型的完整 6-run Cartesian 调度；真实多模型科学演示仍受权重缺失约束。
+- 结果页先展示质量结论、原因和建议，再展示数值；单运行可切换原图、mask、overlay、实例标注和概率制品，不可直接预览的 TIFF/数组只提供下载审查；同一图像还可选择 2～3 个终态运行并排比较。运行创建测试覆盖 2 图像 × 3 个 ready 模型的完整 6-run Cartesian 调度；Large 与 Small-A 已在同一公开合成图完成 live 编排和浏览器并排比较，但仍缺共同授权 SEM/GT、固定科学容差和当前 bundle 的科学复验，不能据此选择“最佳模型”。
 - 导出按所选成员路径、精确字节 SHA-256 和长度生成内容地址；同一数据库/制品快照复用完全相同的确定性 ZIP，内容变化生成新地址，已签发令牌对应的旧字节不会被覆盖。
 - 图片在深度解码前先检查尺寸/像素数；知识摄取对 PDF 页数、提取字符数、单文档 chunk、材料别名和向量语料规模设有上限，embedding 按批处理；大粒径分布在 SQL 中精确聚合，只返回有上限的确定性证据抽样。
 - 启动恢复对普通陈旧运行复制其不可变科学输入；若人工修正掩膜运行在崩溃后缺少原始外部制品，则父运行明确失败并要求人工处理，不会用 JSON 配置伪造一个不可复现子运行。
@@ -157,10 +165,13 @@ python scripts/smoke_test.py \
 示例 fixture 中的图像和知识文件路径需要替换为团队合法持有的真实文件。仅验证无外部资产时的诚实降级可追加 `--allow-degraded`。
 共享 Key 或 principal token 应优先通过 `NANOLOOP_API_KEY` 环境变量传给 smoke；`--api-key` 只适合受控临时环境，因为命令行参数可能进入 shell history 或进程列表。
 
-旧前端曾使用 headless Chrome 完成 ROI 拖拽 → CAS 保存 → 页面重载 → REST 数据核对；该证据
-不自动覆盖本次重写。新的 Playwright 场景使用同源 API mock 覆盖创建任务、ROI revision/CAS 恢复、
-ready/unavailable 模型、运行/结果/复核/作用域问答、签名导出、响应式审查器和知识库生命周期；
-真实后端/真实资产联调仍需在目标环境单独验收。历史代码快照
+旧前端的 headless Chrome 证据不自动覆盖本次重写。新的 Playwright 场景使用同源 API mock
+覆盖创建任务、ROI revision/CAS 恢复、ready/unavailable 模型、运行/结果/复核/作用域问答、
+签名导出、响应式审查器和知识库生命周期；此外 2026-07-23/24 已在 macOS 本机用当前 Next.js、
+FastAPI、SQLite、真实 Large/Small-A 运行 bundle 和公开合成工程图完成一次 live UI 验收，见
+[图文指南](docs/USER_ACCEPTANCE_GUIDE.md)和[事实报告](docs/acceptance-report-2026-07-23.md)。
+该验收不替代目标主机的干净无缓存发布镜像、正式向量 RAG、授权 SEM/GT、多浏览器或并发长期验收。
+历史代码快照
 `16456a3` 的 [GitHub Actions run 29848825904](https://github.com/Yukun-Zheng/NanoLoop-Agent/actions/runs/29848825904)
 证明当时的 Python/容器/备份链路可运行，但不证明当前 Next.js 提交、目标环境、真实模型或真实 RAG
 资产已验收；后续提交仍须通过自己的 CI。

@@ -49,6 +49,10 @@ make frontend-e2e
 `pnpm check` audits production dependencies, regenerates API types from
 `../docs/api/openapi-v1.json`, checks drift, lints, type-checks, runs Vitest and builds the
 standalone production bundle. Playwright currently uses same-origin API mocks for the scientific
-workflow, ROI CAS recovery, responsive inspector, and knowledge lifecycle. It does not prove a live
-FastAPI deployment, real model accuracy or a production RAG corpus. Those require separate
-target-environment acceptance.
+workflow, ROI CAS recovery, responsive inspector, and knowledge lifecycle. A separate 2026-07-23/24
+macOS acceptance connected this frontend to live FastAPI/SQLite, real Large/Small-A runtime bundles,
+a public synthetic engineering image, and the local managed knowledge store; see the
+[click-by-click guide](../docs/USER_ACCEPTANCE_GUIDE.md) and
+[acceptance report](../docs/acceptance-report-2026-07-23.md). That live engineering evidence still
+does not prove model accuracy, a production vector RAG corpus, tenant-private knowledge, or a clean
+target-environment release image.

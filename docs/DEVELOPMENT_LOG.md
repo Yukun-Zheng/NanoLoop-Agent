@@ -606,3 +606,51 @@
   输出 2 个颗粒、平均等效粒径 152.026 px、覆盖率 1.31%、数量密度
   `7.201788348082596e-07 px^-2`、周长密度 `0.000463944323536875 px^-1` 和 8 类运行制品。
   唯一质量警告是样例未提供物理尺度，因此没有推测 nm/µm 指标。
+
+## 2026-07-24 — 合入 RAG 完整查询并完成本机全功能 UI 验收
+
+- 主线基线：PR
+  [#23](https://github.com/Yukun-Zheng/NanoLoop-Agent/pull/23) 已合入 `main@c0f435c`，补齐受管
+  知识检索、统一 data/knowledge/mixed query、引用与确定性报告导出合同。本轮没有更新已暂停的
+  v4/v3 分发文档，只更新 operational docs、公开验收资产、图文指南和事实报告。
+- 公开输入：新增由 `scripts/generate_acceptance_fixture.py` 确定性生成的 2048×1536 合成工程图
+  `nanoloop_ui_acceptance_fixture.png`（SHA-256 `5827ef54...3d7876`）和二值修正掩码
+  `nanoloop_ui_acceptance_corrected_mask.png`（`51adb54a...2e7d`）。两者无外部/私人 SEM 像素和
+  仪器元数据，只用于工程验收，不作为 GT、模型准确率或材料科学证据。
+- 实际运行方式：前端从当前 `main` 重建；完整 API 镜像重建在拉取外部 PyTorch CPU wheel 时
+  遇到网络超时，因此复用已经验证的 CPU-only `nanoloop-agent:local` runtime，并通过临时 Compose
+  overlay 把当前 `app/` 只读挂载进容器。这证明了当前源码与已验证模型 runtime 的 live 联动，
+  但不等于一次干净、无缓存、不可变发布镜像冷构建；该 overlay 未提交仓库。
+- 双模型任务 `job_19d2fd8b19e24eaaab33f4de48ec44bf`：Large
+  `run_f90c7ba5848b4071aef56272a12bf4ec` 完成 24 颗粒、平均等效粒径 86.356 px、覆盖率
+  5.29%、11,720 ms；Small-A `run_90c1010ec2b047b7a216af2cf78de549` 完成 75 颗粒、
+  29.232 px、2.78%、12,700 ms。两者在同一公开图上完成时间线、图层、统计与浏览器并排工程
+  比较；由于缺物理尺度，均以 `physical_scale_missing_pixel_metrics_only` 诚实降级。
+- ROI 与人工复核：保存 `中央颗粒区域` 的 `[256,192,1792,1200)` 原图半开坐标为 revision 1；
+  由于当前两个 U-Net 不声明 box prompt，本轮真实推理仍使用 `full_image`，不得把 ROI 持久化验收
+  冒充 ROI 参与推理。以 threshold 0.55 和修正掩码创建子运行
+  `run_7cda816d42ef4f4ea2de9049e494c5fc`，父运行、`manual_corrected_mask`、配置与制品关系均可
+  从科学审查器追溯，父运行没有被覆盖。
+- 数据与知识 Agent：精确单指标问题“颗粒数是多少？”返回 `get_metric` 参数、单位与逐 run
+  明细；精确材料标签任务 `job_91a0218cdc9e493fa0a31df63d12fbea` 用 `material_name=LaNi`
+  成功返回页码/chunk 引用，拒绝“忽略文献并编造催化性能”，并在 mixed 模式同屏给出 24 颗粒
+  数据结论和知识引用。第一任务把材料名称写成长句时，严格材料标签过滤按设计返回证据不足；
+  图文指南因此明确要求知识演示使用登记别名 `LaNi`。
+- 本机受管知识库：导入项目自制
+  `demo_data/rag/sources/project_sample_context.md`（SHA-256 `3226e75b...05e4b`），许可证字段、
+  规范引用、停用/启用和强制重建均通过。SQLite 最终只读回查为 1 份 `ready` 文档、6 chunks、
+  6 FTS5 条目和 12 条 query log。`rag_index` 仍为
+  `retrieval=degraded, provider=healthy, fallback=healthy`；关键词检索通过，固定 embedding/FAISS
+  向量检索未通过。本机全局 Docker volume 不是 tenant 私有数据库，principal knowledge 仍
+  fail closed。
+- 可信导出：浏览器显示“SHA-256 已验证，可信报告已下载”；11 MB ZIP 的 SHA-256 为
+  `8fcd0d2b078d8d93cc50c6b1fadde88940d6e81136bf2e75ce47922a156415fc`，`unzip -t`
+  通过，26 个成员覆盖 manifest、原图、预测/实例/颗粒制品、质量、运行配置、provenance、
+  query history 和 RAG citations。下载 ZIP 不进入仓库。
+- 回归：Agent/query/RAG/report/smoke 107 项、HTTP 合同 3 项、MVP 与文件存储/导出 52 项，
+  合计 **162 passed、0 failed**；公开 fixture 与修正掩码可重复生成且字节一致，生成脚本 Ruff
+  通过。当前仍为 M1：授权 SEM/GT 科学准确率、Small-B、Agglomerated/YOLO/SAM2、正式向量
+  runtime、知识租户隔离、目标服务器 TLS/身份/长期并发与干净发布镜像仍未验收。
+- 用户入口：新增[图文测试与演示指南](USER_ACCEPTANCE_GUIDE.md)和
+  [2026-07-23/24 事实验收报告](acceptance-report-2026-07-23.md)；截图只显示项目自制公开资产，
+  已去除个人浏览器标签、书签、头像和私人显微图像。

@@ -3,7 +3,7 @@
 本文描述当前 `main` 基线及本次 Next.js 前端替换可以安全承诺的部署边界；任何待合并提交仍须以
 自身 CI 结果为准。当前发布等级是
 **M1 工程 MVP / 内部 Alpha**：适合受信任网络内的单机开发、合同测试和诚实降级演示，
-但还不是经过真实模型、真实语料和固定独立集验证的科学产品 MVP；当前退出条件见
+但还不是经过共同授权 SEM/GT、正式语料和固定独立集验证的科学产品 MVP；当前退出条件见
 [需求追踪矩阵](requirements-traceability.md) 和本文“发布门槛”。v4.0 分发快照不再作为当前
 发布事实入口。
 
@@ -13,10 +13,10 @@
 | --- | --- | --- |
 | 本机或受信任内网、单 API 实例 | 支持 | [Compose](../docker-compose.yml) 默认回环绑定；SQLite WAL、持久 `QUEUED` 行、原子领取和有界 worker pool 已实现；历史快照 `16456a3` 的 CI 已真实构建并启动 API/frontend 双容器，当前 `main` 仍须以自身 CI 为准。 |
 | 缺少可选模型/语料时的诚实降级启动 | 支持 | 已接入 Large 与 Small 两个 U-Net bundle，可分别保持 `ready`；缺失的 Agglomerated U-Net、YOLO-Seg 和 SAM2 保持 `unavailable`，RAG 可保持 keyword-only/unavailable，健康接口不会把缺失资产报告为正常科学闭环。 |
-| Next.js 科研 Agent Command Center | 工程可用 | `/`、`/workspace/{job_id}`、`/knowledge` 与严格同源 BFF 已实现；Vitest/Playwright/生产构建和非 root 容器门禁已进入 CI。目标后端真实业务演示仍受资产和部署验收约束。 |
-| 人工矩形 ROI 编辑 | 工程可用、待新前端 live 复验 | React-Konva 与数值编辑器使用原图半开坐标、有效区校验和 revision CAS；纯几何已有单测。旧前端的 live REST round-trip 不能替代重写后的目标后端复验。 |
-| 真实 SEM 单模型分割 | 部分可用 | Large 与 Small TorchScript 均通过 CPU 载入、有限输出、重复推理及真实 Gateway 生命周期检查。Large 的历史三视野 prediction/GT 像素指标已独立复核；Small 仅有工程运行证据，尚无 Small-B 独立测试集和科学指标。两者都仍缺完整许可/资产台账、当前 bundle 的目标部署 Analysis 重跑与科学验收，见 [FR-06](requirements-traceability.md)、[Large A/B 审计](model-assets-large-a-b-acceptance-2026-07-23.md)与[Small-A 审计](model-assets-small-a-acceptance-2026-07-23.md)。 |
-| 真实多模型对比演示 | 工程可用、科学阻塞 | Large 与 Small 两个真实 U-Net bundle 已可供同图创建独立运行，工程编排不再受“只有一个 ready 模型”阻塞；但尚未在共同授权 SEM fixture 上完成两模型端到端 Analysis、浏览器并排结果和科学容差验收，不能宣称真实多模型科学对比已完成。 |
+| Next.js 科研 Agent Command Center | 工程可用 | `/`、`/workspace/{job_id}`、`/knowledge` 与严格同源 BFF 已实现；Vitest/Playwright/生产构建和非 root 容器门禁已进入 CI。2026-07-23/24 已在本机真实后端、两个真实 U-Net bundle 与公开合成工程图上完成一次 live UI 验收；目标主机、正式发布镜像和科学资产仍需另验。 |
+| 人工矩形 ROI 编辑 | 工程可用 | React-Konva 与数值编辑器使用原图半开坐标、有效区校验和 revision CAS；纯几何有单测，本机 live 保存 revision 1 并刷新回读通过。仍需目标环境的多浏览器、拖拽手感与真实 409 并发冲突矩阵；当前两个 ready U-Net 的本轮运行是 `full_image`。 |
+| 真实模型单图分割 | 部分可用 | Large 与 Small TorchScript 均通过 CPU 载入、有限输出、重复推理及真实 Gateway 生命周期检查，并在公开合成图完成真实 Analysis、制品和浏览器显示。Large 的历史三视野 prediction/GT 像素指标已独立复核；Small 尚无 Small-B 独立测试集和科学指标。两者都仍缺完整许可/资产台账、共同授权 SEM/GT 的当前 bundle 科学重跑与目标部署干净冷启动，见 [FR-06](requirements-traceability.md)、[Large A/B 审计](model-assets-large-a-b-acceptance-2026-07-23.md)、[Small-A 审计](model-assets-small-a-acceptance-2026-07-23.md)与[本机验收](acceptance-report-2026-07-23.md)。 |
+| 真实多模型对比演示 | 工程可用、科学阻塞 | Large 与 Small 两个真实 U-Net bundle 已在同一公开合成图创建独立运行，并在浏览器并排展示质量、统计、耗时和 overlay；但尚未在共同授权 SEM/GT 上执行预先定义的科学容差验收，不能宣称真实多模型科学对比或“最佳模型”已经确定。 |
 | 生产向量 RAG | 资产阻塞 | FTS5 与引用摘录是稳定基线；可选向量 runtime 已实现持久恢复、模型/维度/数据库映射、原子发布和降级测试，但没有固定真实 embedding 模型与正式许可语料完成资产级验收。 |
 | 公网或多租户服务 | 不支持 | 可撤销 principal credential、Analysis/Query tenant scope，以及 subject-bound file-token v2、artifact registry 与 pinned-fd 下载已接通；但知识文档租户化、分布式限流、调用/磁盘 quota 和 retention 尚未完成。 |
 | 多 Uvicorn worker / 多 API replica | 不支持 | SQLite 写协调、进程内 dispatcher、Adapter 缓存和导出协调按单进程/单 API 实例设计。 |
@@ -146,9 +146,11 @@ make frontend-e2e
 docker compose config --quiet
 ```
 
-旧前端曾在本地 headless Chrome 完成 ROI browser smoke；本次重写不继承该 live 验收结论。
-新的 Playwright 场景目前使用同源 API mock 覆盖科研工作流、ROI CAS、响应式审查器和知识库生命周期；
-目标后端/真实资产仍需单独联调。
+旧前端的 browser smoke 不自动证明本次重写。新的 Playwright 场景使用同源 API mock 覆盖科研
+工作流、ROI CAS、响应式审查器和知识库生命周期；2026-07-23/24 已再用当前 Next.js、真实本机
+FastAPI/SQLite、真实 Large/Small-A bundle、公开合成图和项目自制知识卡完成 live 工程联调，见
+[图文指南](USER_ACCEPTANCE_GUIDE.md)和[事实报告](acceptance-report-2026-07-23.md)。该结果仍不
+证明正式目标主机、干净发布镜像、租户知识隔离、完整向量 RAG、授权 SEM/GT 或科学准确率。
 合并前历史代码快照 `16456a3` 的
 [GitHub Actions run 29848825904](https://github.com/Yukun-Zheng/NanoLoop-Agent/actions/runs/29848825904)
 已全绿，证明当时的 Python、API/frontend 容器与备份恢复工程链路可运行；它不证明当前 Next.js
