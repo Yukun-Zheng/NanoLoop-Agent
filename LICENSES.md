@@ -48,3 +48,9 @@ Every model weight, model card, demo image, paper, knowledge document, embedding
 - target registry/document ID.
 
 Placeholder directories and example JSON files are not licensed scientific assets. Never replace a missing external asset with fabricated bytes merely to make a health check green.
+
+## Project model assets
+
+| Asset | Identity | Current permission evidence |
+| --- | --- | --- |
+| `model_artifacts/weights/unet-large-optimized-v1.pt` | SHA-256 `007d9a16bf31e5f960160c52eefa938b83feeac2e6c0d7dec9c8670a38626e05`; delivered by project developer 郭境濠 on 2026-07-23 | No separate license, author/custody ledger, or written redistribution grant was included in `ModelAssets-large.zip`. It is tracked at the project owner's request for NanoLoop Agent integration. Do not infer permission for third-party redistribution, commercial use, or dataset/model sublicensing until the missing record is supplied and reviewed. |

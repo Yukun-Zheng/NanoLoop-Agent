@@ -5,14 +5,16 @@
 - Repository: `NanoLoop-Agent`
 - Original PR branch: `feat/a-real-unet-large-v1` (historical, already integrated)
 - Original PR base: `yukun` (historical); every follow-up branch must start from and target `main`
-- Public `model_artifacts/registry.yaml` intentionally keeps Large U-Net `unavailable` because the
-  repository does not contain its checkpoint or complete acceptance bundle.
-- A controlled external registry may declare Large U-Net `ready` only when the actual TorchScript,
-  matching SHA-256, config, model card, runtime dependency and license evidence are present.
+- `model_artifacts/registry.yaml` now authors Large U-Net as `ready` because the 2026-07-23
+  delivery supplied the actual TorchScript and its matching SHA-256; runtime health still fails
+  closed when the optional Torch dependency or any bundle byte is missing.
+- Runtime readiness does not upgrade the developer-reported metrics to scientific acceptance.
+  License/custody, split/GT and machine-readable evaluation evidence remain required.
 
-The checkpoint is a mandatory project deliverable, but it must be transferred separately through
-private storage or the target server. “Do not commit weights” means “do not put them in public Git”;
-it does not mean that the model owner may omit the checkpoint from the handoff.
+The deployable Large TorchScript is tracked in this repository at the project owner's request. The
+redundant source checkpoint is not tracked, but its immutable SHA-256 remains recorded. This
+exception does not authorize committing other weights or establish third-party redistribution
+rights.
 
 ## External model identities
 
@@ -21,8 +23,9 @@ it does not mean that the model owner may omit the checkpoint from the handoff.
 | `unet-small-balanced-v1` | `915911107c82c01ff7d37746f4fcce6db39d40659cfb93e059e14b18134ba008` | `dac85662061b12f1d8e8d583500558b787dd2c98795bf2ef816ddc95c3491446` |
 | `unet-large-optimized-v1` | `5c5dbcae61f40f8eb1fef27c7b69592a727260898330abc546f7e7a6833035bd` | `007d9a16bf31e5f960160c52eefa938b83feeac2e6c0d7dec9c8670a38626e05` |
 
-Both TorchScript files belong under `weights/` in a private external bundle. Neither is distributed
-by this repository.
+The Large TorchScript is distributed at
+`model_artifacts/weights/unet-large-optimized-v1.pt`; the Small model and source checkpoints remain
+external.
 
 ## Frozen scientific contracts
 
@@ -42,7 +45,8 @@ by this repository.
   filtering. Canonical postprocessing and morphometry remain in `app/analysis/`.
 - A private bundle resolves weight/config/model-card paths relative to its own registry.
 - The registry fails closed when Torch is missing, the weight is absent, or its SHA-256 differs.
-- The checked-in public registry remains honest when private assets are unavailable.
+- The checked-in registry exposes Large as ready only when the delivered runtime bundle and Torch
+  dependency validate; missing or changed assets remain fail closed.
 
 These repository tests verify integration contracts. They do not independently reproduce the
 developer-reported scientific metrics or prove that the private checkpoint has been accepted by the

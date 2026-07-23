@@ -22,6 +22,15 @@ def _registry_models() -> dict[str, dict[str, object]]:
     return {entry["metadata"]["model_id"]: entry for entry in payload["models"]}
 
 
+def test_large_runtime_weight_matches_registered_identity() -> None:
+    weight_path = _artifact_root() / "weights" / "unet-large-optimized-v1.pt"
+
+    assert weight_path.stat().st_size == 13_505_917
+    assert hashlib.sha256(weight_path.read_bytes()).hexdigest() == (
+        "007d9a16bf31e5f960160c52eefa938b83feeac2e6c0d7dec9c8670a38626e05"
+    )
+
+
 def test_large_unet_config_freezes_confirmed_inference_contract() -> None:
     config = yaml.safe_load(
         (_artifact_root() / "configs" / "unet-large-optimized-v1.yaml").read_text(
@@ -63,11 +72,11 @@ def test_large_unet_config_freezes_confirmed_inference_contract() -> None:
     }
 
 
-def test_large_public_registry_remains_unavailable_with_180_px_invalid_bottom() -> None:
+def test_large_public_registry_is_runtime_ready_with_180_px_invalid_bottom() -> None:
     entry = _registry_models()["unet-large-optimized-v1"]
     metadata = entry["metadata"]
 
-    assert metadata["status"] == "unavailable"
+    assert metadata["status"] == "ready"
     assert metadata["inference_invalid_bottom_px"] == 180
     assert metadata["default_threshold"] == 0.50
     assert metadata["default_min_area_px"] == 512
@@ -76,8 +85,12 @@ def test_large_public_registry_remains_unavailable_with_180_px_invalid_bottom() 
     assert metadata["metrics"]["developer_reported_min_area_gt_retention"] == 1.0
     assert metadata["metric_context"] == {
         "evidence_status": "developer_reported_not_independently_verified",
+        "runtime_asset_delivered": True,
+        "runtime_asset_verified": True,
+        "runtime_verification_device": "cpu",
         "evidence_bundle_delivered": False,
         "asset_ledger_delivered": False,
+        "redistribution_permission_delivered": False,
         "training_split_verification": "unknown",
         "validation_scope": "field_of_view",
         "validation_image_count": 6,
@@ -96,12 +109,12 @@ def test_large_public_registry_remains_unavailable_with_180_px_invalid_bottom() 
     }
     assert entry["adapter_path"] == "app.inference.adapters.unet:UNetAdapter"
     assert entry["weight_path"] == "weights/unet-large-optimized-v1.pt"
-    assert entry["weight_sha256"] is None
+    assert entry["weight_sha256"] == (
+        "007d9a16bf31e5f960160c52eefa938b83feeac2e6c0d7dec9c8670a38626e05"
+    )
     assert entry["config_path"] == "configs/unet-large-optimized-v1.yaml"
     assert entry["model_card_path"] == "model_cards/unet-large-optimized-v1.md"
-    assert metadata["health_error"] == (
-        "External TorchScript, asset ledger, and machine-readable evidence were not delivered."
-    )
+    assert "health_error" not in metadata
 
 
 def test_large_external_bundle_resolves_relative_assets_and_fails_closed(
@@ -249,7 +262,7 @@ def test_large_model_card_records_export_and_scientific_readiness_limits() -> No
     assert "Macro Composite MAPE" in card
     assert "`perimeter_neighborhood=8`" in card
     assert "not sample-level independent" in card
-    assert "cannot be described as scientifically ready" in card
+    assert "scientific acceptance remains pending" in card
     assert "developer-reported" in card
     assert "not acceptance evidence" in card
     assert "`expected_image_size=[1536, 2048]`" in card
@@ -316,4 +329,5 @@ def test_large_model_card_records_frozen_independent_test_evidence() -> None:
     assert "not three sample-level independent" in card
 
     metadata = _registry_models()["unet-large-optimized-v1"]["metadata"]
-    assert metadata["status"] == "unavailable"
+    assert metadata["status"] == "ready"
+    assert "scientific acceptance remains pending" in card

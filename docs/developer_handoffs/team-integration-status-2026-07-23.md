@@ -26,8 +26,9 @@
 验收工具、RAG 候选与验收脚手架、六页前端及自动化门禁均已集成。它仍不是已经完成科学验收的演示
 产品，主要退出条件没有变化：
 
-- 五个公开登记模型仍应保持 `unavailable`，直到项目实际收到并复核权重、配置、模型卡、许可、固定
-  split/GT 和真实运行证据；
+- 2026-07-23 已收到并复核 Large TorchScript，文件哈希、源 checkpoint 结构、CPU 载入与重复推理
+  成立，因此 Large 运行 bundle 可登记为 `ready`；其余四个模型仍为 `unavailable`。Large 尚缺许可、
+  固定 split/GT、机器可读评测和目标部署完整 Analysis 证据，不能宣称科学验收完成；
 - RAG 当前有 17 个候选来源、0 个 `ACCEPT_FULLTEXT`、32 道草案题，尚无固定 embedding 快照、真实
   FAISS 索引、重启证据和观测结果；
 - 目标部署、HTTPS Base URL、共享 Key 的安全交付、真实浏览器 E2E 和固定演示截图尚未完成；

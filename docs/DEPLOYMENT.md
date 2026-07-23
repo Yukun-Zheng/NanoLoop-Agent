@@ -4,7 +4,7 @@
 
 当前正式支持的拓扑是单台主机上的一个 API 容器、一个 Streamlit 容器、SQLite WAL 和本地命名卷。API 容器固定单 Uvicorn worker，内部分析线程数由 `ANALYSIS_WORKER_COUNT` 控制。不要用增加 Uvicorn worker 的方式提高模型并发。
 
-当前部署基线为最新全绿 `main`，五人集成快照为 `bfb48d4`，发布等级是 **M1 工程 MVP / 内部 Alpha**。默认公开资产目录中五个模型均为 `unavailable`；示例 smoke fixture 仍需替换为合法真实数据，正式 RAG 语料与固定 embedding 尚未交付。基础设施可启动不等于科学闭环已经验收；里程碑与真实资产门槛见 [v4.0 协同开发文档](NanoLoop_Agent_协同开发规格与接口总文档_v4.0.md)。
+当前部署基线为最新全绿 `main`，发布等级是 **M1 工程 MVP / 内部 Alpha**。默认资产目录已包含 Large U-Net TorchScript；安装 `models` extra 且 bundle 校验通过时该项为 `ready`，其余四个模型仍为 `unavailable`。示例 smoke fixture 仍需替换为许可明确的真实数据，Large 的许可/独立科学证据、正式 RAG 语料与固定 embedding 尚未交付。基础设施和单模型运行可用不等于科学闭环已经验收；里程碑与真实资产门槛见 [v4.0 协同开发文档](NanoLoop_Agent_协同开发规格与接口总文档_v4.0.md)。
 
 默认端口只发布到 `127.0.0.1`。API 依据 `TRUSTED_HOSTS` 拒绝异常 Host，并依据
 `CORS_ALLOW_ORIGINS`/同站 fetch metadata 保护浏览器写请求。`AUTH_MODE` 支持
@@ -134,7 +134,8 @@ docker compose config --quiet
 
 ## 外部资产
 
-模型权重、生产模型卡、语料、向量索引和本地 LLM 不打进默认 CPU 镜像。Compose 把
+默认 CPU 镜像仍不安装重型模型依赖；仓库内的 Large TorchScript 通过 Compose 的只读资产挂载提供，
+不会烘焙进镜像层。其余模型权重、生产语料、向量索引和本地 LLM 仍由外部资产提供。Compose 把
 `NANOLOOP_MODEL_ARTIFACTS_DIR` 指向的完整宿主机目录只读挂载到 `/app/model_artifacts`；默认值是
 仓库的 `./model_artifacts`。该目录必须一起包含 `registry.yaml`、`configs/`、`model_cards/`、
 `weights/` 和注册项引用的自定义 Adapter，避免 registry 与 checkpoint 分开升级。源目录及父目录

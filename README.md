@@ -10,7 +10,7 @@ NanoLoop Agent 是一套面向 SEM 纳米颗粒图像的可追溯分析工作台
 
 | 当前阶段 | 已有工程基线 | M2 真实可演示 MVP 的主要阻塞 |
 | --- | --- | --- |
-| M1 工程 MVP / 内部 Alpha | 需求矩阵为 `implemented 10 / partial 3 / external-blocked 1`；五人集成快照 `bfb48d4` 已进入 `main` 主线 | 五个登记模型均为 `unavailable`；缺正式 checkpoint、固定 SEM/GT、资产/许可台账、正式语料、固定 embedding、真实 FAISS 重启与无降级 E2E |
+| M1 工程 MVP / 内部 Alpha | 需求矩阵为 `implemented 10 / partial 4 / external-blocked 0`；Large U-Net 运行资产已接入 | Large U-Net 的 TorchScript 已通过 CPU 载入/确定性推理并登记为 `ready`，其余四个模型仍为 `unavailable`；仍缺许可/资产台账、固定 SEM/GT 与机器可读科学证据、正式语料、固定 embedding、真实 FAISS 重启与无降级 E2E |
 
 ## 当前能力边界
 
@@ -30,7 +30,7 @@ NanoLoop Agent 是一套面向 SEM 纳米颗粒图像的可追溯分析工作台
 - 导出按所选成员路径、精确字节 SHA-256 和长度生成内容地址；同一数据库/制品快照复用完全相同的确定性 ZIP，内容变化生成新地址，已签发令牌对应的旧字节不会被覆盖。
 - 图片在深度解码前先检查尺寸/像素数；知识摄取对 PDF 页数、提取字符数、单文档 chunk、材料别名和向量语料规模设有上限，embedding 按批处理；大粒径分布在 SQL 中精确聚合，只返回有上限的确定性证据抽样。
 - 启动恢复对普通陈旧运行复制其不可变科学输入；若人工修正掩膜运行在崩溃后缺少原始外部制品，则父运行明确失败并要求人工处理，不会用 JSON 配置伪造一个不可复现子运行。
-- 真正的模型权重、生产知识语料、向量索引和本地大模型均为外部资产，目前仓库不会假装它们存在；外部资产仍须通过受控私有渠道实际交付，“不进入公开 Git”不等于“不用交付”。没有权重时模型健康状态会诚实显示为 `unavailable`。
+- Large U-Net 的部署用 TorchScript 已按项目负责人要求纳入仓库并由哈希锁定；源 checkpoint 仅记录身份、不重复提交。其余模型权重、生产知识语料、向量索引和本地大模型仍是外部资产，缺失时健康状态会诚实显示为 `unavailable`。Large 的开发者报告指标尚未被固定 SEM/GT 和机器可读证据独立复现，`ready` 只代表运行 bundle 可用，不代表科研验收通过。
 
 详细覆盖情况见 [需求追踪表](docs/requirements-traceability.md)，RAG 技术合同见 [RAG 与检索功能开发指南](docs/RAG_RETRIEVAL_DEVELOPMENT_GUIDE.md)，外部模型与长期接手方式见 [模型与 RAG 交接](docs/model-rag-handoff.md)，单机/公网/多实例的发布边界见 [生产就绪说明](docs/PRODUCTION_READINESS.md)，全部入口见 [文档索引](docs/README.md)。RAG 指南中的旧时间表或旧人员分工由 v4.0 取代。
 

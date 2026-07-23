@@ -462,3 +462,24 @@
   面向 `main` 的 PR；仍不得直接推送 `main`、自行合并 PR、删除分支、修改仓库设置或操作他人分支。
 - 文档同步：同步更新文档索引、开发指南、RAG 主线说明、郭境濠专项指南、历史审计提示和团队集成
   快照；本批只提升任务可执行性，不改变 M1 工程 MVP / 内部 Alpha 的能力等级。
+
+## 2026-07-23 15:35 +08:00 — 接入 Large U-Net 真实运行权重
+
+- 输入资产：接收郭境濠的 `ModelAssets-large.zip`，包 SHA-256 为
+  `56b46920cd6304fc2774ebd8cfeaf9997144bbaaf5b5854ba4d7ebbb7911dbd1`。配置和模型卡与仓库
+  现有冻结契约一致；源 checkpoint SHA-256 为
+  `5c5dbcae61f40f8eb1fef27c7b69592a727260898330abc546f7e7a6833035bd`，部署用 TorchScript
+  SHA-256 为 `007d9a16bf31e5f960160c52eefa938b83feeac2e6c0d7dec9c8670a38626e05`。
+- 接入策略：仓库只跟踪运行必需的 13,505,917 字节 TorchScript，不重复跟踪 13,421,286 字节
+  source checkpoint；registry 锁定权重哈希并把 Large authored status 调整为 `ready`。缺 Torch
+  optional dependency、缺文件或哈希漂移时，运行时仍会强制降为 `unavailable`。
+- 独立运行检查：以 PyTorch 2.13.0 CPU 加载 TorchScript，两次
+  `[1,1,512,512] float32` 推理均输出有限的同尺寸 logits，最大重复差为 `0.0`；source checkpoint
+  使用 `weights_only=True` 安全读取，包含 56 个 tensor、3,349,697 个参数且浮点值均有限。另以
+  2048×1536 合成 SEM 形态输入走完整 `ModelRegistryService → snapshot → InferenceGateway →
+  UNetAdapter`，CPU 用时 12.740 秒，输出概率范围 `[0.0, 0.9996311]`、mask/probability 尺寸正确，
+  底部 180 px 前景为 0；合成输入只验证工程链路，不构成科学准确率证据。
+- 证据边界：ZIP 未包含模型/数据许可与 custody ledger、固定 source/sample split、SEM/GT、
+  calibration/test JSON/CSV 或目标部署完整 Analysis 运行记录。Large 因此是“运行就绪、科学验收
+  待完成”；开发者报告指标继续保留为未独立复现，FR-06 从 `external-blocked` 上调为 `partial`，
+  项目等级仍为 M1。
