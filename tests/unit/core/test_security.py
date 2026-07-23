@@ -19,8 +19,8 @@ def test_local_security_defaults_are_narrow() -> None:
 
     assert trusted_hosts(settings) == ["localhost", "127.0.0.1", "testserver"]
     assert cors_origins(settings) == [
-        "http://127.0.0.1:8501",
-        "http://localhost:8501",
+        "http://127.0.0.1:3000",
+        "http://localhost:3000",
     ]
     assert cors_origins(Settings(app_env="production")) == []
 
@@ -29,13 +29,13 @@ def test_security_allowlists_are_config_driven_and_canonicalized() -> None:
     settings = Settings(
         app_env="production",
         trusted_hosts="API.EXAMPLE.test,localhost,api.example.test.",
-        cors_allow_origins="HTTPS://UI.EXAMPLE.test:443/, http://127.0.0.1:8501",
+        cors_allow_origins="HTTPS://UI.EXAMPLE.test:443/, http://127.0.0.1:3000",
     )
 
     assert trusted_hosts(settings) == ["api.example.test", "localhost"]
     assert cors_origins(settings) == [
         "https://ui.example.test",
-        "http://127.0.0.1:8501",
+        "http://127.0.0.1:3000",
     ]
 
 

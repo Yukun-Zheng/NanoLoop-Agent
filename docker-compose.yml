@@ -99,21 +99,19 @@ services:
   frontend:
     image: nanoloop-agent-frontend:local
     build:
-      context: .
-      dockerfile: Dockerfile.frontend
+      context: ./frontend
+      dockerfile: Dockerfile
       target: runtime
-      args:
-        PYTHON_VERSION: "3.12"
     environment:
-      NANOLOOP_API_BASE_URL: http://api:8000
+      NANOLOOP_API_INTERNAL_URL: http://api:8000
       NANOLOOP_API_KEY: ${NANOLOOP_API_KEY:-}
-      STREAMLIT_SERVER_HEADLESS: "true"
-      STREAMLIT_BROWSER_GATHER_USAGE_STATS: "false"
+      NANOLOOP_FRONTEND_ALLOWED_ORIGINS: ${NANOLOOP_FRONTEND_ALLOWED_ORIGINS:-http://127.0.0.1:3000,http://localhost:3000}
+      NEXT_TELEMETRY_DISABLED: "1"
     depends_on:
       api:
         condition: service_healthy
     ports:
-      - "${NANOLOOP_BIND_HOST:-127.0.0.1}:${NANOLOOP_FRONTEND_PORT:-8501}:8501"
+      - "${NANOLOOP_BIND_HOST:-127.0.0.1}:${NANOLOOP_FRONTEND_PORT:-3000}:3000"
     init: true
     read_only: true
     tmpfs:
@@ -132,11 +130,12 @@ services:
     healthcheck:
       test:
         - CMD
-        - python
+        - node
         - -c
         - >-
-          import urllib.request;
-          assert urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health',timeout=3).read().strip()==b'ok'
+          fetch('http://127.0.0.1:3000/api/healthz')
+          .then((response)=>{if(!response.ok)process.exit(1)})
+          .catch(()=>process.exit(1))
       interval: 15s
       timeout: 5s
       start_period: 15s

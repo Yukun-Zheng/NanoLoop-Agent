@@ -9,20 +9,25 @@ IDENTITY_ARGS ?=
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install lint typecheck test frontend-check openapi migration-check check mvp-smoke serve frontend db-upgrade \
+.PHONY: help install lint typecheck test frontend-install frontend frontend-check frontend-build frontend-e2e \
+	openapi migration-check check mvp-smoke serve db-upgrade \
 	handoff-doc handoff-doc-v3 backup-create backup-verify backup-restore backup-drill docker-build compose-config compose-up \
 	compose-down compose-logs identity-manage rag-guide-doc
 
 help:
 	@echo "NanoLoop Agent development commands"
-	@echo "  make install          Create .venv and install base + dev dependencies"
+	@echo "  make install          Create .venv and install backend development dependencies"
 	@echo "  make check            Run Ruff, Mypy, Pytest, and fresh Alembic checks"
 	@echo "  make mvp-smoke        Run the offline engineering-fixture backend loop"
 	@echo "  make serve            Run the local API with reload"
-	@echo "  make frontend         Run the Streamlit workbench"
+	@echo "  make frontend-install Install the locked Next.js frontend dependencies"
+	@echo "  make frontend         Run the Next.js command center in development mode"
+	@echo "  make frontend-check   Run frontend API drift, lint, types, tests, and build"
+	@echo "  make frontend-build   Build the production Next.js frontend"
+	@echo "  make frontend-e2e     Run the Playwright frontend suite"
 	@echo "  make db-upgrade       Upgrade the configured database to Alembic head"
-	@echo "  make handoff-doc      Regenerate the current v4.0 developer handoff DOCX"
-	@echo "  make handoff-doc-v3   Regenerate the archived v3 developer handoff DOCX"
+	@echo "  make handoff-doc      Rebuild the paused historical v4.0 handoff (do not distribute)"
+	@echo "  make handoff-doc-v3   Rebuild the archived v3 handoff (do not distribute)"
 	@echo "  make rag-guide-doc    Regenerate the RAG development guide DOCX"
 	@echo "  make backup-create    Create BACKUP_ARCHIVE (offline writers only)"
 	@echo "  make backup-verify    Verify BACKUP_ARCHIVE and optional BACKUP_CHECKSUM"
@@ -38,19 +43,31 @@ $(PYTHON_BIN):
 
 install: $(PYTHON_BIN)
 	$(PYTHON_BIN) -m pip install --upgrade pip
-	$(PYTHON_BIN) -m pip install -e '.[dev,analysis,frontend,docs]'
+	$(PYTHON_BIN) -m pip install -e '.[dev,analysis,docs]'
 
 lint:
 	$(PYTHON_BIN) -m ruff check .
 
 typecheck:
-	$(PYTHON_BIN) -m mypy app frontend
+	$(PYTHON_BIN) -m mypy app
 
 test:
 	$(PYTHON_BIN) -m pytest -q
 
+frontend-install:
+	corepack enable && cd frontend && pnpm install --frozen-lockfile
+
+frontend:
+	cd frontend && pnpm dev
+
 frontend-check:
-	$(PYTHON_BIN) scripts/check_frontend.py
+	cd frontend && pnpm check
+
+frontend-build:
+	cd frontend && pnpm build
+
+frontend-e2e:
+	cd frontend && pnpm test:e2e
 
 openapi:
 	$(PYTHON_BIN) scripts/generate_openapi.py
@@ -66,9 +83,6 @@ mvp-smoke:
 
 serve:
 	$(PYTHON_BIN) -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload --no-proxy-headers
-
-frontend:
-	NANOLOOP_API_BASE_URL=http://127.0.0.1:8000 $(PYTHON_BIN) -m streamlit run frontend/app.py
 
 db-upgrade:
 	$(PYTHON_BIN) -m alembic -c alembic.ini upgrade head
@@ -118,4 +132,4 @@ compose-down:
 	docker compose down
 
 compose-logs:
-	docker compose logs --follow api
+	docker compose logs --follow api frontend

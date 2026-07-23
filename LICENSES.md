@@ -20,11 +20,41 @@ This development-environment snapshot was read from installed package metadata o
 | SciPy | 1.18.0 | BSD-3-Clause; wheel contains additional notices |
 | SQLAlchemy | 2.0.51 | MIT |
 | Uvicorn | 0.51.0 | BSD-3-Clause |
-| Streamlit | 1.59.2 | Apache-2.0 |
 | Matplotlib | 3.11.0 | PSF-based license |
 | pandas | 2.3.3 | BSD-3-Clause |
 
 Exact versions in a release are determined by the built environment, not this table. Generate and archive a full transitive SBOM/license report from the release wheelhouse or image before distribution.
+
+## Locked frontend direct dependencies
+
+The former Streamlit runtime has been removed. The replacement frontend is locked by
+`frontend/pnpm-lock.yaml`; the following direct runtime/toolchain inventory was read from
+`frontend/package.json` on 2026-07-23. It does not replace the transitive notices required for a
+release.
+
+| Package | Locked version | Declared license family |
+| --- | ---: | --- |
+| Next.js | 16.2.11 | MIT |
+| React / React DOM | 19.2.8 / 19.2.8 | MIT |
+| TanStack Query | 5.101.4 | MIT |
+| React Hook Form | 7.82.0 | MIT |
+| Hook Form Resolvers | 5.4.0 | MIT |
+| React-Konva / Konva | 19.2.5 / 10.3.0 | MIT |
+| Radix UI components | package-specific locked versions | MIT |
+| clsx | 2.1.1 | MIT |
+| Zustand | 5.0.14 | MIT |
+| Zod | 4.4.3 | MIT |
+| openapi-fetch | 0.17.0 | MIT |
+| Tailwind CSS | 4.3.3 | MIT |
+| Lucide React | 1.26.0 | ISC |
+
+The lockfile also pins security overrides for the production transitive dependencies PostCSS
+`8.5.10` (MIT) and sharp `0.35.0` (Apache-2.0). A release SBOM must additionally preserve the
+native libvips notices bundled by sharp.
+
+Development-only packages such as TypeScript, ESLint, Vitest, Playwright and
+`openapi-typescript` are also locked in the pnpm lockfile and must be included in the release
+SBOM/license review when their code or browser binaries enter a distributed artifact.
 
 ## Optional heavyweight dependencies
 

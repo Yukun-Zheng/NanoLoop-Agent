@@ -1,0 +1,581 @@
+"use client";
+
+import * as Dialog from "@radix-ui/react-dialog";
+import { useQuery } from "@tanstack/react-query";
+import {
+  Activity,
+  ArrowLeft,
+  Bot,
+  BoxSelect,
+  CircleDot,
+  FileImage,
+  FolderKanban,
+  Layers3,
+  Library,
+  Microscope,
+  PanelLeftClose,
+  PanelRight,
+  X,
+} from "lucide-react";
+import dynamic from "next/dynamic";
+import Link from "next/link";
+import { useEffect, useMemo, useRef, useState } from "react";
+
+import { CommandComposer } from "@/components/agent/command-composer";
+import { QueryAnswer } from "@/components/agent/query-answer";
+import { ModelSelector } from "@/components/models/model-selector";
+import { ProjectOverview } from "@/components/project/project-overview";
+import { ResultView } from "@/components/results/result-view";
+import { RunTimeline } from "@/components/runs/run-timeline";
+import { Brand } from "@/components/shell/brand";
+import { HealthIndicator } from "@/components/shell/health-indicator";
+import { ScientificInspector } from "@/components/shell/scientific-inspector";
+import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
+import { RequestError } from "@/components/ui/request-error";
+import { StatusBadge } from "@/components/ui/status-badge";
+import { apiRequest } from "@/lib/api/client";
+import { getHealth } from "@/lib/api/openapi-client";
+import { queryKeys } from "@/lib/api/query-keys";
+import type {
+  BoxSet,
+  JobDetail,
+  ModelList,
+  Run,
+  UnifiedQueryResponse
+} from "@/lib/api/types";
+import { compactId } from "@/lib/format/value";
+import { coreMutationBlocker } from "@/lib/health";
+import { rememberJob } from "@/lib/recent-jobs";
+import { buildQueryScopeKey, selectRunForImage } from "@/lib/runs/selection";
+import { TERMINAL_RUN_STATUSES } from "@/lib/runs/timeline";
+import {
+  type WorkspaceStage,
+  useWorkspaceStore
+} from "@/lib/store/workspace";
+
+const RoiEditor = dynamic(
+  () => import("@/components/roi/roi-editor").then((module) => module.RoiEditor),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="centered-stage">
+        <span className="status-spinner" />
+        <p>正在准备 ROI 画布…</p>
+      </div>
+    )
+  }
+);
+
+const stages: Array<{ value: WorkspaceStage; label: string; icon: typeof FolderKanban }> = [
+  { value: "project", label: "项目", icon: FolderKanban },
+  { value: "roi", label: "ROI", icon: BoxSelect },
+  { value: "models", label: "模型与运行", icon: Microscope },
+  { value: "runs", label: "执行时间线", icon: Activity },
+  { value: "results", label: "结果", icon: Layers3 },
+  { value: "agent", label: "Agent", icon: Bot }
+];
+
+const COMPARABLE_RUN_STATUSES = new Set(["COMPLETED", "COMPLETED_WITH_WARNINGS"]);
+
+export function WorkspaceCommandCenter({ jobId }: { jobId: string }) {
+  const stage = useWorkspaceStore((state) => state.stage);
+  const setStage = useWorkspaceStore((state) => state.setStage);
+  const activeImageId = useWorkspaceStore((state) => state.activeImageId);
+  const setActiveImage = useWorkspaceStore((state) => state.setActiveImage);
+  const activeRunId = useWorkspaceStore((state) => state.activeRunId);
+  const setActiveRun = useWorkspaceStore((state) => state.setActiveRun);
+  const selectedRunIds = useWorkspaceStore((state) => state.selectedRunIds);
+  const setSelectedRuns = useWorkspaceStore((state) => state.setSelectedRuns);
+  const setInspectorTab = useWorkspaceStore((state) => state.setInspectorTab);
+  const railCollapsed = useWorkspaceStore((state) => state.railCollapsed);
+  const toggleRail = useWorkspaceStore((state) => state.toggleRail);
+  const [answerState, setAnswerState] = useState<{
+    scope: string;
+    value: UnifiedQueryResponse;
+  } | null>(null);
+  const [inspectorOpen, setInspectorOpen] = useState(false);
+  const activeAnswerScope = useRef<string | null>(null);
+
+  const analysis = useQuery({
+    queryKey: queryKeys.analysis(jobId),
+    queryFn: () =>
+      apiRequest<JobDetail>(`analyses/${encodeURIComponent(jobId)}`).then(
+        (response) => response.data
+      ),
+    refetchInterval(query) {
+      if (query.state.error) return false;
+      const data = query.state.data;
+      const hasActive = (data?.runs ?? []).some(
+        (run) => !TERMINAL_RUN_STATUSES.has(run.status)
+      );
+      if (!hasActive) return false;
+      return typeof document !== "undefined" && document.hidden ? 5_000 : 1_500;
+    }
+  });
+
+  const health = useQuery({
+    queryKey: queryKeys.health,
+    queryFn: () => getHealth().then((response) => response.data),
+    refetchInterval: 15_000
+  });
+
+  const models = useQuery({
+    queryKey: queryKeys.models,
+    queryFn: () => apiRequest<ModelList>("models").then((response) => response.data)
+  });
+
+  const activeImage = useMemo(
+    () =>
+      (analysis.data?.images ?? []).find((image) => image.image_id === activeImageId) ||
+      (analysis.data?.images ?? [])[0] ||
+      null,
+    [activeImageId, analysis.data]
+  );
+  const activeRun = useMemo(
+    () =>
+      selectRunForImage(
+        analysis.data?.runs ?? [],
+        activeRunId,
+        activeImage?.image_id ?? null
+      ),
+    [activeImage, activeRunId, analysis.data]
+  );
+  const composerRunIds = useMemo(() => {
+    const runs = analysis.data?.runs ?? [];
+    const selectedForImage = selectedRunIds.filter((runId) =>
+      runs.some(
+        (run) =>
+          run.run_id === runId &&
+          (!activeImage || run.image_id === activeImage.image_id)
+      )
+    );
+    if (selectedForImage.length) return selectedForImage;
+    return activeRun && (!activeImage || activeRun.image_id === activeImage.image_id)
+      ? [activeRun.run_id]
+      : [];
+  }, [activeImage, activeRun, analysis.data, selectedRunIds]);
+  const answerScope = buildQueryScopeKey(
+    jobId,
+    activeImage?.image_id ?? null,
+    composerRunIds
+  );
+  useEffect(() => {
+    activeAnswerScope.current = answerScope;
+  }, [answerScope]);
+  const answer = answerState?.scope === answerScope ? answerState.value : null;
+
+  const boxes = useQuery({
+    queryKey: queryKeys.boxes(jobId, activeImage?.image_id || "none"),
+    queryFn: () =>
+      apiRequest<BoxSet>(
+        `analyses/${encodeURIComponent(jobId)}/images/${encodeURIComponent(activeImage?.image_id || "")}/boxes`
+      ).then((response) => response.data),
+    enabled: Boolean(activeImage)
+  });
+
+  useEffect(() => {
+    if (!analysis.data) return;
+    const nextImages = analysis.data.images ?? [];
+    const nextRuns = analysis.data.runs ?? [];
+    const normalizedImageId =
+      activeImageId && nextImages.some((item) => item.image_id === activeImageId)
+        ? activeImageId
+        : nextImages[0]?.image_id ?? null;
+    if (normalizedImageId !== activeImageId) {
+      setActiveImage(normalizedImageId);
+    }
+    const activeRunCandidate = nextRuns.find((item) => item.run_id === activeRunId);
+    if (
+      !activeRunCandidate ||
+      (normalizedImageId && activeRunCandidate.image_id !== normalizedImageId)
+    ) {
+      setActiveRun(
+        nextRuns.find((item) => item.image_id === normalizedImageId)?.run_id ?? null
+      );
+    }
+    const validSelectedRunIds = selectedRunIds.filter((runId) =>
+      nextRuns.some((item) => item.run_id === runId)
+    );
+    if (
+      validSelectedRunIds.length !== selectedRunIds.length ||
+      validSelectedRunIds.some((runId, index) => runId !== selectedRunIds[index])
+    ) {
+      setSelectedRuns(validSelectedRunIds);
+    }
+    rememberJob({ jobId, name: analysis.data.job.name });
+  }, [
+    activeImageId,
+    activeRunId,
+    analysis.data,
+    jobId,
+    selectedRunIds,
+    setActiveImage,
+    setActiveRun,
+    setSelectedRuns
+  ]);
+
+  if (analysis.isPending) {
+    return (
+      <main className="centered-state">
+        <span className="status-spinner" />
+        <p>正在载入科研任务…</p>
+      </main>
+    );
+  }
+
+  if (!analysis.data) {
+    return (
+      <main className="centered-state">
+        <RequestError error={analysis.error} />
+        <Button asChild tone="primary">
+          <Link href="/"><ArrowLeft size={16} />返回任务首页</Link>
+        </Button>
+      </main>
+    );
+  }
+
+  const detail = analysis.data;
+  const images = detail.images ?? [];
+  const runs = detail.runs ?? [];
+  const activeModel =
+    (models.data?.models ?? []).find((model) => model.model_id === activeRun?.model_id) ||
+    null;
+  const comparisonRuns = runs.filter(
+    (run) =>
+      selectedRunIds.includes(run.run_id) &&
+      run.image_id === activeImage?.image_id &&
+      COMPARABLE_RUN_STATUSES.has(run.status)
+  );
+  const writeBlocker = coreMutationBlocker(health.data, {
+    failed: health.isError,
+    pending: health.isPending
+  });
+
+  function handleRunsCreated(runIds: string[]) {
+    const first = runIds[0];
+    if (first) setActiveRun(first);
+    setSelectedRuns(runIds.slice(0, 3));
+    setStage("runs");
+  }
+
+  function toggleComparison(run: Run) {
+    if (!COMPARABLE_RUN_STATUSES.has(run.status)) return;
+    if (selectedRunIds.includes(run.run_id)) {
+      setSelectedRuns(selectedRunIds.filter((id) => id !== run.run_id));
+      return;
+    }
+    const sameImage = runs.filter(
+      (candidate) =>
+        selectedRunIds.includes(candidate.run_id) && candidate.image_id === run.image_id
+    );
+    setSelectedRuns([...sameImage.map((candidate) => candidate.run_id), run.run_id].slice(-3));
+  }
+
+  return (
+    <main className="workspace-page">
+      <header className="workspace-topbar">
+        <div className="workspace-brand">
+          <Button tone="ghost" size="sm" onClick={toggleRail} aria-label="折叠项目栏">
+            <PanelLeftClose size={17} />
+          </Button>
+          <Brand />
+          <span className="topbar-divider" />
+          <div className="workspace-title">
+            <strong>{detail.job.name}</strong>
+            <code>{compactId(detail.job.job_id, 16)}</code>
+          </div>
+        </div>
+        <div className="topbar-actions">
+          <StatusBadge value={detail.job.status} />
+          <HealthIndicator />
+          <Button asChild tone="ghost" size="sm">
+            <Link href="/knowledge"><Library size={15} />知识库</Link>
+          </Button>
+        </div>
+      </header>
+
+      <div className={`workspace-grid${railCollapsed ? " rail-collapsed" : ""}`}>
+        <aside className="project-rail" aria-label="项目与任务">
+          <div className="rail-heading">
+            <span>PROJECT</span>
+            <strong>{detail.job.name}</strong>
+          </div>
+          <nav className="stage-navigation" aria-label="工作区阶段">
+            {stages.map((item) => {
+              const Icon = item.icon;
+              return (
+                <button
+                  className={stage === item.value ? "active" : undefined}
+                  key={item.value}
+                  onClick={() => setStage(item.value)}
+                  title={railCollapsed ? item.label : undefined}
+                >
+                  <Icon size={16} />
+                  <span>{item.label}</span>
+                </button>
+              );
+            })}
+          </nav>
+
+          <div className="rail-section">
+            <div className="rail-section-title">
+              <span>图像</span>
+              <small>{images.length}</small>
+            </div>
+            <div className="rail-list">
+              {images.map((image) => (
+                <button
+                  className={activeImage?.image_id === image.image_id ? "active" : undefined}
+                  key={image.image_id}
+                  onClick={() => {
+                    setActiveImage(image.image_id);
+                    setActiveRun(
+                      runs.find((run) => run.image_id === image.image_id)?.run_id ?? null
+                    );
+                    setSelectedRuns([]);
+                  }}
+                  title={image.filename}
+                >
+                  <FileImage size={14} />
+                  <span>
+                    <strong>{image.filename}</strong>
+                    <small>{image.sample_id}</small>
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="rail-section rail-runs">
+            <div className="rail-section-title">
+              <span>运行</span>
+              <small>{runs.length}</small>
+            </div>
+            <div className="rail-list">
+              {runs.map((run) => (
+                <div
+                  className={`rail-run${activeRun?.run_id === run.run_id ? " active" : ""}`}
+                  key={run.run_id}
+                >
+                  <button
+                    onClick={() => {
+                      setActiveRun(run.run_id);
+                      setActiveImage(run.image_id);
+                      setSelectedRuns(
+                        selectedRunIds.filter((runId) =>
+                          runs.some(
+                            (candidate) =>
+                              candidate.run_id === runId &&
+                              candidate.image_id === run.image_id
+                          )
+                        )
+                      );
+                      setStage(TERMINAL_RUN_STATUSES.has(run.status) ? "results" : "runs");
+                    }}
+                    title={`${run.model_id} · ${run.status}`}
+                  >
+                    <CircleDot size={14} />
+                    <span>
+                      <strong>{run.model_id}</strong>
+                      <small>{run.status}</small>
+                    </span>
+                  </button>
+                  <input
+                    type="checkbox"
+                    aria-label={`将 ${run.model_id} 加入比较`}
+                    checked={selectedRunIds.includes(run.run_id)}
+                    disabled={!COMPARABLE_RUN_STATUSES.has(run.status)}
+                    onChange={() => toggleComparison(run)}
+                  />
+                </div>
+              ))}
+              {!runs.length ? <p>尚无运行</p> : null}
+            </div>
+          </div>
+        </aside>
+
+        <section className="active-work-canvas">
+          <div className="stage-header">
+            <div>
+              <span>{stage.toUpperCase()}</span>
+              <h1>{stages.find((item) => item.value === stage)?.label}</h1>
+              <p>{stageDescription(stage, activeImage?.filename, activeRun?.model_id)}</p>
+            </div>
+            <div className="stage-header-actions">
+              {activeImage ? <code>{activeImage.filename}</code> : null}
+              {activeRun ? <StatusBadge value={activeRun.status} /> : null}
+            </div>
+          </div>
+
+          <div className="stage-content">
+            {analysis.isRefetchError ? <RequestError error={analysis.error} /> : null}
+            {stage === "project" ? <ProjectOverview detail={detail} /> : null}
+
+            {stage === "roi" ? (
+              !activeImage ? (
+                <EmptyState icon={FileImage} title="没有图像" detail="该任务没有可编辑的图像。" />
+              ) : boxes.data ? (
+                <>
+                  {boxes.isRefetchError ? <RequestError error={boxes.error} /> : null}
+                  <RoiEditor
+                    jobId={jobId}
+                    image={activeImage}
+                    serverBoxes={boxes.data}
+                    writeBlocker={writeBlocker}
+                  />
+                </>
+              ) : boxes.isError ? (
+                <RequestError error={boxes.error} />
+              ) : (
+                <div className="centered-stage"><span className="status-spinner" /></div>
+              )
+            ) : null}
+
+            {stage === "models" ? (
+              models.isError ? (
+                <RequestError error={models.error} />
+              ) : models.data ? (
+                <ModelSelector
+                  key={`${jobId}:${activeImage?.image_id ?? "no-image"}:roi-${boxes.data?.revision ?? "none"}`}
+                  jobId={jobId}
+                  image={activeImage}
+                  boxSet={boxes.data || null}
+                  catalog={models.data}
+                  writeBlocker={writeBlocker}
+                  onRunsCreated={handleRunsCreated}
+                />
+              ) : (
+                <div className="centered-stage"><span className="status-spinner" /></div>
+              )
+            ) : null}
+
+            {stage === "runs" ? (
+              activeRun ? (
+                <div className="run-stage">
+                  <section className="run-identity panel">
+                    <div>
+                      <span>ACTIVE RUN</span>
+                      <h2>{activeRun.model_id}</h2>
+                      <code>{activeRun.run_id}</code>
+                    </div>
+                    <StatusBadge value={activeRun.status} />
+                  </section>
+                  <RunTimeline run={activeRun} />
+                </div>
+              ) : (
+                <EmptyState
+                  icon={Activity}
+                  title="尚未创建运行"
+                  detail="选择一个真实 ready 模型并确认参数后，执行状态会出现在这里。"
+                  action={
+                    <Button onClick={() => setStage("models")}>前往模型与运行</Button>
+                  }
+                />
+              )
+            ) : null}
+
+            {stage === "results" ? (
+              <ResultView
+                key={activeRun?.run_id ?? "no-run"}
+                jobId={jobId}
+                image={activeImage}
+                run={activeRun}
+                comparisonRuns={comparisonRuns}
+                writeBlocker={writeBlocker}
+                onChildCreated={(runId) => {
+                  setActiveRun(runId);
+                  setStage("runs");
+                }}
+              />
+            ) : null}
+
+            {stage === "agent" ? (
+              answer ? (
+                <QueryAnswer response={answer} />
+              ) : (
+                <EmptyState
+                  icon={Bot}
+                  title="向当前实验提出问题"
+                  detail="底部命令框会携带当前图像和所选运行作用域，回答将区分实验数据证据、材料知识引用和限制。"
+                />
+              )
+            ) : null}
+          </div>
+        </section>
+
+        <ScientificInspector
+          health={health.data || null}
+          model={activeModel}
+          run={activeRun}
+          answer={answer}
+        />
+
+        <Dialog.Root open={inspectorOpen} onOpenChange={setInspectorOpen}>
+          <Dialog.Trigger asChild>
+            <button
+              className="mobile-inspector-trigger"
+              aria-label="打开科学审查器"
+            >
+              <PanelRight size={18} />
+            </button>
+          </Dialog.Trigger>
+          <Dialog.Portal>
+            <Dialog.Overlay className="mobile-inspector-backdrop" />
+            <Dialog.Content
+              className="mobile-inspector-drawer"
+              aria-describedby={undefined}
+            >
+              <Dialog.Title className="sr-only">科学证据审查器</Dialog.Title>
+              <Dialog.Close asChild>
+              <button
+                className="mobile-inspector-close"
+                aria-label="关闭科学审查器"
+              >
+                <X size={18} />
+              </button>
+              </Dialog.Close>
+              <ScientificInspector
+                health={health.data || null}
+                model={activeModel}
+                run={activeRun}
+                answer={answer}
+              />
+            </Dialog.Content>
+          </Dialog.Portal>
+        </Dialog.Root>
+
+        <CommandComposer
+          key={answerScope}
+          jobId={jobId}
+          image={activeImage}
+          runIds={composerRunIds}
+          writeBlocker={writeBlocker}
+          needsClarification={Boolean(answer?.needs_clarification)}
+          onAnswer={(value, scope) => {
+            if (scope !== activeAnswerScope.current) return;
+            setAnswerState({ scope, value });
+            setStage("agent");
+            setInspectorTab("evidence");
+          }}
+        />
+      </div>
+    </main>
+  );
+}
+
+function stageDescription(
+  stage: WorkspaceStage,
+  image: string | undefined,
+  model: string | undefined
+) {
+  const descriptions: Record<WorkspaceStage, string> = {
+    project: "审查输入图像、材料上下文和尺度状态。",
+    roi: `在 ${image || "当前图像"} 的原图坐标中定义分析区域。`,
+    models: "查看真实模型健康状态、获取推荐并显式确认不可变运行。",
+    runs: `观察 ${model || "当前模型"} 的后端执行状态与审计历史。`,
+    results: "先审查质量，再查看后端权威统计、图层与复核入口。",
+    agent: "用数据工具和材料知识形成分区、可验证的回答。"
+  };
+  return descriptions[stage];
+}
