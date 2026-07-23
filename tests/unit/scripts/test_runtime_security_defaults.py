@@ -119,3 +119,47 @@ def test_api_image_includes_the_non_secret_keyring_operator_cli() -> None:
         "./scripts/manage_file_token_keyring.py"
     ) in dockerfile
     assert "/app/scripts/manage_file_token_keyring.py" in dockerfile
+
+
+def test_model_compose_build_is_cpu_only_and_serial() -> None:
+    dockerfile = (_REPOSITORY_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    constraints = (
+        _REPOSITORY_ROOT / "docker-models-cpu-constraints.txt"
+    ).read_text(encoding="utf-8")
+    makefile = (_REPOSITORY_ROOT / "Makefile").read_text(encoding="utf-8")
+
+    assert "https://download.pytorch.org/whl/cpu" in dockerfile
+    assert "--no-deps" in dockerfile
+    assert "--requirement docker-models-cpu-constraints.txt" in dockerfile
+    assert '--index-url "${PYPI_INDEX_URL}"' in dockerfile
+    assert "torch==2.13.0" in constraints
+    assert "torchvision==0.28.0" in constraints
+
+    project = (_REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert '"torch>=2.13,<3"' in project
+    assert '"torchvision>=0.28,<1"' in project
+
+    compose = yaml.safe_load(
+        (_REPOSITORY_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    )
+    assert (
+        compose["services"]["api"]["build"]["args"]["PYPI_INDEX_URL"]
+        == "${PYPI_INDEX_URL:-https://pypi.org/simple}"
+    )
+    frontend_healthcheck = compose["services"]["frontend"]["healthcheck"]["test"]
+    assert frontend_healthcheck[:3] == ["CMD", "node", "-e"]
+
+    recipe = makefile.split("compose-up-models:\n", maxsplit=1)[1].split(
+        "\n\n", maxsplit=1
+    )[0]
+    assert "COMPOSE_PARALLEL_LIMIT=1" in recipe
+    assert "docker compose build api" in recipe
+    assert "docker compose build frontend" in recipe
+    assert "docker compose up --detach --no-build" in recipe
+
+    install_recipe = makefile.split("install-models:", maxsplit=1)[1].split(
+        "\n\n", maxsplit=1
+    )[0]
+    assert "https://download.pytorch.org/whl/cpu" in install_recipe
+    assert "--requirement docker-models-cpu-constraints.txt" in install_recipe
+    assert "--constraint docker-models-cpu-constraints.txt" in install_recipe

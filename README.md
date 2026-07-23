@@ -53,8 +53,9 @@ cp .env.example .env
 alembic upgrade head
 ```
 
-若要让已接入的 Large 与 Small-A U-Net 在本地登记为 `ready`，把后端安装命令替换为
-`python -m pip install -e '.[dev,analysis,docs,models]'`，或直接运行 `make install-models`。
+若要让已接入的 Large 与 Small-A U-Net 在本地登记为 `ready`，运行
+`make install-models`。该目标会固定已验证的 PyTorch/TorchVision 配对；Linux 从 PyTorch 官方
+CPU wheel index 预取，避免普通 PyPI 解析引入 CUDA 运行时。
 不安装 `models` extra 时，系统仍可启动，但真实模型会诚实显示为 `unavailable`。
 
 安装锁定的前端依赖：
@@ -98,6 +99,10 @@ docker compose logs -f api frontend
 make compose-up-models
 docker compose logs -f api frontend
 ```
+
+该目标会从 PyTorch 官方 CPU wheel index 使用已验证的
+`torch 2.13.0`/`torchvision 0.28.0`，并串行构建 API 与前端，避免 CPU 部署误拉 CUDA
+运行时或并发重型构建。构建期间不要在其他终端重复执行同一目标。
 
 默认只绑定 `127.0.0.1`。API 会拒绝不受信任/歧义的 Host，并对浏览器写请求校验 Origin 与 `Sec-Fetch-Site`；这些网络边界控制本身不构成身份认证。应用已经支持由运维 CLI 预置的 tenant/principal 可撤销凭据，并对 Analysis 聚合、Query 和 v2 文件能力执行相应的租户、主体、角色或用途约束，但仍不提供交互式用户登录，knowledge 尚未完成同等级租户隔离。若要开放到其他机器，仍必须先在受信任反向代理上增加 TLS、所需的用户认证与授权、边缘限速和访问日志，再显式设置 `NANOLOOP_BIND_HOST`。
 

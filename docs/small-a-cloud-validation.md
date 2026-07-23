@@ -15,19 +15,21 @@ It does not re-export the model and does not perform Small-B calibration or scie
 ## Frozen environment
 
 - OS: Debian 12 (bookworm), matching the repository container base
-- Python: 3.11
-- PyTorch: 2.6.0
-- torchvision: 0.21.0
+- Python: 3.12
+- PyTorch: 2.13.0
+- torchvision: 0.28.0
 - Device for acceptance: CPU
 - Model ID: `unet-small-balanced-v1`
 - Expected repository TorchScript SHA-256:
   `09d1818c72652179e2590897cf409f7691e18e5e1a0f55476f90f7369a03171d`
 - Expected image size: `2048 x 1536 px`
 
-PyTorch 2.6.0 and torchvision 0.21.0 are the lowest exact pair allowed by the current
-`pyproject.toml` model-runtime contract. The historical Large training notebook recorded Python
-3.10 and PyTorch 2.2.2; that older training environment is not used as the current application
-validation runtime.
+PyTorch 2.13.0 and torchvision 0.28.0 are the exact pair used by the current unified application
+runtime. The checked-in Small-A compatibility export remains independently verified under
+PyTorch 2.6.0, but Large serializes a reference to `aten::_upsample_lanczos2d_aa`; therefore 2.6 is
+not a valid version for the complete application. The historical Large training notebook recorded
+Python 3.10 and PyTorch 2.2.2; that older training environment is not used as the current
+application validation runtime.
 
 ## Private paths
 
@@ -56,7 +58,7 @@ source .venv-small-a-cloud/bin/activate
 python -m pip install --upgrade "pip<26"
 python -m pip install \
   --index-url https://download.pytorch.org/whl/cpu \
-  "torch==2.6.0" "torchvision==0.21.0"
+  "torch==2.13.0" "torchvision==0.28.0"
 python -m pip install -e ".[analysis,dev]"
 python -m pip check
 

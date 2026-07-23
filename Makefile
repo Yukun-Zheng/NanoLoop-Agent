@@ -49,7 +49,19 @@ install: $(PYTHON_BIN)
 
 install-models: $(PYTHON_BIN)
 	$(PYTHON_BIN) -m pip install --upgrade pip
-	$(PYTHON_BIN) -m pip install -e '.[dev,analysis,docs,models]'
+	@if [ "$$(uname -s)" = "Linux" ]; then \
+		$(PYTHON_BIN) -m pip install \
+			--index-url https://download.pytorch.org/whl/cpu \
+			--no-deps \
+			--requirement docker-models-cpu-constraints.txt; \
+	else \
+		$(PYTHON_BIN) -m pip install \
+			--no-deps \
+			--requirement docker-models-cpu-constraints.txt; \
+	fi
+	$(PYTHON_BIN) -m pip install \
+		--constraint docker-models-cpu-constraints.txt \
+		-e '.[dev,analysis,docs,models]'
 
 lint:
 	$(PYTHON_BIN) -m ruff check .
@@ -135,7 +147,9 @@ compose-up:
 	docker compose up --build --detach
 
 compose-up-models:
-	NANOLOOP_API_EXTRAS=models docker compose up --build --detach
+	COMPOSE_PARALLEL_LIMIT=1 NANOLOOP_API_EXTRAS=models docker compose build api
+	COMPOSE_PARALLEL_LIMIT=1 docker compose build frontend
+	NANOLOOP_API_EXTRAS=models docker compose up --detach --no-build
 
 compose-down:
 	docker compose down

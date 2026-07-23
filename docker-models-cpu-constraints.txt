@@ -1,0 +1,5 @@
+# The production Compose profile is CPU-only. Keep these versions aligned with
+# the verified TorchScript export/runtime floor and download them exclusively
+# from PyTorch's official CPU wheel index in Dockerfile.
+torch==2.13.0
+torchvision==0.28.0

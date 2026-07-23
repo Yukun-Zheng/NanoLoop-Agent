@@ -2,16 +2,20 @@
 
 ARG PYTHON_VERSION=3.12
 ARG API_EXTRAS=""
+ARG PYTORCH_CPU_INDEX_URL="https://download.pytorch.org/whl/cpu"
+ARG PYPI_INDEX_URL="https://pypi.org/simple"
 
 FROM python:${PYTHON_VERSION}-slim-bookworm AS builder
 ARG API_EXTRAS
+ARG PYTORCH_CPU_INDEX_URL
+ARG PYPI_INDEX_URL
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1
 
 WORKDIR /build
 
-COPY pyproject.toml README.md LICENSES.md ./
+COPY pyproject.toml README.md LICENSES.md docker-models-cpu-constraints.txt ./
 COPY app ./app
 
 # Build a complete wheelhouse so the runtime image never invokes a compiler or package index.
@@ -24,7 +28,23 @@ RUN set -eu; \
     esac; \
     project_spec="."; \
     if [ -n "${API_EXTRAS}" ]; then project_spec=".[${API_EXTRAS}]"; fi; \
-    python -m pip wheel --wheel-dir /wheels "${project_spec}"
+    model_constraint_args=""; \
+    case ",${API_EXTRAS}," in \
+        *,models,*) \
+            python -m pip wheel \
+                --wheel-dir /wheels \
+                --index-url "${PYTORCH_CPU_INDEX_URL}" \
+                --no-deps \
+                --requirement docker-models-cpu-constraints.txt; \
+            model_constraint_args="--constraint docker-models-cpu-constraints.txt"; \
+            ;; \
+    esac; \
+    python -m pip wheel \
+        --wheel-dir /wheels \
+        --index-url "${PYPI_INDEX_URL}" \
+        --find-links /wheels \
+        ${model_constraint_args} \
+        "${project_spec}"
 
 
 FROM python:${PYTHON_VERSION}-slim-bookworm AS runtime

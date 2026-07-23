@@ -37,8 +37,8 @@ rag = [
   "sentence-transformers>=4,<6",
 ]
 models = [
-  "torch>=2.6,<3",
-  "torchvision>=0.21,<1",
+  "torch>=2.13,<3",
+  "torchvision>=0.28,<1",
   "ultralytics>=8.3,<9",
 ]
 docs = ["python-docx>=1.2,<2"]

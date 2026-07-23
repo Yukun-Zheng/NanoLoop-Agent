@@ -578,3 +578,31 @@
 - 公开仓库策略：只提交兼容运行权重和不含私有路径/图像的审计事实，不提交 ZIP、checkpoint 或
   重复脚本。项目负责人已明确要求把该模型接入并推送本仓库；该要求不推定第三方再分发、商业使用
   或再许可权利。
+
+## 2026-07-23 — 修复 CPU 模型容器的可重复部署
+
+- 目标机复现：`models` 构建通过 PyPI 宽泛解析选中 `torch 2.13.0`，并在 Linux ARM64 CPU
+  容器中继续解析 CUDA 13 组件；此前 8 GiB、无 swap 且存在重叠构建的 Colima 环境中，构建进程
+  曾以 137 被终止。137 只证明进程收到 `SIGKILL`，历史日志不足以单独证明内核 OOM。
+- 依赖修复：Docker `models` profile 现在从 PyTorch 官方 CPU wheel index 预取并约束
+  `torch 2.13.0`/`torchvision 0.28.0`。最初按 Small-A 的 Linux ARM64 运行下限尝试 2.6，
+  但真实 Large 推理暴露其 TorchScript 依赖较新的
+  `aten::_upsample_lanczos2d_aa`；因此项目 `models` extra 的统一下限同步提升至 2.13。
+  默认轻量镜像仍不安装模型依赖。
+- 调度修复：`make compose-up-models` 改为先单独构建 API、再构建前端、最后
+  `docker compose up --no-build`，并显式限制 Compose 并行度，避免使用者重复触发两个重型构建。
+  `make install-models` 也使用同一版本约束；Linux 先从官方 CPU index 预取，避免宿主开发安装
+  重复触发 CUDA 依赖解析。
+- 健康检查修复：Compose 前端探针改用 Node `-e` 执行内联 `fetch`；此前误用 `-c`，会把健康
+  检查脚本当成本地文件名，导致页面可访问但容器被错误标记为 unhealthy。
+- 端口冲突修复：验收时发现旧 `NanoLoop-Agent-rag` 宿主 `uvicorn` 占用 `127.0.0.1:8000`，
+  导致终端与 Next.js BFF 分别命中宿主和容器 API。停止旧进程并重建 Compose 服务后，
+  `3000`/`8000` 均由当前 Colima 转发接管，前端与命令行共享同一持久状态。
+- 目标验收：在 12 GiB Colima 上重新构建 CPU-only API，验证双容器健康、Large/Small-A 为
+  `ready`、其余未交付模型保持 `unavailable`，完成前端 BFF 健康请求，并用真实 Large 样例
+  贯通上传、推理、形貌指标和结果制品。最终 Docker CPU 运行使用
+  `SrZr-3.tif`（2048×1536，SHA-256
+  `9bfd594fff30dce6b898281c6e9f4cb84a0183ba82c8d974f38a510a9092d885`），耗时 9,908 ms，
+  输出 2 个颗粒、平均等效粒径 152.026 px、覆盖率 1.31%、数量密度
+  `7.201788348082596e-07 px^-2`、周长密度 `0.000463944323536875 px^-1` 和 8 类运行制品。
+  唯一质量警告是样例未提供物理尺度，因此没有推测 nm/µm 指标。

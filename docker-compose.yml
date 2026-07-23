@@ -9,6 +9,7 @@ services:
       args:
         PYTHON_VERSION: "3.12"
         API_EXTRAS: "${NANOLOOP_API_EXTRAS:-}"
+        PYPI_INDEX_URL: "${PYPI_INDEX_URL:-https://pypi.org/simple}"
     environment:
       APP_ENV: production
       DATABASE_URL: sqlite:////app/data/nanoloop.db
@@ -131,7 +132,7 @@ services:
       test:
         - CMD
         - node
-        - -c
+        - -e
         - >-
           fetch('http://127.0.0.1:3000/api/healthz')
           .then((response)=>{if(!response.ok)process.exit(1)})
