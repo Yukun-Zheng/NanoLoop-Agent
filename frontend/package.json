@@ -37,6 +37,7 @@
     "react-dom": "19.2.8",
     "react-hook-form": "7.82.0",
     "react-konva": "19.2.5",
+    "sharp": "0.35.3",
     "zod": "4.4.3",
     "zustand": "5.0.14"
   },
@@ -61,7 +62,7 @@
   "pnpm": {
     "overrides": {
       "postcss": "8.5.22",
-      "sharp": "0.35.0"
+      "sharp": "0.35.3"
     }
   }
 }

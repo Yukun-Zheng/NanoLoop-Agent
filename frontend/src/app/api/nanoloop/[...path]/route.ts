@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import sharp from "sharp";
 
 import { isAllowedProxyRequest, isKnownProxyPath } from "@/lib/api/route-policy";
 import { getServerEnv } from "@/lib/env";
@@ -21,6 +22,9 @@ const forwardedResponseHeaders = [
 ] as const;
 const mutationMethods = new Set(["POST", "PUT", "PATCH"]);
 const trustedFetchSites = new Set(["same-origin", "same-site", "none"]);
+const tiffMediaTypes = new Set(["image/tiff", "image/x-tiff"]);
+const previewMaxDimension = 4096;
+const previewMaxPixels = 80_000_000;
 
 function requestHost(request: Request): string {
   return (request.headers.get("host") || new URL(request.url).host).toLowerCase();
@@ -192,6 +196,47 @@ async function proxy(request: Request, context: RouteContext) {
   responseHeaders.set("Cache-Control", "private, no-store");
   responseHeaders.set("X-Request-ID", upstream.headers.get("x-request-id") || requestId);
   responseHeaders.set("X-Content-Type-Options", "nosniff");
+
+  const contentType = upstream.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
+  const wantsPreview =
+    request.method === "GET" &&
+    path.startsWith("files/") &&
+    new URL(request.url).searchParams.get("preview") === "1";
+  if (upstream.ok && wantsPreview && contentType && tiffMediaTypes.has(contentType)) {
+    try {
+      const input = new Uint8Array(await upstream.arrayBuffer());
+      const preview = await sharp(input, {
+        autoOrient: true,
+        failOn: "warning",
+        limitInputPixels: previewMaxPixels,
+        pages: 1,
+        sequentialRead: true
+      })
+        .resize({
+          width: previewMaxDimension,
+          height: previewMaxDimension,
+          fit: "inside",
+          withoutEnlargement: true
+        })
+        .png({ compressionLevel: 9, progressive: true })
+        .toBuffer();
+      responseHeaders.set("Content-Type", "image/png");
+      responseHeaders.set("Content-Length", String(preview.byteLength));
+      responseHeaders.set("Content-Disposition", 'inline; filename="preview.png"');
+      return new Response(new Uint8Array(preview), {
+        status: upstream.status,
+        statusText: upstream.statusText,
+        headers: responseHeaders
+      });
+    } catch {
+      return bffError(
+        requestId,
+        422,
+        "ARTIFACT_PREVIEW_FAILED",
+        "该图像暂时无法生成浏览器预览，可下载原始制品审查"
+      );
+    }
+  }
 
   return new Response(upstream.body, {
     status: upstream.status,

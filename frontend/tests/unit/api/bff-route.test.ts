@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import sharp from "sharp";
 
 import { GET, POST } from "@/app/api/nanoloop/[...path]/route";
 
@@ -171,5 +172,72 @@ describe("NanoLoop BFF route", () => {
       error: { code: "UNTRUSTED_FRONTEND_ORIGIN" }
     });
     expect(upstream).not.toHaveBeenCalled();
+  });
+
+  it("converts a TIFF artifact preview to a bounded browser-native PNG", async () => {
+    process.env.NANOLOOP_API_INTERNAL_URL = "http://backend:8000";
+    const tiff = await sharp({
+      create: {
+        width: 2,
+        height: 3,
+        channels: 3,
+        background: { r: 10, g: 20, b: 30 }
+      }
+    })
+      .tiff()
+      .toBuffer();
+    const upstream = vi.fn(async (input: RequestInfo | URL) => {
+      void input;
+      return new Response(new Uint8Array(tiff), {
+        headers: {
+          "content-disposition": 'attachment; filename="sample.tif"',
+          "content-type": "image/tiff",
+          "x-request-id": "req-tiff-preview"
+        }
+      });
+    });
+    vi.stubGlobal("fetch", upstream);
+
+    const response = await GET(
+      new Request("http://localhost:3000/api/nanoloop/files/signed-token?preview=1"),
+      { params: Promise.resolve({ path: ["files", "signed-token"] }) }
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("image/png");
+    expect(response.headers.get("content-disposition")).toBe(
+      'inline; filename="preview.png"'
+    );
+    const preview = Buffer.from(await response.arrayBuffer());
+    await expect(sharp(preview).metadata()).resolves.toMatchObject({
+      format: "png",
+      width: 2,
+      height: 3
+    });
+    expect(upstream).toHaveBeenCalledOnce();
+    expect(String(upstream.mock.calls[0]![0])).toBe(
+      "http://backend:8000/api/v1/files/signed-token?preview=1"
+    );
+  });
+
+  it("leaves non-preview TIFF downloads byte-for-byte unchanged", async () => {
+    process.env.NANOLOOP_API_INTERNAL_URL = "http://backend:8000";
+    const bytes = new Uint8Array([73, 73, 42, 0]);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return new Response(bytes, {
+          headers: { "content-type": "image/tiff" }
+        });
+      })
+    );
+
+    const response = await GET(
+      new Request("http://localhost:3000/api/nanoloop/files/signed-token"),
+      { params: Promise.resolve({ path: ["files", "signed-token"] }) }
+    );
+
+    expect(response.headers.get("content-type")).toBe("image/tiff");
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(bytes);
   });
 });
