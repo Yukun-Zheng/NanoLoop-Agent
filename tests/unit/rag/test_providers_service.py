@@ -15,12 +15,14 @@ from app.contracts.knowledge import RetrievalRequest, RetrievedChunk
 from app.contracts.queries import MaterialContext
 from app.rag.keyword_store import SQLiteFTS5KeywordStore
 from app.rag.providers import (
+    AnswerProviderError,
     CitationContext,
     CitationValidationError,
     ExtractiveAnswerProvider,
     OpenAICompatibleProvider,
     ProviderAnswer,
     is_pure_insufficient_answer,
+    strip_thinking,
     validate_provider_answer,
 )
 from app.rag.retrieval import RetrievalReport, RetrievalService
@@ -441,6 +443,16 @@ class FakeHttpClient:
         self.content = content
         self.calls: list[dict[str, Any]] = []
 
+    def get(
+        self,
+        url: str,
+        *,
+        headers: Any,
+        timeout: float,
+    ) -> FakeResponse:
+        del url, headers, timeout
+        return FakeResponse({"data": [{"id": "fixture-model"}]})
+
     def post(
         self,
         url: str,
@@ -496,6 +508,52 @@ def test_openai_provider_is_unavailable_without_configuration() -> None:
 
     assert provider.health().status == "unavailable"
     assert "LLM_BASE_URL" in (provider.health().detail or "")
+
+
+def test_openai_provider_health_probes_configured_model() -> None:
+    available = OpenAICompatibleProvider(
+        base_url="http://llm.test/v1",
+        api_key="secret",
+        model="fixture-model",
+        client=FakeHttpClient("{}"),
+    )
+    missing = OpenAICompatibleProvider(
+        base_url="http://llm.test/v1",
+        api_key="secret",
+        model="missing-model",
+        client=FakeHttpClient("{}"),
+    )
+
+    assert available.health().status == "healthy"
+    assert missing.health().status == "unavailable"
+    assert "not present" in (missing.health().detail or "")
+
+
+def test_think_filter_removes_only_explicit_complete_blocks() -> None:
+    assert strip_thinking('<think>hidden reasoning</think>{"answer":"final"}') == (
+        '{"answer":"final"}'
+    )
+    assert strip_thinking('ordinary answer about "thinking"') == (
+        'ordinary answer about "thinking"'
+    )
+    with pytest.raises(ValueError, match="incomplete think"):
+        strip_thinking("<think>unfinished")
+
+
+def test_openai_provider_rejects_invalid_json_without_exposing_it() -> None:
+    provider = OpenAICompatibleProvider(
+        base_url="http://llm.test/v1",
+        api_key="secret",
+        model="fixture-model",
+        client=FakeHttpClient("not-json"),
+    )
+
+    with pytest.raises(AnswerProviderError, match="invalid response"):
+        provider.generate(
+            question="用途？",
+            contexts=[_context()],
+            material_context=MaterialContext(formula="SrNi"),
+        )
 
 
 class FakeRetrieval:

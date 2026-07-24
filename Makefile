@@ -12,7 +12,8 @@ IDENTITY_ARGS ?=
 .PHONY: help install install-models lint typecheck test frontend-install frontend frontend-check frontend-build frontend-e2e \
 	openapi migration-check check mvp-smoke serve db-upgrade \
 	handoff-doc handoff-doc-v3 backup-create backup-verify backup-restore backup-drill docker-build compose-config compose-up \
-	compose-up-models compose-down compose-logs identity-manage rag-guide-doc
+	compose-up-models compose-down compose-logs identity-manage rag-guide-doc \
+	compose-up-local-llm-models
 
 help:
 	@echo "NanoLoop Agent development commands"
@@ -38,6 +39,7 @@ help:
 	@echo "  make docker-build     Build the CPU API image"
 	@echo "  make compose-up       Start the hardened local container stack"
 	@echo "  make compose-up-models Build and start the stack with model runtimes"
+	@echo "  make compose-up-local-llm-models Start models stack with host Ollama Qwen3"
 	@echo "  make compose-down     Stop the local container stack"
 
 $(PYTHON_BIN):
@@ -150,6 +152,14 @@ compose-up-models:
 	COMPOSE_PARALLEL_LIMIT=1 NANOLOOP_API_EXTRAS=models docker compose build api
 	COMPOSE_PARALLEL_LIMIT=1 docker compose build frontend
 	NANOLOOP_API_EXTRAS=models docker compose up --detach --no-build
+
+compose-up-local-llm-models:
+	@test -n "$(LLM_MODEL)" || { echo "LLM_MODEL is required" >&2; exit 2; }
+	LLM_MODEL="$(LLM_MODEL)" $(PYTHON) scripts/check_local_llm.py
+	COMPOSE_PARALLEL_LIMIT=1 NANOLOOP_API_EXTRAS=models docker compose build api
+	COMPOSE_PARALLEL_LIMIT=1 docker compose build frontend
+	LLM_MODEL="$(LLM_MODEL)" NANOLOOP_API_EXTRAS=models docker compose \
+		-f docker-compose.yml -f docker-compose.ollama.yml up --detach --no-build
 
 compose-down:
 	docker compose down

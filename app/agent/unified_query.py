@@ -109,6 +109,17 @@ class UnifiedQueryService:
 
         if query_type == QueryType.ANALYSIS_DATA:
             return self._data_response(job_id, request, tenant_id=tenant_id)
+        if query_type == QueryType.GENERAL_CHAT:
+            return UnifiedQueryResponse(
+                query_type=QueryType.GENERAL_CHAT,
+                answer=(
+                    "你好，我是 NanoLoop 科研助手。我可以解释当前任务流程、"
+                    "调用确定性数据工具比较分析结果，并基于已导入知识库提供带引用的材料说明。"
+                ),
+                material_context=request.material_context,
+                confidence="high",
+                limitations=("科学结论必须来自当前任务数据或已检索知识证据",),
+            )
         if query_type == QueryType.MATERIAL_KNOWLEDGE:
             return self._knowledge_response(request)
         if query_type == QueryType.MIXED:

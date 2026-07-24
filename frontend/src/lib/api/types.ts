@@ -5,6 +5,13 @@ export type AnalysisRoi = components["schemas"]["AnalysisROI"];
 export type ApiErrorPayload = components["schemas"]["ApiErrorPayload"];
 export type BoxSet = components["schemas"]["BoxSetDTO"];
 export type CorrectedMaskUpload = components["schemas"]["CorrectedMaskUploadData"];
+export type ChatMessage = components["schemas"]["ChatMessageDTO"];
+export type ConversationDetail = components["schemas"]["ConversationDetailDTO"];
+export type ConversationList = components["schemas"]["ConversationListData"];
+export type ConversationMessageRequest =
+  components["schemas"]["ConversationMessageRequest"];
+export type CreateConversationRequest =
+  components["schemas"]["CreateConversationRequest"];
 export type CreateRunsRequest = components["schemas"]["CreateRunsRequest"];
 export type CreateRunsData = components["schemas"]["CreateRunsData"];
 export type ExportData = components["schemas"]["ExportData"];

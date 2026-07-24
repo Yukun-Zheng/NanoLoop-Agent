@@ -31,6 +31,7 @@ async def health(request: Request) -> ApiResponse[HealthData]:
     database: Database = request.app.state.database
     gateway = getattr(request.app.state, "inference_gateway", None)
     knowledge_service = getattr(request.app.state, "knowledge_service", None)
+    conversation_service = getattr(request.app.state, "conversation_service", None)
 
     database_health = await run_in_threadpool(_database_health, database)
     model_health = await _model_registry_health(gateway, settings.model_registry_path)
@@ -46,9 +47,29 @@ async def health(request: Request) -> ApiResponse[HealthData]:
         database=database_health,
         model_registry=model_health,
         rag_index=rag_health,
+        llm_provider=await run_in_threadpool(
+            _llm_provider_health,
+            conversation_service,
+        ),
         version=_application_version(),
     )
     return success_response(data, request=request)
+
+
+def _llm_provider_health(conversation_service: object | None) -> HealthComponent:
+    provider = getattr(conversation_service, "llm_provider", None)
+    if provider is None:
+        return HealthComponent(
+            status="degraded",
+            detail="extractive fallback active; generative provider not configured",
+        )
+    try:
+        return HealthComponent.model_validate(provider.health())
+    except Exception as error:
+        return HealthComponent(
+            status="unavailable",
+            detail=f"provider health probe failed: {type(error).__name__}",
+        )
 
 
 def _database_health(database: Database) -> HealthComponent:

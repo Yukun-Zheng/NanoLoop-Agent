@@ -84,6 +84,44 @@ def test_health_alias_and_versioned_health_are_real(api_harness: ApiHarness) -> 
         assert data["database"]["status"] == "healthy"
         assert data["model_registry"]["status"] == "healthy"
         assert data["rag_index"]["status"] == "degraded"
+        assert data["llm_provider"]["status"] == "degraded"
+
+
+def test_conversation_api_persists_and_reloads_messages(
+    api_harness: ApiHarness,
+) -> None:
+    created = api_harness.client.post(
+        "/api/v1/analyses/job_1/conversations",
+        json={},
+    )
+    assert created.status_code == 200
+    conversation_id = created.json()["data"]["conversation_id"]
+
+    sent = api_harness.client.post(
+        f"/api/v1/analyses/job_1/conversations/{conversation_id}/messages",
+        json={
+            "content": "你好，你能帮我做什么？",
+            "query_type": "auto",
+            "image_id": "img_1",
+            "run_ids": ["run_1"],
+        },
+    )
+    assert sent.status_code == 200
+    messages = sent.json()["data"]["messages"]
+    assert [message["role"] for message in messages] == ["user", "assistant"]
+    assert messages[-1]["query_type"] == "general_chat"
+    assert messages[-1]["evidence"]["llm_provider"] == "extractive"
+    assert messages[-1]["evidence"]["fallback_used"] is True
+    assert "<think" not in messages[-1]["content"].casefold()
+
+    listed = api_harness.client.get("/api/v1/analyses/job_1/conversations")
+    assert listed.status_code == 200
+    assert listed.json()["data"]["conversations"][0]["message_count"] == 2
+    reloaded = api_harness.client.get(
+        f"/api/v1/analyses/job_1/conversations/{conversation_id}"
+    )
+    assert reloaded.status_code == 200
+    assert reloaded.json()["data"]["messages"] == messages
 
 
 def test_optional_api_key_protects_versioned_api_and_downloads(

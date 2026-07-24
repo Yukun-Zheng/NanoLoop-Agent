@@ -14,6 +14,7 @@ from sqlalchemy import inspect
 from sqlalchemy.engine import make_url
 
 from app.agent.application import QueryApplicationService
+from app.agent.conversation import ConversationService
 from app.agent.data_tools import SqlAlchemyDataToolService
 from app.agent.router import QueryRouter
 from app.agent.unified_query import UnifiedQueryService
@@ -84,6 +85,7 @@ def create_app(
     knowledge_application_service: KnowledgeApplicationService | None = None,
     knowledge_source_store: KnowledgeSourceStore | None = None,
     query_application_service: QueryApplicationService | None = None,
+    conversation_service: ConversationService | None = None,
 ) -> FastAPI:
     """Build an app with injectable infrastructure and no schema mutation on startup."""
 
@@ -125,13 +127,20 @@ def create_app(
             )
         vector_index_publisher: VectorIndexPublisher | None = None
         if application.state.query_application_service is None:
-            query_service, knowledge_service, vector_index_publisher = _build_query_services(
+            (
+                query_service,
+                knowledge_service,
+                conversation_runtime,
+                vector_index_publisher,
+            ) = _build_query_services(
                 database=active_database,
                 file_store=active_file_store,
                 settings=configured,
             )
             application.state.query_application_service = query_service
             application.state.knowledge_service = knowledge_service
+            if application.state.conversation_service is None:
+                application.state.conversation_service = conversation_runtime
         if application.state.knowledge_application_service is None:
             application.state.knowledge_application_service = KnowledgeApplicationService(
                 active_database,
@@ -260,6 +269,7 @@ def create_app(
     application.state.knowledge_application_service = knowledge_application_service
     application.state.knowledge_source_store = knowledge_source_store
     application.state.query_application_service = query_application_service
+    application.state.conversation_service = conversation_service
     application.state.knowledge_service = None
 
     allowed_origins = cors_origins(configured)
@@ -487,7 +497,12 @@ def _build_query_services(
     database: Database,
     file_store: LocalFileStore,
     settings: Settings,
-) -> tuple[QueryApplicationService, KnowledgeService, VectorIndexPublisher | None]:
+) -> tuple[
+    QueryApplicationService,
+    KnowledgeService,
+    ConversationService,
+    VectorIndexPublisher | None,
+]:
     database_path = database.engine.url.database
     keyword_store: KeywordStore
     vector_index_publisher: VectorIndexPublisher | None = None
@@ -528,12 +543,17 @@ def _build_query_services(
         retrieval = RetrievalService(keyword_store)
     fallback = ExtractiveAnswerProvider()
     provider: AnswerProvider
+    conversation_provider: OpenAICompatibleProvider | None = None
     if settings.llm_provider == "openai_compatible":
-        provider = OpenAICompatibleProvider(
+        conversation_provider = OpenAICompatibleProvider(
             base_url=settings.llm_base_url,
             api_key=settings.llm_api_key,
             model=settings.llm_model,
+            timeout_seconds=settings.llm_timeout_seconds,
+            max_tokens=settings.llm_max_tokens,
+            temperature=settings.llm_temperature,
         )
+        provider = conversation_provider
     else:
         provider = fallback
     knowledge = KnowledgeService(
@@ -541,13 +561,23 @@ def _build_query_services(
         provider=provider,
         fallback_provider=fallback,
     )
+    data_tools = SqlAlchemyDataToolService(
+        database.session_factory,
+        distribution_evidence_limit=settings.data_distribution_evidence_limit,
+    )
     unified = UnifiedQueryService(
         router=QueryRouter(),
         knowledge_service=knowledge,
-        data_tools=SqlAlchemyDataToolService(
-            database.session_factory,
-            distribution_evidence_limit=settings.data_distribution_evidence_limit,
-        ),
+        data_tools=data_tools,
+    )
+    conversation = ConversationService(
+        session_factory=database.session_factory,
+        router=QueryRouter(),
+        data_tools=data_tools,
+        knowledge_service=knowledge,
+        llm_provider=conversation_provider,
+        history_turns=settings.llm_history_turns,
+        history_max_chars=settings.llm_history_max_chars,
     )
     return (
         QueryApplicationService(
@@ -556,6 +586,7 @@ def _build_query_services(
             file_store=file_store,
         ),
         knowledge,
+        conversation,
         vector_index_publisher,
     )
 

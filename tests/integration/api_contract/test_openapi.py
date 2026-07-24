@@ -22,6 +22,13 @@ def test_openapi_contains_the_frozen_v1_surface(api_harness: ApiHarness) -> None
         ("/api/v1/runs/{run_id}/review", "post"),
         ("/api/v1/analyses/{job_id}/query", "post"),
         ("/api/v1/analyses/{job_id}/queries", "get"),
+        ("/api/v1/analyses/{job_id}/conversations", "post"),
+        ("/api/v1/analyses/{job_id}/conversations", "get"),
+        ("/api/v1/analyses/{job_id}/conversations/{conversation_id}", "get"),
+        (
+            "/api/v1/analyses/{job_id}/conversations/{conversation_id}/messages",
+            "post",
+        ),
         ("/api/v1/knowledge/documents", "post"),
         ("/api/v1/knowledge/documents", "get"),
         ("/api/v1/knowledge/documents/{doc_id}", "patch"),

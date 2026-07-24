@@ -86,6 +86,15 @@ class KnowledgeAnswer:
     material_context: MaterialContext | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class KnowledgeEvidence:
+    contexts: tuple[CitationContext, ...]
+    citations: tuple[Citation, ...]
+    limitations: tuple[str, ...]
+    outcome_code: Literal["OK", "INSUFFICIENT_EVIDENCE"]
+    blocked_untrusted_instruction: bool = False
+
+
 class KnowledgeService:
     """Retrieve first, then answer only from validated citation contexts."""
 
@@ -258,6 +267,52 @@ class KnowledgeService:
             limitations=tuple(dict.fromkeys(limitations)),
             outcome_code="OK",
             material_context=material_context,
+        )
+
+    def collect_evidence(
+        self,
+        question: str,
+        *,
+        material_context: MaterialContext | None = None,
+    ) -> KnowledgeEvidence:
+        """Retrieve current-turn contexts without invoking an answer model."""
+
+        if _requests_ungrounded_answer(question):
+            return KnowledgeEvidence(
+                contexts=(),
+                citations=(),
+                limitations=("拒绝绕过知识库引用与证据约束",),
+                outcome_code="INSUFFICIENT_EVIDENCE",
+                blocked_untrusted_instruction=True,
+            )
+        report = self.retrieval.retrieve_with_report(
+            RetrievalRequest(
+                query=_expanded_retrieval_query(question),
+                material_aliases=_material_aliases(material_context),
+            )
+        )
+        limitations = [
+            *report.warnings,
+            "知识库仅包含团队已导入文档，不代表完整文献综述",
+        ]
+        if not report.chunks:
+            if report.health.detail:
+                limitations.append(report.health.detail)
+            return KnowledgeEvidence(
+                contexts=(),
+                citations=(),
+                limitations=tuple(dict.fromkeys(limitations)),
+                outcome_code="INSUFFICIENT_EVIDENCE",
+            )
+        contexts = tuple(
+            CitationContext(citation_id=f"C{index}", chunk=chunk)
+            for index, chunk in enumerate(report.chunks, start=1)
+        )
+        return KnowledgeEvidence(
+            contexts=contexts,
+            citations=tuple(_citation_from_context(context) for context in contexts),
+            limitations=tuple(dict.fromkeys(limitations)),
+            outcome_code="OK",
         )
 
 

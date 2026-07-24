@@ -90,6 +90,9 @@ class AnalysisJob(TimestampMixin, Base):
     queries: Mapped[list["QueryLog"]] = relationship(
         back_populates="job", cascade="all, delete-orphan"
     )
+    conversations: Mapped[list["ChatConversation"]] = relationship(
+        back_populates="job", cascade="all, delete-orphan"
+    )
 
 
 class ImageAsset(TimestampMixin, Base):
@@ -605,6 +608,124 @@ class QueryLog(Base):
         back_populates="queries",
         foreign_keys=[job_id],
     )
+
+
+class ChatConversation(Base):
+    """Tenant- and job-scoped conversation header."""
+
+    __tablename__ = "chat_conversations"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["job_id", "tenant_id"],
+            ["analysis_jobs.job_id", "analysis_jobs.tenant_id"],
+            name="fk_chat_conversations_job_tenant",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["created_by", "tenant_id"],
+            ["principals.principal_id", "principals.tenant_id"],
+            name="fk_chat_conversations_creator_tenant",
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "ix_chat_conversations_tenant_job_updated",
+            "tenant_id",
+            "job_id",
+            "updated_at",
+        ),
+    )
+
+    conversation_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    job_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    title: Mapped[str] = mapped_column(String(160), nullable=False)
+    created_by: Mapped[str] = mapped_column(String(36), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+    job: Mapped[AnalysisJob] = relationship(back_populates="conversations")
+    messages: Mapped[list["ChatMessage"]] = relationship(
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+        order_by="ChatMessage.created_at, ChatMessage.message_id",
+    )
+
+
+class ChatMessage(Base):
+    """One user-visible conversation message; hidden reasoning is never persisted."""
+
+    __tablename__ = "chat_messages"
+    __table_args__ = (
+        CheckConstraint(
+            "role IN ('user', 'assistant', 'system')",
+            name="chat_message_role_known",
+        ),
+        CheckConstraint(
+            "query_type IN "
+            "('auto', 'general_chat', 'analysis_data', 'material_knowledge', 'mixed')",
+            name="chat_message_query_type_known",
+        ),
+        Index(
+            "ix_chat_messages_conversation_created",
+            "conversation_id",
+            "created_at",
+        ),
+    )
+
+    message_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(
+        ForeignKey("chat_conversations.conversation_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    role: Mapped[str] = mapped_column(String(16), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    query_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    image_id: Mapped[str | None] = mapped_column(
+        ForeignKey("image_assets.image_id", ondelete="SET NULL")
+    )
+    run_ids_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    material_context_json: Mapped[JsonObject | None] = mapped_column(JSON)
+    confidence: Mapped[str | None] = mapped_column(String(16))
+    outcome_code: Mapped[str | None] = mapped_column(String(40))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+    conversation: Mapped[ChatConversation] = relationship(back_populates="messages")
+    evidence: Mapped["ChatTurnEvidence | None"] = relationship(
+        back_populates="message",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+
+
+class ChatTurnEvidence(Base):
+    """Auditable generation metadata and public evidence for one assistant turn."""
+
+    __tablename__ = "chat_turn_evidence"
+
+    message_id: Mapped[str] = mapped_column(
+        ForeignKey("chat_messages.message_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    citations_json: Mapped[list[JsonObject]] = mapped_column(JSON, default=list, nullable=False)
+    data_evidence_json: Mapped[list[JsonObject]] = mapped_column(
+        JSON, default=list, nullable=False
+    )
+    tool_calls_json: Mapped[list[JsonObject]] = mapped_column(JSON, default=list, nullable=False)
+    limitations_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    llm_provider: Mapped[str] = mapped_column(String(80), nullable=False)
+    llm_model: Mapped[str | None] = mapped_column(String(255))
+    fallback_used: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    generation_time_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    prompt_template_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    prompt_template_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    message: Mapped[ChatMessage] = relationship(back_populates="evidence")
 
 
 class Tenant(TimestampMixin, Base):

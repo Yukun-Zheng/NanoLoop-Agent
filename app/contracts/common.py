@@ -61,4 +61,10 @@ class HealthData(ContractModel):
     database: HealthComponent
     model_registry: HealthComponent
     rag_index: HealthComponent
+    llm_provider: HealthComponent = Field(
+        default_factory=lambda: HealthComponent(
+            status="degraded",
+            detail="LLM provider status not reported",
+        )
+    )
     version: str
