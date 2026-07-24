@@ -181,6 +181,71 @@ def test_particle_number_density_comparison_requires_compatible_area_scale(
     assert "物理面积尺度" in result.answer
 
 
+def test_perimeter_density_uses_particle_perimeters_and_physical_scale(
+    service: SqlAlchemyDataToolService,
+) -> None:
+    result = service.answer(_query("周长密度是多少？"))
+
+    assert result.outcome_code == "OK"
+    evidence = result.evidence[0]
+    assert evidence.validated_arguments["intent"] == "perimeter_density"
+    assert evidence.validated_arguments["metric"] == "perimeter_density_um"
+    assert evidence.aggregates["perimeter_density_um"] == pytest.approx(30)
+    assert evidence.aggregates["roi_area_um2"] == pytest.approx(0.0001)
+    by_run = {row["run_id"]: row for row in evidence.rows}
+    assert by_run["run_a"]["perimeter_density_px"] == pytest.approx(0.02)
+    assert by_run["run_a"]["perimeter_density_um"] == pytest.approx(40)
+    assert by_run["run_b"]["perimeter_density_um"] == pytest.approx(80 / 3)
+    assert evidence.units["perimeter_density_um"] == "um^-1"
+    assert "总颗粒周长/总 ROI 面积" in result.answer
+
+
+def test_perimeter_density_ranking_uses_total_perimeter_over_area(
+    service: SqlAlchemyDataToolService,
+) -> None:
+    result = service.answer(_query("哪组周长密度最高？"))
+
+    assert result.outcome_code == "OK"
+    evidence = result.evidence[0]
+    assert [row["group"] for row in evidence.rows] == ["sample_A", "sample_B"]
+    assert [row["value"] for row in evidence.rows] == pytest.approx([40, 80 / 3])
+    assert all(
+        row["aggregation"] == "total_perimeter_over_total_roi_area"
+        for row in evidence.rows
+    )
+    assert all(row["weight_unit"] == "um^2" for row in evidence.rows)
+    assert evidence.units["value"] == "um^-1"
+
+
+def test_perimeter_density_comparison_requires_compatible_length_scale(
+    service: SqlAlchemyDataToolService,
+    database: Database,
+) -> None:
+    with database.engine.begin() as connection:
+        connection.execute(
+            update(SegmentationRun)
+            .where(SegmentationRun.run_id.in_(("run_a", "run_b")))
+            .values(
+                run_config_json={
+                    "schema_version": 2,
+                    "provenance_status": "complete",
+                    "scale_nm_per_pixel": None,
+                }
+            )
+        )
+        connection.execute(
+            update(ImageSummary)
+            .where(ImageSummary.run_id.in_(("run_a", "run_b")))
+            .values(perimeter_density_um=None)
+        )
+
+    result = service.answer(_query("哪组周长密度最高？"))
+
+    assert result.outcome_code == "INSUFFICIENT_EVIDENCE"
+    assert result.needs_clarification is True
+    assert "物理长度尺度" in result.answer
+
+
 def test_mean_diameter_uses_particle_rows_not_summary_placeholders(
     service: SqlAlchemyDataToolService,
 ) -> None:

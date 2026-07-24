@@ -1,11 +1,12 @@
 "use client";
 
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ArrowUp, Database, Library, Merge, Sparkles } from "lucide-react";
 import { useState } from "react";
 
 import { RequestError } from "@/components/ui/request-error";
 import { apiRequest } from "@/lib/api/client";
+import { queryKeys } from "@/lib/api/query-keys";
 import type {
   ImageAsset,
   UnifiedQueryRequest,
@@ -39,6 +40,7 @@ export function CommandComposer({
   clarification: UnifiedQueryResponse | null;
   onAnswer: (answer: UnifiedQueryResponse, scope: string) => void;
 }) {
+  const queryClient = useQueryClient();
   const [question, setQuestion] = useState("");
   const [materialName, setMaterialName] = useState("");
   const [materialFormula, setMaterialFormula] = useState("");
@@ -72,6 +74,9 @@ export function CommandComposer({
     onSuccess(response, variables) {
       onAnswer(response.data, variables.scope);
       setQuestion("");
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.queryHistory(variables.requestJobId)
+      });
     }
   });
 

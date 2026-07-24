@@ -22,6 +22,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { CommandComposer } from "@/components/agent/command-composer";
+import { QueryHistory } from "@/components/agent/query-history";
 import { QueryAnswer } from "@/components/agent/query-answer";
 import { ModelSelector } from "@/components/models/model-selector";
 import { ProjectOverview } from "@/components/project/project-overview";
@@ -41,6 +42,7 @@ import type {
   BoxSet,
   JobDetail,
   ModelList,
+  QueryHistoryData,
   Run,
   UnifiedQueryResponse
 } from "@/lib/api/types";
@@ -164,6 +166,26 @@ export function WorkspaceCommandCenter({ jobId }: { jobId: string }) {
     activeAnswerScope.current = answerScope;
   }, [answerScope]);
   const answer = answerState?.scope === answerScope ? answerState.value : null;
+  const queryHistory = useQuery({
+    queryKey: queryKeys.queryHistory(jobId),
+    queryFn: () =>
+      apiRequest<QueryHistoryData>(
+        `analyses/${encodeURIComponent(jobId)}/queries?limit=50`
+      ).then((response) => response.data),
+    enabled: stage === "agent"
+  });
+  const scopedQueryHistory = useMemo(
+    () =>
+      (queryHistory.data?.items ?? []).filter(
+        (item) =>
+          buildQueryScopeKey(
+            item.job_id,
+            item.request.image_id ?? null,
+            item.request.run_ids ?? []
+          ) === answerScope
+      ),
+    [answerScope, queryHistory.data]
+  );
 
   const boxes = useQuery({
     queryKey: queryKeys.boxes(jobId, activeImage?.image_id || "none"),
@@ -491,15 +513,27 @@ export function WorkspaceCommandCenter({ jobId }: { jobId: string }) {
             ) : null}
 
             {stage === "agent" ? (
-              answer ? (
-                <QueryAnswer response={answer} />
-              ) : (
-                <EmptyState
-                  icon={Bot}
-                  title="向当前实验提出问题"
-                  detail="底部命令框会携带当前图像和所选运行作用域，回答将区分实验数据证据、材料知识引用和限制。"
-                />
-              )
+              <div className="agent-stage">
+                {answer ? (
+                  <QueryAnswer response={answer} />
+                ) : (
+                  <EmptyState
+                    icon={Bot}
+                    title="向当前实验提出问题"
+                    detail="底部命令框会携带当前图像和所选运行作用域，回答将区分实验数据证据、材料知识引用和限制。"
+                  />
+                )}
+                {queryHistory.isError ? (
+                  <RequestError error={queryHistory.error} />
+                ) : (
+                  <QueryHistory
+                    items={scopedQueryHistory}
+                    onSelect={(item) =>
+                      setAnswerState({ scope: answerScope, value: item.response })
+                    }
+                  />
+                )}
+              </div>
             ) : null}
           </div>
         </section>

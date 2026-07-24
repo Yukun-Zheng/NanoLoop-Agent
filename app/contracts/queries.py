@@ -144,6 +144,23 @@ class QueryAuditRecordDTO(ContractModel):
     created_at: datetime
 
 
+class QueryHistoryItem(ContractModel):
+    """Minimum safe query data needed to restore a prior answer in the workspace."""
+
+    query_id: str
+    job_id: str
+    image_id: str | None = None
+    request: UnifiedQueryRequest
+    response: UnifiedQueryResponse
+    created_at: datetime
+
+
+class QueryHistoryData(ContractModel):
+    items: list[QueryHistoryItem] = Field(max_length=100)
+    returned_count: int = Field(ge=0, le=100)
+    limit: int = Field(ge=1, le=100)
+
+
 class GetMetricArgs(ContractModel):
     scope_type: Literal["job", "image", "run", "sample", "material"]
     scope_id: str
