@@ -120,7 +120,7 @@ def _answer(
     )
 
 
-def test_unknown_auto_query_clarifies_without_calling_tools() -> None:
+def test_open_ended_auto_query_uses_safe_general_chat_without_calling_tools() -> None:
     data = FakeDataTools()
     knowledge = FakeKnowledgeService()
 
@@ -129,9 +129,9 @@ def test_unknown_auto_query_clarifies_without_calling_tools() -> None:
         UnifiedQueryRequest(question="帮我看看"),
     )
 
-    assert response.needs_clarification
-    assert response.query_type == QueryType.AUTO
-    assert response.outcome_code == "INSUFFICIENT_EVIDENCE"
+    assert not response.needs_clarification
+    assert response.query_type == QueryType.GENERAL_CHAT
+    assert response.outcome_code == "OK"
     assert not data.queries
     assert knowledge.calls == 0
 

@@ -228,12 +228,12 @@ class QueryRouter:
             }
         ):
             return RouteDecision(previous_query_type, 0.82, False, data, knowledge)
+        if contextual and not has_material:
+            return RouteDecision(QueryType.AUTO, 0.0, True, data, knowledge)
         if any(signal in normalized for signal in _GENERAL_CHAT_SIGNALS):
             return RouteDecision(QueryType.GENERAL_CHAT, 0.95, False, data, knowledge)
-        return RouteDecision(
-            QueryType.AUTO,
-            0.0,
-            True,
-            data,
-            knowledge,
-        )
+        # Keep an unrecognized utterance conversational. GENERAL_CHAT is still
+        # constrained by the system prompt, so the model may clarify the user's
+        # goal or explain the workflow but cannot answer scientific facts from
+        # memory without data/RAG evidence.
+        return RouteDecision(QueryType.GENERAL_CHAT, 0.55, False, data, knowledge)

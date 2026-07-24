@@ -545,6 +545,7 @@ class OpenAICompatibleProvider:
         data_evidence: Sequence[ToolEvidence],
         contexts: Sequence[CitationContext],
         material_context: MaterialContext | None,
+        task_context: Mapping[str, Any] | None = None,
     ) -> ConversationProviderAnswer:
         """Perform the one and only synthesis call after evidence collection."""
 
@@ -558,6 +559,7 @@ class OpenAICompatibleProvider:
             "material_context": (
                 material_context.model_dump(mode="json") if material_context else None
             ),
+            "TASK_CONTEXT": dict(task_context or {}),
             "DATA_EVIDENCE": [
                 {
                     "evidence_id": f"D{index}",

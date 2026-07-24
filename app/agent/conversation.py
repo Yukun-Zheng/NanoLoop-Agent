@@ -182,6 +182,12 @@ class ConversationService:
                 with_messages=True,
             )
             resolved = self._validated_request(session, job_id, request, tenant_id=tenant_id)
+            task_context = self._task_context(
+                session,
+                job_id,
+                resolved,
+                tenant_id=tenant_id,
+            )
             history = _bounded_history(
                 conversation.messages,
                 turns=self.history_turns,
@@ -255,6 +261,7 @@ class ConversationService:
             tenant_id=tenant_id,
             history=history,
             previous_user_question=previous_user_question,
+            task_context=task_context,
         )
         session = self.session_factory()
         try:
@@ -318,6 +325,7 @@ class ConversationService:
         tenant_id: str,
         history: Sequence[Mapping[str, str]],
         previous_user_question: str | None,
+        task_context: Mapping[str, object],
     ) -> _TurnAnswer:
         started = monotonic()
         if query_type is QueryType.AUTO:
@@ -371,6 +379,7 @@ class ConversationService:
                     data_evidence=data.evidence,
                     contexts=knowledge.contexts,
                     material_context=request.material_context,
+                    task_context=task_context,
                 )
                 validate_conversation_answer(
                     answer=generated.answer,
@@ -520,6 +529,86 @@ class ConversationService:
                 }
             )
         return conversation
+
+    @staticmethod
+    def _task_context(
+        session: Session,
+        job_id: str,
+        request: ConversationMessageRequest,
+        *,
+        tenant_id: str,
+    ) -> Mapping[str, object]:
+        job = session.scalar(
+            select(AnalysisJob).where(
+                AnalysisJob.job_id == job_id,
+                AnalysisJob.tenant_id == tenant_id,
+            )
+        )
+        image = (
+            session.scalar(
+                select(ImageAsset).where(
+                    ImageAsset.image_id == request.image_id,
+                    ImageAsset.job_id == job_id,
+                )
+            )
+            if request.image_id
+            else None
+        )
+        run_status_rows = session.execute(
+            select(SegmentationRun.status, func.count(SegmentationRun.run_id))
+            .where(SegmentationRun.job_id == job_id)
+            .group_by(SegmentationRun.status)
+        ).all()
+        run_status_counts = {
+            str(status): int(count) for status, count in run_status_rows
+        }
+        run_total = sum(run_status_counts.values())
+        active_statuses = {
+            "CREATED",
+            "VALIDATING",
+            "QUEUED",
+            "PREPROCESSING",
+            "SEGMENTING",
+            "POSTPROCESSING",
+            "QUALITY_CHECKING",
+            "ANALYZING",
+            "AGGREGATING",
+        }
+        completed_statuses = {"COMPLETED", "COMPLETED_WITH_WARNINGS"}
+        if any(status in active_statuses for status in run_status_counts):
+            next_steps = ["前往“运行进度”查看当前分析运行。"]
+        elif any(status in completed_statuses for status in run_status_counts):
+            next_steps = ["前往“查看结果”检查叠加图、统计和质量限制。"]
+        else:
+            next_steps = [
+                "进入“开始分析”选择模型并创建一次全图分割运行。",
+                "局部区域（ROI）是可选步骤，可以直接跳过。",
+            ]
+        return {
+            "job": {
+                "name": job.name if job is not None else None,
+                "status": job.status if job is not None else None,
+            },
+            "selected_image": (
+                {
+                    "filename": image.filename,
+                    "sample_id": image.sample_id,
+                    "width_px": image.width,
+                    "height_px": image.height,
+                    "material_name": image.material_name,
+                    "material_formula": image.material_formula,
+                    "has_physical_scale": image.scale_nm_per_pixel is not None,
+                }
+                if image is not None
+                else None
+            ),
+            "runs": {
+                "selected_count": len(request.run_ids),
+                "job_total_count": run_total,
+                "status_counts": run_status_counts,
+            },
+            "available_next_steps": next_steps,
+        }
 
     @staticmethod
     def _validated_request(
