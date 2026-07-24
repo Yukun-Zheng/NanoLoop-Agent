@@ -39,15 +39,8 @@ const variantLabels: Record<string, string> = {
   low_contrast: "低对比度优化"
 };
 
-export function isModelSelectable(
-  model: ModelMetadata,
-  roiMode: "full_image" | "boxes"
-) {
-  return (
-    model.status === "ready" &&
-    !model.health_error &&
-    !(roiMode === "boxes" && !model.supports_box_prompt)
-  );
+export function isModelSelectable(model: ModelMetadata) {
+  return model.status === "ready" && !model.health_error;
 }
 
 export function ModelSelector({
@@ -68,9 +61,7 @@ export function ModelSelector({
   const queryClient = useQueryClient();
   const catalogModels = catalog.models ?? [];
   const [selected, setSelected] = useState<string[]>(() => {
-    const firstReady = catalogModels.find((model) =>
-      isModelSelectable(model, "full_image")
-    );
+    const firstReady = catalogModels.find((model) => isModelSelectable(model));
     return firstReady ? [firstReady.model_id] : [];
   });
   const [roiMode, setRoiMode] = useState<"full_image" | "boxes">("full_image");
@@ -99,7 +90,7 @@ export function ModelSelector({
     onSuccess(response) {
       const recommended = (response.data.candidates ?? []).find((candidate) => {
         const model = catalogModels.find((item) => item.model_id === candidate.model_id);
-        return Boolean(model && isModelSelectable(model, roiMode));
+        return Boolean(model && isModelSelectable(model));
       });
       if (recommended) setSelected([recommended.model_id]);
     }
@@ -123,10 +114,10 @@ export function ModelSelector({
         const selectedModel = (catalog.models ?? []).find(
           (candidate) => candidate.model_id === modelId
         );
-        return !selectedModel || !isModelSelectable(selectedModel, roiMode);
+        return !selectedModel || !isModelSelectable(selectedModel);
       });
       if (invalidSelection) {
-        throw new Error(`模型 ${invalidSelection} 在当前 ROI 模式或健康状态下不可运行`);
+        throw new Error(`模型 ${invalidSelection} 当前不可用或未通过健康检查`);
       }
       if (roiMode === "boxes" && (!boxSet || !(boxSet.boxes ?? []).length)) {
         throw new Error("选框模式需要先保存至少一个 ROI");
@@ -272,7 +263,7 @@ export function ModelSelector({
                         (candidate) => candidate.model_id === modelId
                       );
                       return Boolean(
-                        currentModel && isModelSelectable(currentModel, "full_image")
+                        currentModel && isModelSelectable(currentModel)
                       );
                     })
                   );
@@ -289,7 +280,7 @@ export function ModelSelector({
                       const currentModel = catalogModels.find(
                         (candidate) => candidate.model_id === modelId
                       );
-                      return Boolean(currentModel && isModelSelectable(currentModel, "boxes"));
+                      return Boolean(currentModel && isModelSelectable(currentModel));
                     })
                   );
                 }}
@@ -323,7 +314,7 @@ export function ModelSelector({
           </p>
           <div className="model-grid">
             {catalogModels.map((model) => {
-              const selectable = isModelSelectable(model, roiMode);
+              const selectable = isModelSelectable(model);
               const active = selected.includes(model.model_id);
               const candidate = (recommendation.data?.data.candidates ?? []).find(
                 (item) => item.model_id === model.model_id
@@ -379,9 +370,7 @@ export function ModelSelector({
                   ) : null}
                   {!selectable ? (
                     <p className="model-blocker">
-                      {model.status !== "ready" || model.health_error
-                        ? model.health_error || "模型尚未通过运行健康检查"
-                        : "该模型不支持选框提示"}
+                      {model.health_error || "模型尚未通过运行健康检查"}
                     </p>
                   ) : (
                     <p className="model-note">

@@ -18,12 +18,10 @@ const base: ModelMetadata = {
 };
 
 describe("model selectability", () => {
-  it("requires ready health and compatible ROI support", () => {
-    expect(isModelSelectable(base, "full_image")).toBe(true);
-    expect(isModelSelectable({ ...base, status: "unavailable" }, "full_image")).toBe(false);
-    expect(isModelSelectable({ ...base, health_error: "checksum mismatch" }, "full_image")).toBe(
-      false
-    );
-    expect(isModelSelectable({ ...base, supports_box_prompt: false }, "boxes")).toBe(false);
+  it("requires ready health without conflating saved ROI with prompt support", () => {
+    expect(isModelSelectable(base)).toBe(true);
+    expect(isModelSelectable({ ...base, status: "unavailable" })).toBe(false);
+    expect(isModelSelectable({ ...base, health_error: "checksum mismatch" })).toBe(false);
+    expect(isModelSelectable({ ...base, supports_box_prompt: false })).toBe(true);
   });
 });
