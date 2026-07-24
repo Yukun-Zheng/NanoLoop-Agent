@@ -1,11 +1,19 @@
 "use client";
 
-import { useMutation } from "@tanstack/react-query";
-import { ArrowUp, Database, Library, Merge, Sparkles } from "lucide-react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import {
+  ArrowUp,
+  Database,
+  Library,
+  Merge,
+  ShieldCheck,
+  Sparkles
+} from "lucide-react";
 import { useState } from "react";
 
 import { RequestError } from "@/components/ui/request-error";
 import { apiRequest } from "@/lib/api/client";
+import { queryKeys } from "@/lib/api/query-keys";
 import type {
   ImageAsset,
   UnifiedQueryRequest,
@@ -17,11 +25,36 @@ import {
   useWorkspaceStore
 } from "@/lib/store/workspace";
 
-const modes: Array<{ value: QueryMode; label: string; icon: typeof Sparkles }> = [
-  { value: "auto", label: "自动", icon: Sparkles },
-  { value: "analysis_data", label: "数据", icon: Database },
-  { value: "material_knowledge", label: "知识", icon: Library },
-  { value: "mixed", label: "混合", icon: Merge }
+const modes: Array<{
+  value: QueryMode;
+  label: string;
+  detail: string;
+  icon: typeof Sparkles;
+}> = [
+  {
+    value: "auto",
+    label: "自动选择",
+    detail: "由系统判断需要的数据来源",
+    icon: Sparkles
+  },
+  {
+    value: "analysis_data",
+    label: "实验数据",
+    detail: "只读取当前图像和运行结果",
+    icon: Database
+  },
+  {
+    value: "material_knowledge",
+    label: "材料知识",
+    detail: "只检索知识库并给出引用",
+    icon: Library
+  },
+  {
+    value: "mixed",
+    label: "交叉核对",
+    detail: "分开呈现实验与知识证据",
+    icon: Merge
+  }
 ];
 
 export function CommandComposer({
@@ -39,12 +72,14 @@ export function CommandComposer({
   clarification: UnifiedQueryResponse | null;
   onAnswer: (answer: UnifiedQueryResponse, scope: string) => void;
 }) {
-  const [question, setQuestion] = useState("");
+  const queryClient = useQueryClient();
   const [materialName, setMaterialName] = useState("");
   const [materialFormula, setMaterialFormula] = useState("");
   const [materialAliases, setMaterialAliases] = useState("");
   const mode = useWorkspaceStore((state) => state.queryMode);
   const setMode = useWorkspaceStore((state) => state.setQueryMode);
+  const question = useWorkspaceStore((state) => state.queryDraft);
+  const setQuestion = useWorkspaceStore((state) => state.setQueryDraft);
   const aliases = materialAliases
     .split(/[,，]/)
     .map((item) => item.trim())
@@ -72,6 +107,9 @@ export function CommandComposer({
     onSuccess(response, variables) {
       onAnswer(response.data, variables.scope);
       setQuestion("");
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.queryHistory(variables.requestJobId)
+      });
     }
   });
 
@@ -149,6 +187,18 @@ export function CommandComposer({
         </p>
       ) : null}
       <div className="command-composer">
+        <div className="composer-boundary">
+          <ShieldCheck size={17} />
+          <div>
+            <strong>当前实验的证据问答</strong>
+            <span>
+              只使用 {image ? image.filename : "当前任务"}
+              {runIds.length
+                ? ` 和 ${runIds.length} 个已选运行`
+                : " 的已保存信息；尚未选择运行结果"}
+            </span>
+          </div>
+        </div>
         <div className="composer-modes">
           {modes.map((item) => {
             const Icon = item.icon;
@@ -158,39 +208,40 @@ export function CommandComposer({
                 key={item.value}
                 onClick={() => setMode(item.value)}
                 aria-pressed={mode === item.value}
+                title={item.detail}
               >
                 <Icon size={13} />
-                {item.label}
+                <span>{item.label}</span>
               </button>
             );
           })}
         </div>
-        <textarea
-          value={question}
-          onChange={(event) => setQuestion(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey) {
-              event.preventDefault();
-              if (question.trim() && !writeBlocker) submitQuery();
-            }
-          }}
-          maxLength={2000}
-          placeholder="询问当前实验，或让 NanoLoop 比较所选运行的确定性结果……"
-          aria-label="询问当前实验"
-        />
-        <div className="composer-context">
-          <span>
-            {image ? image.filename : "未选图像"} · {runIds.length} 个运行作用域
-          </span>
-          <button
-            type="button"
-            aria-label="发送问题"
-            onClick={submitQuery}
-            disabled={Boolean(writeBlocker) || !question.trim() || query.isPending}
-            title={writeBlocker || undefined}
-          >
-            <ArrowUp size={18} />
-          </button>
+        <div className="composer-input-row">
+          <textarea
+            value={question}
+            onChange={(event) => setQuestion(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                if (question.trim() && !writeBlocker) submitQuery();
+              }
+            }}
+            maxLength={2000}
+            placeholder="例如：当前运行识别到多少颗粒？这个结果有哪些质量警告？"
+            aria-label="向当前实验的证据提问"
+          />
+          <div className="composer-context">
+            <span>Enter 发送 · Shift + Enter 换行</span>
+            <button
+              type="button"
+              aria-label="提交证据问题"
+              onClick={submitQuery}
+              disabled={Boolean(writeBlocker) || !question.trim() || query.isPending}
+              title={writeBlocker || undefined}
+            >
+              <ArrowUp size={18} />
+            </button>
+          </div>
         </div>
       </div>
     </div>

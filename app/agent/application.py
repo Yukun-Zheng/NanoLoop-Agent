@@ -22,6 +22,8 @@ from app.contracts.limits import MAX_MATERIAL_ALIASES
 from app.contracts.queries import (
     MaterialContext,
     QueryActorDTO,
+    QueryHistoryData,
+    QueryHistoryItem,
     UnifiedQueryRequest,
     UnifiedQueryResponse,
 )
@@ -138,6 +140,44 @@ class QueryApplicationService:
                     },
                 )
         return response
+
+    def list_history(
+        self,
+        job_id: str,
+        *,
+        principal: PrincipalContext,
+        limit: int,
+    ) -> QueryHistoryData:
+        tenant_id = principal.tenant_id
+        if tenant_id is None:
+            raise ValueError("principal must carry a tenant ID")
+        session = self.session_factory()
+        try:
+            repositories = SqlAlchemyRepositorySet(session)
+            scope = repositories.jobs.get_scope(job_id, tenant_id=tenant_id)
+            require_read(principal, scope)
+            items = repositories.queries.list_recent_by_job_scoped(
+                job_id,
+                tenant_id=tenant_id,
+                limit=limit,
+            )
+            return QueryHistoryData(
+                items=[
+                    QueryHistoryItem(
+                        query_id=item.query_id,
+                        job_id=item.job_id,
+                        image_id=item.image_id,
+                        request=item.request,
+                        response=item.response,
+                        created_at=item.created_at,
+                    )
+                    for item in items
+                ],
+                returned_count=len(items),
+                limit=limit,
+            )
+        finally:
+            session.close()
 
     def _validate_scope(
         self,

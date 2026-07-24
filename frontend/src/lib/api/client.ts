@@ -103,7 +103,10 @@ export function apiUpload<T>(
   });
 }
 
-export function toBffArtifactUrl(value: string | null | undefined): string | null {
+export function toBffArtifactUrl(
+  value: string | null | undefined,
+  options: { preview?: boolean } = {}
+): string | null {
   if (!value) return null;
   let pathname: string;
   try {
@@ -119,17 +122,14 @@ export function toBffArtifactUrl(value: string | null | undefined): string | nul
   if (!pathname.startsWith(prefix)) return null;
   const token = pathname.slice(prefix.length);
   if (!token || token.includes("/") || token.length > 4096) return null;
-  return `${BFF_ROOT}/files/${token}`;
+  return `${BFF_ROOT}/files/${token}${options.preview ? "?preview=1" : ""}`;
 }
 
 export async function fetchArtifact(
   value: string,
   options: { preview?: boolean } = {}
 ): Promise<Response> {
-  const artifactUrl = toBffArtifactUrl(value);
-  const url = artifactUrl
-    ? `${artifactUrl}${options.preview ? "?preview=1" : ""}`
-    : null;
+  const url = toBffArtifactUrl(value, options);
   if (!url) {
     throw new NanoLoopApiError({
       status: 400,

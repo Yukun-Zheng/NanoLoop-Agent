@@ -1277,6 +1277,28 @@ class SqlAlchemyQueryRepository:
         ).all()
         return self._query_dtos(records)
 
+    def list_recent_by_job_scoped(
+        self,
+        job_id: str,
+        *,
+        tenant_id: str,
+        limit: int,
+    ) -> list[QueryAuditRecordDTO]:
+        if not 1 <= limit <= 100:
+            raise ValueError("query history limit must be between 1 and 100")
+        _require_scoped_job(self.session, job_id, tenant_id)
+        records = self.session.scalars(
+            select(QueryLog)
+            .join(AnalysisJob, AnalysisJob.job_id == QueryLog.job_id)
+            .where(
+                QueryLog.job_id == job_id,
+                AnalysisJob.tenant_id == validate_tenant_id(tenant_id),
+            )
+            .order_by(QueryLog.created_at.desc(), QueryLog.query_id.desc())
+            .limit(limit)
+        ).all()
+        return self._query_dtos(list(reversed(records)))
+
     @staticmethod
     def _query_dtos(records: Sequence[QueryLog]) -> list[QueryAuditRecordDTO]:
         results: list[QueryAuditRecordDTO] = []

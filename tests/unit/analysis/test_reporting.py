@@ -256,8 +256,12 @@ def test_write_reports_and_export_have_versioned_auditable_files(tmp_path: Path)
     assert "'=HYPERLINK" in run_summary
     assert "'+sample-a" in run_summary
     assert "'@Test material" in run_summary
+    assert "perimeter_density_px" in run_summary
+    assert "perimeter_density_um" in run_summary
     assert "'+sample-a" in sample_summary
     assert "unet-small-balanced-v1" in sample_summary
+    assert "perimeter_density_px_weighted" in sample_summary
+    assert "perimeter_density_um_weighted" in sample_summary
     assert audit["run_lineage"][0]["run_id"] == "run_1"
     assert audit["run_lineage"][0]["status_history"] == []
     assert audit["run_lineage"][0]["configuration_provenance_status"] == "complete"

@@ -192,6 +192,36 @@ def test_query_is_persisted_and_written_to_audit_artifacts(tmp_path: Path) -> No
         database.dispose()
 
 
+def test_query_history_returns_recent_scoped_records_in_chronological_order(
+    tmp_path: Path,
+) -> None:
+    service, database, _store, _unified_query = _service(tmp_path)
+    try:
+        for question in ("first", "second", "third"):
+            _answer(
+                service,
+                "job_1",
+                UnifiedQueryRequest(
+                    question=question,
+                    query_type=QueryType.MATERIAL_KNOWLEDGE,
+                ),
+            )
+
+        history = service.list_history(
+            "job_1",
+            principal=_LEGACY_ADMIN,
+            limit=2,
+        )
+
+        assert history.returned_count == 2
+        assert history.limit == 2
+        assert [item.request.question for item in history.items] == ["second", "third"]
+        assert len({item.query_id for item in history.items}) == 2
+        assert all(not hasattr(item, "actor") for item in history.items)
+    finally:
+        database.dispose()
+
+
 @pytest.mark.parametrize("failing_method", ["atomic_write_bytes", "atomic_write_json"])
 def test_committed_query_survives_audit_projection_failure(
     tmp_path: Path,

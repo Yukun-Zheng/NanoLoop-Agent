@@ -7,10 +7,23 @@ export const metadata: Metadata = {
 };
 
 export default async function WorkspacePage({
-  params
+  params,
+  searchParams
 }: {
   params: Promise<{ jobId: string }>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const { jobId } = await params;
-  return <WorkspaceCommandCenter jobId={jobId} />;
+  const query = await searchParams;
+  const initialRunId = typeof query.run === "string" ? query.run : null;
+  const launchWarning =
+    typeof query.autostart_failed === "string" ? query.autostart_failed : null;
+  return (
+    <WorkspaceCommandCenter
+      jobId={jobId}
+      initialRunId={initialRunId}
+      autoRun={query.autorun === "1"}
+      launchWarning={launchWarning}
+    />
+  );
 }

@@ -22,28 +22,38 @@ import {
 const canvasHeight = 440;
 
 function useHtmlImage(src: string | null) {
-  const [image, setImage] = useState<HTMLImageElement | null>(null);
+  const [state, setState] = useState<{
+    image: HTMLImageElement | null;
+    status: "loading" | "ready" | "error";
+  }>({ image: null, status: "loading" });
   useEffect(() => {
     let active = true;
     if (!src) {
       queueMicrotask(() => {
-        if (active) setImage(null);
+        if (active) setState({ image: null, status: "error" });
       });
       return () => {
         active = false;
       };
     }
+    queueMicrotask(() => {
+      if (active) setState({ image: null, status: "loading" });
+    });
     const next = new window.Image();
     next.onload = () => {
-      if (active) setImage(next);
+      if (active) setState({ image: next, status: "ready" });
+    };
+    next.onerror = () => {
+      if (active) setState({ image: null, status: "error" });
     };
     next.src = src;
     return () => {
       active = false;
       next.onload = null;
+      next.onerror = null;
     };
   }, [src]);
-  return image;
+  return state;
 }
 
 export function RoiEditor({
@@ -67,7 +77,9 @@ export function RoiEditor({
   const [drawingFrom, setDrawingFrom] = useState<{ x: number; y: number } | null>(null);
   const [conflict, setConflict] = useState(false);
   const loadedImageId = useRef(image.image_id);
-  const imageElement = useHtmlImage(toBffArtifactUrl(image.original_download_url));
+  const previewUrl = toBffArtifactUrl(image.original_download_url, { preview: true });
+  const rawUrl = toBffArtifactUrl(image.original_download_url);
+  const imagePreview = useHtmlImage(previewUrl);
 
   useEffect(() => {
     const frame = requestAnimationFrame(() => {
@@ -209,9 +221,9 @@ export function RoiEditor({
         >
           <Layer>
             <Rect width={canvasWidth} height={canvasHeight} fill="#eef0f5" />
-            {imageElement ? (
+            {imagePreview.image ? (
               <KonvaImage
-                image={imageElement}
+                image={imagePreview.image}
                 x={transform.offsetX}
                 y={transform.offsetY}
                 width={image.width * transform.scale}
@@ -223,7 +235,11 @@ export function RoiEditor({
                 y={canvasHeight / 2 - 12}
                 width={Math.max(240, image.width * transform.scale - 40)}
                 align="center"
-                text="原图暂不可由浏览器预览；可继续使用右侧 original_px 数值精调"
+                text={
+                  imagePreview.status === "loading"
+                    ? "正在生成原图预览…"
+                    : "原图预览加载失败；可下载原图检查，或继续使用右侧坐标精调"
+                }
                 fontSize={12}
                 fill="#676d7a"
               />
@@ -304,6 +320,11 @@ export function RoiEditor({
           <span><i className="legend-valid" />有效区域</span>
           <span><i className="legend-invalid" />无效区域</span>
           <span>{image.width} × {image.height} px</span>
+          {rawUrl ? (
+            <a href={rawUrl} download={image.filename}>
+              下载原图
+            </a>
+          ) : null}
         </div>
       </div>
 

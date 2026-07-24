@@ -213,6 +213,14 @@ class QueryRepository(Protocol):
         tenant_id: str,
     ) -> list[QueryAuditRecordDTO]: ...
 
+    def list_recent_by_job_scoped(
+        self,
+        job_id: str,
+        *,
+        tenant_id: str,
+        limit: int,
+    ) -> list[QueryAuditRecordDTO]: ...
+
 
 class FileArtifactRepository(Protocol):
     def register(

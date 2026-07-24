@@ -73,6 +73,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/analyses/{job_id}/queries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Analysis Queries */
+        get: operations["listAnalysisQueries"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/analyses/{job_id}/query": {
         parameters: {
             query?: never;
@@ -434,6 +451,14 @@ export interface components {
         /** ApiResponse[ModelRecommendationData] */
         ApiResponse_ModelRecommendationData_: {
             data?: components["schemas"]["ModelRecommendationData"] | null;
+            error?: components["schemas"]["ApiErrorPayload"] | null;
+            /** Request Id */
+            request_id: string;
+            status: components["schemas"]["ApiStatus"];
+        };
+        /** ApiResponse[QueryHistoryData] */
+        ApiResponse_QueryHistoryData_: {
+            data?: components["schemas"]["QueryHistoryData"] | null;
             error?: components["schemas"]["ApiErrorPayload"] | null;
             /** Request Id */
             request_id: string;
@@ -1113,6 +1138,34 @@ export interface components {
          * @enum {string}
          */
         QualityTier: "fast" | "balanced" | "accurate";
+        /** QueryHistoryData */
+        QueryHistoryData: {
+            /** Items */
+            items: components["schemas"]["QueryHistoryItem"][];
+            /** Limit */
+            limit: number;
+            /** Returned Count */
+            returned_count: number;
+        };
+        /**
+         * QueryHistoryItem
+         * @description Minimum safe query data needed to restore a prior answer in the workspace.
+         */
+        QueryHistoryItem: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Image Id */
+            image_id?: string | null;
+            /** Job Id */
+            job_id: string;
+            /** Query Id */
+            query_id: string;
+            request: components["schemas"]["UnifiedQueryRequest"];
+            response: components["schemas"]["UnifiedQueryResponse"];
+        };
         /**
          * QueryType
          * @enum {string}
@@ -2117,6 +2170,138 @@ export interface operations {
             };
         };
     };
+    listAnalysisQueries: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_QueryHistoryData_"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description API key required or invalid */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Request forbidden by security policy */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Resource not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description State or revision conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Payload too large */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Unsupported media type */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Validation error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Rate limit exceeded */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Frozen route awaiting service integration */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Dependency unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+        };
+    };
     queryAnalysis: {
         parameters: {
             query?: never;
@@ -2388,7 +2573,7 @@ export interface operations {
     downloadFile: {
         parameters: {
             query?: {
-                /** @description Return a browser-native PNG when the artifact is TIFF. */
+                /** @description Return a browser-native PNG when the artifact is TIFF or a numeric NumPy array. */
                 preview?: boolean;
             };
             header?: never;

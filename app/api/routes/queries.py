@@ -2,7 +2,7 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.concurrency import run_in_threadpool
 
 from app.agent.application import QueryApplicationService
@@ -11,9 +11,34 @@ from app.api.responses import success_response
 from app.api.routing import COMMON_ERROR_RESPONSES
 from app.contracts.common import ApiResponse
 from app.contracts.identity import PrincipalContext
-from app.contracts.queries import UnifiedQueryRequest, UnifiedQueryResponse
+from app.contracts.queries import (
+    QueryHistoryData,
+    UnifiedQueryRequest,
+    UnifiedQueryResponse,
+)
 
 router = APIRouter(tags=["queries"], responses=COMMON_ERROR_RESPONSES)
+
+
+@router.get(
+    "/analyses/{job_id}/queries",
+    response_model=ApiResponse[QueryHistoryData],
+    operation_id="listAnalysisQueries",
+)
+async def list_analysis_queries(
+    job_id: str,
+    request: Request,
+    service: Annotated[QueryApplicationService, Depends(get_query_application_service)],
+    principal: Annotated[PrincipalContext, Depends(require_api_key_contract)],
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+) -> ApiResponse[QueryHistoryData]:
+    history = await run_in_threadpool(
+        service.list_history,
+        job_id,
+        principal=principal,
+        limit=limit,
+    )
+    return success_response(history, request=request)
 
 
 @router.post(

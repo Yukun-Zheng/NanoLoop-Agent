@@ -11,6 +11,7 @@ type WorkspaceState = {
   stage: WorkspaceStage;
   inspectorTab: InspectorTab;
   queryMode: QueryMode;
+  queryDraft: string;
   railCollapsed: boolean;
   setActiveImage: (value: string | null) => void;
   setActiveRun: (value: string | null) => void;
@@ -18,6 +19,7 @@ type WorkspaceState = {
   setStage: (value: WorkspaceStage) => void;
   setInspectorTab: (value: InspectorTab) => void;
   setQueryMode: (value: QueryMode) => void;
+  setQueryDraft: (value: string) => void;
   toggleRail: () => void;
 };
 
@@ -28,6 +30,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   stage: "project",
   inspectorTab: "system",
   queryMode: "auto",
+  queryDraft: "",
   railCollapsed: false,
   setActiveImage: (activeImageId) => set({ activeImageId }),
   setActiveRun: (activeRunId) => set({ activeRunId }),
@@ -35,5 +38,6 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   setStage: (stage) => set({ stage }),
   setInspectorTab: (inspectorTab) => set({ inspectorTab }),
   setQueryMode: (queryMode) => set({ queryMode }),
+  setQueryDraft: (queryDraft) => set({ queryDraft }),
   toggleRail: () => set((state) => ({ railCollapsed: !state.railCollapsed }))
 }));

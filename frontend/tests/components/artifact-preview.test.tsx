@@ -1,4 +1,5 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ArtifactPreview } from "@/components/results/artifact-preview";
@@ -122,5 +123,62 @@ describe("ArtifactPreview", () => {
       "href",
       "/api/v1/files/tiff"
     );
+  });
+
+  it("shows the fixed confidence legend for probability previews", async () => {
+    apiMocks.fetchArtifact.mockResolvedValueOnce(imageResponse("probability"));
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:probability");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+
+    render(
+      <ArtifactPreview
+        url="/api/v1/files/probability"
+        alt="置信度图层"
+        filename="probability.npy"
+        mode="probability"
+      />
+    );
+
+    expect(await screen.findByRole("img", { name: "置信度图层" })).toBeVisible();
+    expect(screen.getByLabelText("置信度色阶")).toHaveTextContent("低 0高 1");
+  });
+
+  it("enlarges instance targets through CSS and copies the authoritative number", async () => {
+    const user = userEvent.setup();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText }
+    });
+    apiMocks.fetchArtifact.mockResolvedValueOnce(imageResponse("instances"));
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:instances");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+
+    render(
+      <ArtifactPreview
+        url="/api/v1/files/labeled"
+        alt="实例编号图层"
+        filename="labeled.png"
+        mode="instances"
+        instances={{
+          width: 200,
+          height: 100,
+          labels: [
+            {
+              instanceIndex: 17,
+              xPercent: 20,
+              yPercent: 30,
+              confidence: 0.875
+            }
+          ]
+        }}
+      />
+    );
+
+    const target = await screen.findByRole("button", { name: "复制实例编号 17" });
+    expect(target).toHaveAttribute("title", "实例 17 · 点击复制");
+    expect(target).toHaveTextContent("置信度 87.5%");
+    await user.click(target);
+    expect(writeText).toHaveBeenCalledWith("17");
   });
 });

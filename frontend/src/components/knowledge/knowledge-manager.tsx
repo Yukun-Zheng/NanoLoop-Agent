@@ -72,6 +72,8 @@ export function KnowledgeManager() {
     pending: health.isPending
   });
   const documentItems = documents.data?.documents ?? [];
+  const readyDocuments = documentItems.filter((document) => document.status === "ready").length;
+  const demoDocuments = documentItems.filter((document) => document.allowed_for_demo).length;
 
   const ingest = useMutation({
     mutationFn: async (values: KnowledgeFormValues) => {
@@ -147,6 +149,30 @@ export function KnowledgeManager() {
           </p>
         </section>
 
+        <section className="knowledge-overview" aria-label="知识库概览">
+          <article>
+            <FileText size={18} />
+            <div>
+              <span>受管文档</span>
+              <strong>{documentItems.length}</strong>
+            </div>
+          </article>
+          <article>
+            <RefreshCw size={18} />
+            <div>
+              <span>可检索文档</span>
+              <strong>{readyDocuments}</strong>
+            </div>
+          </article>
+          <article>
+            <ShieldCheck size={18} />
+            <div>
+              <span>获准用于演示</span>
+              <strong>{demoDocuments}</strong>
+            </div>
+          </article>
+        </section>
+
         <div className="knowledge-layout">
           <section className="panel ingest-panel">
             <div className="panel-header">
@@ -167,16 +193,28 @@ export function KnowledgeManager() {
                   {writeBlocker}
                 </p>
               ) : null}
-              <label className="field">
+              <div className="field">
                 <span>文档文件 *</span>
                 <input
                   ref={fileInput}
-                  className="input file-input"
+                  className="sr-only"
                   type="file"
                   accept=".pdf,.txt,.md,.markdown"
                   onChange={(event) => setFile(event.target.files?.[0] || null)}
                 />
-              </label>
+                <button
+                  className="file-picker"
+                  type="button"
+                  onClick={() => fileInput.current?.click()}
+                >
+                  <span className="file-picker-icon"><Upload size={18} /></span>
+                  <span className="file-picker-copy">
+                    <strong>{file?.name || "选择知识文档"}</strong>
+                    <small>{file ? "已准备导入，可继续补充文档身份" : "PDF、TXT 或 Markdown"}</small>
+                  </span>
+                  <span className="file-picker-action">浏览文件</span>
+                </button>
+              </div>
               <label className="field">
                 <span>标题 *</span>
                 <input
@@ -345,6 +383,13 @@ export function KnowledgeManager() {
                 icon={FileText}
                 title="知识库尚无文档"
                 detail="导入获准使用的 PDF、TXT 或 Markdown 后，索引报告会显示页数、chunks 和警告。"
+                action={
+                  <div className="knowledge-empty-checklist">
+                    <span><ShieldCheck size={14} />许可边界可审查</span>
+                    <span><RefreshCw size={14} />索引状态可追踪</span>
+                    <span><BookOpen size={14} />引用身份随答案返回</span>
+                  </div>
+                }
               />
             )}
 

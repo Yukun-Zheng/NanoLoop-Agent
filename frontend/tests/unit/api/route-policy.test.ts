@@ -12,6 +12,7 @@ const allowed = [
   ["GET", "analyses/job-1/export"],
   ["GET", "analyses/job-1/images/image-1/boxes"],
   ["PUT", "analyses/job-1/images/image-1/boxes"],
+  ["GET", "analyses/job-1/queries"],
   ["POST", "analyses/job-1/query"],
   ["POST", "analyses/job-1/runs"],
   ["GET", "files/v2.token.signature"],
@@ -34,6 +35,7 @@ describe("BFF route policy", () => {
   it.each([
     ["DELETE", "analyses/job-1"],
     ["POST", "health"],
+    ["POST", "analyses/job-1/queries"],
     ["GET", "models/recommend"],
     ["PUT", "knowledge/documents/doc-1"]
   ])("recognizes a path but rejects wrong method", (method, path) => {
