@@ -251,7 +251,12 @@ def _ready_smoke_registry_entry(registry_path: Path) -> dict[str, Any]:
         "adapter_source": registration.adapter_source_path,
     }
     missing = [name for name, path in required_assets.items() if path is None or not path.is_file()]
-    if missing or registration.config_sha256 is None or registration.model_card_sha256 is None:
+    if (
+        missing
+        or registration.config_sha256 is None
+        or registration.model_card_sha256 is None
+        or registration.adapter_sha256 is None
+    ):
         raise ValueError(f"private preflight registry is missing validated assets: {missing}")
     load_calibrated_analysis(registration.config, metadata)
 
@@ -297,6 +302,7 @@ def _ready_smoke_registry_entry(registry_path: Path) -> dict[str, Any]:
             "weight_sha256": TORCHSCRIPT_SHA256,
             "config_path": str(registration.config_path),
             "model_card_path": str(registration.model_card_path),
+            "adapter_sha256": registration.adapter_sha256,
         }
     )
     return source
@@ -1044,6 +1050,7 @@ def run_smoke(parameters: SmokeParameters) -> dict[str, Any]:
                 f"model-snapshots/{model_identity['model_card_sha256']}/model-card.md"
             ),
             "weight_sha256": model_identity["weight_sha256"],
+            "adapter_sha256": model_identity["adapter_sha256"],
         }
     )
     ready_registry_path = output_root / "private-registry-ready.yaml"

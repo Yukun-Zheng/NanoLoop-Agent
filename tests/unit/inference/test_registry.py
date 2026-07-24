@@ -75,6 +75,22 @@ def test_valid_artifacts_become_ready_and_adapter_resolution_is_lazy(tmp_path: P
     assert calls == [entry["adapter_path"]]
 
 
+def test_declared_adapter_sha256_must_match_computed_source_digest(tmp_path: Path) -> None:
+    entry = model_entry(tmp_path, "declared-adapter")
+    baseline = build_registry(tmp_path, [entry]).get_registration("declared-adapter")
+    assert baseline.adapter_sha256 is not None
+
+    entry["adapter_sha256"] = baseline.adapter_sha256
+    matching = build_registry(tmp_path, [entry]).get_metadata("declared-adapter")
+    assert matching.status == ModelStatus.READY
+    assert matching.adapter_sha256 == baseline.adapter_sha256
+
+    entry["adapter_sha256"] = "0" * 64
+    mismatched = build_registry(tmp_path, [entry]).get_metadata("declared-adapter")
+    assert mismatched.status == ModelStatus.UNAVAILABLE
+    assert "adapter sha256 mismatch" in (mismatched.health_error or "")
+
+
 def _calibrated_unet_entry(tmp_path: Path) -> dict[str, object]:
     entry = model_entry(
         tmp_path,
