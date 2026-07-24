@@ -263,7 +263,7 @@ export function ConversationPanel({
           {!llmHealth ? (
             <StatusBadge value="pending" label="正在检查本地 Qwen" />
           ) : llmUnavailable ? (
-            <StatusBadge value="degraded" label="本地模型不可用，回答将安全降级" />
+            <StatusBadge value="degraded" label="Qwen 未连接：当前仅为证据降级模式" />
           ) : (
             <StatusBadge value="healthy" label="Qwen 已连接" />
           )}

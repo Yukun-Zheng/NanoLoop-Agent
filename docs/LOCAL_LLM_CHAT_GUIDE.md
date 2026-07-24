@@ -1,8 +1,9 @@
 # 本地 Qwen3 科研对话指南
 
-NanoLoop 可以把宿主机 Ollama 中已经安装的 Qwen3 用作自然语言组织层。实验数值仍只来自
-NanoLoop 的确定性数据工具，材料事实仍只来自受管知识库；Qwen3 不执行任意 SQL、不创造引用，也
-不能把 `LaNi`、`NdNi` 等样品标签自动补成化学式。
+NanoLoop 把宿主机 Ollama 中已经安装的 Qwen3 作为通用对话层：它可以回答普通交流、写作、
+编程、数学、常识和一般科学背景。问题明确涉及当前实验数据时，系统再调用确定性数据工具；
+明确要求文献、来源、引用或知识库证据时，再调用 RAG。Qwen3 不执行任意 SQL、不创造引用，
+也不能把 `LaNi`、`NdNi` 等样品标签自动补成化学式。
 
 Ollama 的安装、服务管理和模型下载不属于本仓库职责。模型文件、聊天记录导出、embedding
 snapshot、FAISS 文件、API key 和 `.env` 都不得提交到 Git。
@@ -34,21 +35,28 @@ macOS 或 Linux：
 
 ```bash
 ollama serve
-export LLM_MODEL="替换为精确 Qwen3 tag"
-make compose-up-local-llm-models
+NANOLOOP_API_EXTRAS=models docker compose up -d --no-build
+```
+
+基础 Compose 默认使用 `qwen3:4b-instruct-2507-q4_K_M`。如果本机的精确 tag 不同，先设置
+`NANOLOOP_COMPOSE_LLM_MODEL`：
+
+```bash
+export NANOLOOP_COMPOSE_LLM_MODEL="替换为精确 Qwen3 tag"
+NANOLOOP_API_EXTRAS=models docker compose up -d --no-build
 ```
 
 如果 Ollama 已由桌面应用或系统服务启动，不要重复运行 `ollama serve`。Windows PowerShell：
 
 ```powershell
 ollama serve
-$env:LLM_MODEL="替换为精确 Qwen3 tag"
-make compose-up-local-llm-models
+$env:NANOLOOP_COMPOSE_LLM_MODEL="替换为精确 Qwen3 tag"
+docker compose up -d --no-build
 ```
 
-打开 `http://127.0.0.1:3000`。该 Make 目标会检查宿主机模型，依次构建带模型 runtime 的 API
-与前端，再叠加 `docker-compose.ollama.yml` 启动；它不会下载 Qwen，也不会启动第二个 Ollama
-容器。
+打开 `http://127.0.0.1:3000`。Compose 不会下载 Qwen，也不会启动第二个 Ollama 容器。
+需要从零构建完整模型镜像并预检自定义 Qwen tag 时，仍可使用
+`LLM_MODEL="精确 tag" make compose-up-local-llm-models`。
 
 纯本地 Python 开发使用：
 
@@ -91,12 +99,12 @@ docker compose -f docker-compose.yml -f docker-compose.ollama.yml down
 该命令不带 `-v`，不会删除数据库和制品卷。Ollama 若由手动前台 `ollama serve` 启动，可在对应
 终端按 `Ctrl+C`；若由桌面应用或系统服务管理，请用该平台自己的停止方式。
 
-## 4. 切回 extractive
+## 4. 显式使用 extractive
 
-普通 `docker-compose.yml` 的默认安全模式仍是 `extractive`：
+仅在明确不需要通用 AI 对话时，才把 Compose 切到 `extractive`：
 
 ```bash
-docker compose up --build -d
+NANOLOOP_COMPOSE_LLM_PROVIDER=extractive docker compose up --build -d
 ```
 
 纯本地 Python 则设置：
@@ -105,9 +113,11 @@ docker compose up --build -d
 export LLM_PROVIDER=extractive
 ```
 
-Ollama 断开、模型名错误、返回非法 JSON、输出未知 `[C99]/[D99]` 或修改数值/单位时，API 不会
+Ollama 断开、模型名错误、返回非法 JSON、输出未知 `[C99]/[D99]` 或修改当前实验数值/单位时，
+API 不会
 把不可信文本直接展示，而会回退到确定性数据模板或知识摘录，并在本轮审计中记录
-`fallback_used=true`。分割、数据统计、ROI 和导出不依赖 Ollama。
+`fallback_used=true`。通用问题在没有 Qwen 时无法由抽取模板替代，界面会明确显示“当前仅为
+证据降级模式”；分割、数据统计、ROI 和导出不依赖 Ollama。
 
 ## 5. Qwen3 与 RAG 的区别
 
@@ -119,7 +129,8 @@ extractive provider 展示。两种降级都必须在健康状态和回答限制
 当前支持：
 
 - 任务内多轮历史的保存和重载，默认最多向模型提供最近 8 turn，并有总字符硬上限；
-- `general_chat`、实验数据、材料知识和混合路由；
+- 通用对话优先；明确的当前实验指标自动走数据工具，明确的文献/知识库请求自动走 RAG；
+- 高级模式仍可显式选择只查实验数据、只查知识库或二者综合；
 - `[D#]` 数据证据与 `[C#]` 知识证据的独立校验；
 - prompt 注入拒绝、非法 JSON/思维标签过滤和可信 fallback；
 - 会话、图像和 run 的 tenant/job 权限检查；

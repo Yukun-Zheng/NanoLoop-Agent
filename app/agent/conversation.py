@@ -221,6 +221,8 @@ class ConversationService:
                     or decision.query_type is not QueryType.AUTO
                 ):
                     query_type = decision.query_type
+            if query_type is QueryType.AUTO:
+                query_type = QueryType.GENERAL_CHAT
             if principal.auth_mode is AuthMode.PRINCIPAL and query_type in {
                 QueryType.MATERIAL_KNOWLEDGE,
                 QueryType.MIXED,
@@ -328,22 +330,6 @@ class ConversationService:
         task_context: Mapping[str, object],
     ) -> _TurnAnswer:
         started = monotonic()
-        if query_type is QueryType.AUTO:
-            return _TurnAnswer(
-                content=(
-                    "我还不能确定你要查询实验数据、材料知识还是操作说明。"
-                    "请补充对象和目标，例如“哪个模型颗粒更多”或“这个系统怎么用”。"
-                ),
-                data=DataQueryResult(answer=""),
-                citations=(),
-                limitations=("查询意图不明确，未调用模型或工具",),
-                confidence="low",
-                outcome_code="INSUFFICIENT_EVIDENCE",
-                llm_provider="policy",
-                llm_model=None,
-                fallback_used=False,
-                generation_time_ms=_elapsed_ms(started),
-            )
         if _UNTRUSTED_REQUEST.search(request.content):
             return _policy_refusal(started)
         data = DataQueryResult(answer="")
@@ -455,8 +441,8 @@ class ConversationService:
                 knowledge_answer = "知识库证据不足，无法基于当前已导入文档回答该问题。"
         if query_type is QueryType.GENERAL_CHAT:
             content = (
-                "你好，我是 NanoLoop 科研助手。我可以解释当前任务流程、调用确定性数据工具"
-                "比较运行结果，并基于已导入知识库给出带引用的材料说明。"
+                "本地 Qwen 当前未连接，因此这一轮无法完成通用 AI 对话。"
+                "请启动或恢复 Ollama 后重试；实验数据和知识库查询仍可使用安全降级。"
             )
         elif query_type is QueryType.ANALYSIS_DATA:
             content = data_answer or "当前任务没有足够的已完成运行数据可供回答。"
@@ -562,6 +548,28 @@ class ConversationService:
         run_status_counts = {
             str(status): int(count) for status, count in run_status_rows
         }
+        selected_run_rows = (
+            session.scalars(
+                select(SegmentationRun).where(
+                    SegmentationRun.job_id == job_id,
+                    SegmentationRun.run_id.in_(request.run_ids),
+                )
+            ).all()
+            if request.run_ids
+            else []
+        )
+        selected_runs_by_id = {run.run_id: run for run in selected_run_rows}
+        selected_runs = [
+            {
+                "run_id": run.run_id,
+                "model_id": run.model_id,
+                "status": run.status,
+                "roi_mode": run.roi_mode,
+                "image_id": run.image_id,
+            }
+            for run_id in request.run_ids
+            if (run := selected_runs_by_id.get(run_id)) is not None
+        ]
         run_total = sum(run_status_counts.values())
         active_statuses = {
             "CREATED",
@@ -604,6 +612,7 @@ class ConversationService:
             ),
             "runs": {
                 "selected_count": len(request.run_ids),
+                "selected": selected_runs,
                 "job_total_count": run_total,
                 "status_counts": run_status_counts,
             },
