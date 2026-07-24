@@ -133,11 +133,19 @@ models:
         target_definition: whole_agglomerate
         calibrated_threshold: 0.25
         calibrated_min_area_px: 1024
-        evidence_bundle_delivered: false
+        evidence_bundle_delivered: true
+        runtime_asset_delivered_to_operator: true
+        private_runtime_smoke_verified: true
+        private_registry_ready_manifest_delivered: true
+        runtime_verification_device: cpu
+        runtime_verification_scope: private_exact_asset_full_analysis_smoke
+        public_runtime_asset_embedded: false
+        redistribution_permission_delivered: false
+        scientific_acceptance_status: pending
         asset_ledger_delivered: false
         training_split_verification: unknown
-      notes: Agglomerated U-Net parameters are developer-reported; external evidence is pending review.
-      health_error: External TorchScript, asset ledger, and machine-readable evidence were not delivered.
+      notes: Exact private Agglomerated-A bundle passed Gateway-to-Analysis smoke; public distribution remains blocked.
+      health_error: Exact TorchScript is available only in the external private bundle; public redistribution and scientific acceptance remain unresolved.
     adapter_path: app.inference.adapters.unet:UNetAdapter
     weight_path: weights/unet-agglomerated-specialized-v1.pt
     weight_sha256: null

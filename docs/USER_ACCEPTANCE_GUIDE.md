@@ -117,8 +117,9 @@ curl -fsS http://127.0.0.1:8000/api/v1/health
 7. 勾选“我确认使用所选模型和参数创建不可变运行”。
 8. 点“创建运行”。
 
-灰色的 Agglomerated U-Net、YOLO-Seg 和 SAM2 是未交付资产，不能选择。界面显示“不可用”是正确
-行为，不应为了演示把它们伪装为 ready。
+灰色的 Agglomerated U-Net、YOLO-Seg 和 SAM2 不能在默认公开资产目录中选择。Agglomerated-A
+已有通过运行冒烟的精确私有 bundle，但只有挂载对应外部 private registry 时才可显示为 `ready`；
+界面在默认目录显示“不可用”是正确行为，不应为了演示修改公开 registry。
 
 ![模型目录、推荐和不可变参数确认](assets/user-acceptance/2026-07-23/05-model-catalog-selection.jpg)
 
