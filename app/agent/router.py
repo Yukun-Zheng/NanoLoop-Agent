@@ -206,6 +206,13 @@ class QueryRouter:
         has_material = material_context is not None and bool(
             material_context.formula or material_context.name or material_context.aliases
         )
+        if (
+            previous_query_type is QueryType.GENERAL_CHAT
+            and normalized.startswith(_FOLLOW_UP_PREFIXES)
+            and not data
+            and set(knowledge).issubset({"为什么"})
+        ):
+            return RouteDecision(QueryType.GENERAL_CHAT, 0.88, False, data, knowledge)
         if data and knowledge:
             return RouteDecision(QueryType.MIXED, 0.95, False, data, knowledge)
         if (
@@ -228,12 +235,12 @@ class QueryRouter:
             }
         ):
             return RouteDecision(previous_query_type, 0.82, False, data, knowledge)
+        if contextual and not has_material:
+            return RouteDecision(QueryType.AUTO, 0.0, True, data, knowledge)
         if any(signal in normalized for signal in _GENERAL_CHAT_SIGNALS):
             return RouteDecision(QueryType.GENERAL_CHAT, 0.95, False, data, knowledge)
-        return RouteDecision(
-            QueryType.AUTO,
-            0.0,
-            True,
-            data,
-            knowledge,
-        )
+        # Keep an unrecognized utterance conversational. GENERAL_CHAT is still
+        # constrained by the system prompt, so the model may clarify the user's
+        # goal or explain the workflow but cannot answer scientific facts from
+        # memory without data/RAG evidence.
+        return RouteDecision(QueryType.GENERAL_CHAT, 0.55, False, data, knowledge)

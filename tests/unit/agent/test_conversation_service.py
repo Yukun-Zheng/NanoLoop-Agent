@@ -27,7 +27,7 @@ from app.core.config import Settings
 from app.core.errors import ResourceNotFoundError
 from app.core.identity import legacy_principal_context
 from app.db.base import Base
-from app.db.models import AnalysisJob, ChatMessage, Principal, Tenant
+from app.db.models import AnalysisJob, ChatMessage, ImageAsset, Principal, Tenant
 from app.db.session import Database
 from app.rag.providers import ConversationProviderAnswer
 from app.rag.service import KnowledgeEvidence
@@ -62,6 +62,7 @@ class FakeConversationProvider:
 
     def __init__(self) -> None:
         self.histories: list[list[dict[str, str]]] = []
+        self.task_contexts: list[dict[str, Any]] = []
         self.calls = 0
 
     def health(self) -> HealthComponent:
@@ -70,6 +71,7 @@ class FakeConversationProvider:
     def generate_conversation(self, **kwargs: Any) -> ConversationProviderAnswer:
         self.calls += 1
         self.histories.append([dict(item) for item in kwargs["history"]])
+        self.task_contexts.append(dict(kwargs["task_context"]))
         return ConversationProviderAnswer(
             answer="你好，我可以解释流程并使用当前任务证据回答。",
             used_data_ids=(),
@@ -96,6 +98,24 @@ def _service(tmp_path: Path) -> tuple[ConversationService, Database, FakeConvers
                 name="chat fixture",
                 status=JobStatus.READY_FOR_CONFIGURATION.value,
                 config_json={},
+            )
+        )
+        session.add(
+            ImageAsset(
+                image_id="img_chat",
+                job_id="job_chat",
+                filename="BaNi-3.tif",
+                storage_path="jobs/job_chat/BaNi-3.tif",
+                sha256="a" * 64,
+                width=2048,
+                height=1536,
+                bit_depth=8,
+                sample_id="BaNi-3",
+                material_name=None,
+                material_formula=None,
+                experiment_conditions_json={},
+                analysis_roi_json={},
+                scale_nm_per_pixel=None,
             )
         )
     provider = FakeConversationProvider()
@@ -152,6 +172,48 @@ def test_multi_turn_messages_reload_and_history_is_bounded(tmp_path: Path) -> No
         ]
         with database.session() as session:
             assert len(session.scalars(select(ChatMessage)).all()) == 4
+    finally:
+        database.dispose()
+
+
+def test_open_ended_request_is_answered_as_safe_general_chat(tmp_path: Path) -> None:
+    service, database, provider = _service(tmp_path)
+    try:
+        conversation = service.create(
+            "job_chat",
+            CreateConversationRequest(),
+            principal=_PRINCIPAL,
+        )
+        result = service.send(
+            "job_chat",
+            conversation.conversation_id,
+            ConversationMessageRequest(
+                content="帮我看看接下来该做什么",
+                image_id="img_chat",
+            ),
+            principal=_PRINCIPAL,
+        )
+
+        assistant = result.messages[-1]
+        assert provider.calls == 1
+        assert assistant.query_type == "general_chat"
+        assert assistant.content == "你好，我可以解释流程并使用当前任务证据回答。"
+        assert assistant.evidence is not None
+        assert assistant.evidence.llm_provider == "openai_compatible"
+        assert provider.task_contexts[-1]["selected_image"] == {
+            "filename": "BaNi-3.tif",
+            "sample_id": "BaNi-3",
+            "width_px": 2048,
+            "height_px": 1536,
+            "material_name": None,
+            "material_formula": None,
+            "has_physical_scale": False,
+        }
+        assert provider.task_contexts[-1]["runs"]["job_total_count"] == 0
+        assert provider.task_contexts[-1]["available_next_steps"] == [
+            "进入“开始分析”选择模型并创建一次全图分割运行。",
+            "局部区域（ROI）是可选步骤，可以直接跳过。",
+        ]
     finally:
         database.dispose()
 
