@@ -53,6 +53,16 @@ def test_unknown_intent_stays_conversational_without_guessing_science() -> None:
     assert decision.confidence == 0.55
 
 
+def test_workflow_why_follow_up_stays_in_general_chat() -> None:
+    decision = QueryRouter().classify(
+        "为什么局部区域可以跳过？",
+        previous_query_type=QueryType.GENERAL_CHAT,
+    )
+
+    assert decision.query_type is QueryType.GENERAL_CHAT
+    assert not decision.needs_clarification
+
+
 def test_general_chat_and_history_aware_follow_up_are_deterministic() -> None:
     router = QueryRouter()
 

@@ -206,6 +206,13 @@ class QueryRouter:
         has_material = material_context is not None and bool(
             material_context.formula or material_context.name or material_context.aliases
         )
+        if (
+            previous_query_type is QueryType.GENERAL_CHAT
+            and normalized.startswith(_FOLLOW_UP_PREFIXES)
+            and not data
+            and set(knowledge).issubset({"为什么"})
+        ):
+            return RouteDecision(QueryType.GENERAL_CHAT, 0.88, False, data, knowledge)
         if data and knowledge:
             return RouteDecision(QueryType.MIXED, 0.95, False, data, knowledge)
         if (
