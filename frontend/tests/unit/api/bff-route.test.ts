@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import sharp from "sharp";
 
 import { GET, POST } from "@/app/api/nanoloop/[...path]/route";
 
@@ -174,24 +173,15 @@ describe("NanoLoop BFF route", () => {
     expect(upstream).not.toHaveBeenCalled();
   });
 
-  it("converts a TIFF artifact preview to a bounded browser-native PNG", async () => {
+  it("forwards artifact preview requests and preserves the backend PNG", async () => {
     process.env.NANOLOOP_API_INTERNAL_URL = "http://backend:8000";
-    const tiff = await sharp({
-      create: {
-        width: 2,
-        height: 3,
-        channels: 3,
-        background: { r: 10, g: 20, b: 30 }
-      }
-    })
-      .tiff()
-      .toBuffer();
+    const png = new Uint8Array([137, 80, 78, 71]);
     const upstream = vi.fn(async (input: RequestInfo | URL) => {
       void input;
-      return new Response(new Uint8Array(tiff), {
+      return new Response(png, {
         headers: {
-          "content-disposition": 'attachment; filename="sample.tif"',
-          "content-type": "image/tiff",
+          "content-disposition": 'inline; filename="preview.png"',
+          "content-type": "image/png",
           "x-request-id": "req-tiff-preview"
         }
       });
@@ -208,12 +198,7 @@ describe("NanoLoop BFF route", () => {
     expect(response.headers.get("content-disposition")).toBe(
       'inline; filename="preview.png"'
     );
-    const preview = Buffer.from(await response.arrayBuffer());
-    await expect(sharp(preview).metadata()).resolves.toMatchObject({
-      format: "png",
-      width: 2,
-      height: 3
-    });
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(png);
     expect(upstream).toHaveBeenCalledOnce();
     expect(String(upstream.mock.calls[0]![0])).toBe(
       "http://backend:8000/api/v1/files/signed-token?preview=1"

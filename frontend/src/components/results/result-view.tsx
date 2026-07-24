@@ -223,7 +223,11 @@ export function ResultView({
         <ArtifactPreview
           url={currentLayer}
           alt={`${layer} 图层`}
-          filename={`${run.run_id}-${layer}`}
+          filename={
+            layer === "original" && image?.filename
+              ? image.filename
+              : `${run.run_id}-${layer}`
+          }
         />
       </div>
 
@@ -324,7 +328,11 @@ export function ResultView({
                   <ArtifactPreview
                     url={artifactForLayer(candidate, image, layer)}
                     alt={`${candidate.model_id} ${layer} 图层`}
-                    filename={`${candidate.run_id}-${layer}`}
+                    filename={
+                      layer === "original" && image?.filename
+                        ? image.filename
+                        : `${candidate.run_id}-${layer}`
+                    }
                   />
                 </div>
                 <span>颗粒 {formatNumber(candidate.summary?.particle_count, 0)}</span>

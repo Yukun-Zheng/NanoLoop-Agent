@@ -4745,12 +4745,30 @@
               "title": "Token",
               "type": "string"
             }
+          },
+          {
+            "description": "Return a browser-native PNG when the artifact is TIFF.",
+            "in": "query",
+            "name": "preview",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Return a browser-native PNG when the artifact is TIFF.",
+              "title": "Preview",
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
           "200": {
             "content": {
               "application/octet-stream": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              },
+              "image/png": {
                 "schema": {
                   "format": "binary",
                   "type": "string"

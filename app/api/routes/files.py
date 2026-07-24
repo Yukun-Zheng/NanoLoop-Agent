@@ -1,22 +1,35 @@
 """Subject-bound download endpoint for registered managed artifacts."""
 
+import math
+import os
 from collections.abc import Mapping
-from typing import Annotated
+from io import BytesIO
+from typing import Annotated, cast
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, Query
+from fastapi.responses import Response, StreamingResponse
+from PIL import Image, ImageOps, UnidentifiedImageError
 from starlette.background import BackgroundTask
 from starlette.types import Receive, Scope, Send
 
 from app.api.deps import get_file_artifact_access_service, require_api_key_contract
 from app.api.routing import COMMON_ERROR_RESPONSES
 from app.contracts.identity import PrincipalContext
-from app.core.errors import ResourceNotFoundError
-from app.files import FileAccessTokenError, FileArtifactAccessService
+from app.core.errors import InvalidImageError, ResourceNotFoundError
+from app.files import (
+    FileAccessTokenError,
+    FileArtifactAccessService,
+    ResolvedFileDownload,
+)
 from app.storage import PinnedFileChunkIterator
 
 router = APIRouter(prefix="/files", tags=["files"], responses=COMMON_ERROR_RESPONSES)
+
+_TIFF_MEDIA_TYPES = frozenset({"image/tiff", "image/x-tiff"})
+_PREVIEW_MAX_DIMENSION = 4096
+_NUMERIC_GRAYSCALE_MODES = frozenset({"I", "F", "I;16", "I;16L", "I;16B", "I;16N"})
+_PNG_NATIVE_MODES = frozenset({"1", "L", "LA", "P", "RGB", "RGBA"})
 
 
 class _PinnedStreamingResponse(StreamingResponse):
@@ -56,7 +69,10 @@ class _PinnedStreamingResponse(StreamingResponse):
         200: {
             "description": "Managed artifact bytes",
             "content": {
-                "application/octet-stream": {"schema": {"type": "string", "format": "binary"}}
+                "application/octet-stream": {
+                    "schema": {"type": "string", "format": "binary"}
+                },
+                "image/png": {"schema": {"type": "string", "format": "binary"}},
             },
         }
     },
@@ -69,11 +85,18 @@ def download_file(
         Depends(get_file_artifact_access_service),
     ],
     principal: Annotated[PrincipalContext, Depends(require_api_key_contract)],
-) -> StreamingResponse:
+    preview: Annotated[
+        bool,
+        Query(description="Return a browser-native PNG when the artifact is TIFF."),
+    ] = False,
+) -> Response:
     try:
         resolved = file_access.resolve_download(token, principal=principal)
     except FileAccessTokenError as error:
         raise ResourceNotFoundError(details={"resource": "file"}) from error
+
+    if preview and resolved.media_type.casefold() in _TIFF_MEDIA_TYPES:
+        return _tiff_preview_response(resolved)
 
     pinned = resolved.pinned_file
     chunks = pinned.iter_chunks()
@@ -94,6 +117,69 @@ def download_file(
     except BaseException:
         chunks.close()
         raise
+
+
+def _tiff_preview_response(resolved: ResolvedFileDownload) -> Response:
+    """Render page one from the already verified descriptor without changing the raw file."""
+
+    pinned = resolved.pinned_file
+    try:
+        with (
+            os.fdopen(os.dup(pinned.fileno()), "rb") as source,
+            Image.open(source) as opened,
+        ):
+            opened.seek(0)
+            image = ImageOps.exif_transpose(opened)
+            image.thumbnail(
+                (_PREVIEW_MAX_DIMENSION, _PREVIEW_MAX_DIMENSION),
+                Image.Resampling.LANCZOS,
+                reducing_gap=3.0,
+            )
+            preview_image = _png_compatible(image)
+            output = BytesIO()
+            preview_image.save(output, format="PNG", optimize=True)
+    except (
+        Image.DecompressionBombError,
+        OSError,
+        UnidentifiedImageError,
+        ValueError,
+    ) as error:
+        raise InvalidImageError(
+            "该图像暂时无法生成浏览器预览，可下载原始制品审查",
+            details={"reason": "preview_decode_failed"},
+        ) from error
+    finally:
+        pinned.close()
+
+    content = output.getvalue()
+    return Response(
+        content=content,
+        media_type="image/png",
+        headers={
+            "Cache-Control": "private, no-store",
+            "Content-Disposition": 'inline; filename="preview.png"',
+            "Cross-Origin-Resource-Policy": "same-origin",
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+def _png_compatible(image: Image.Image) -> Image.Image:
+    if image.mode in _NUMERIC_GRAYSCALE_MODES:
+        low, high = cast(tuple[float, float], image.getextrema())
+        low_value = float(low)
+        high_value = float(high)
+        if not math.isfinite(low_value) or not math.isfinite(high_value):
+            raise ValueError("TIFF preview contains non-finite intensity bounds")
+        if high_value <= low_value:
+            fill = 0 if high_value <= 0 else 255
+            return Image.new("L", image.size, color=fill)
+        scale = 255.0 / (high_value - low_value)
+        return image.point(lambda value: (float(value) - low_value) * scale).convert("L")
+    if image.mode in _PNG_NATIVE_MODES:
+        return image.copy()
+    return image.convert("RGBA")
 
 
 def _content_disposition(filename: str) -> str:
