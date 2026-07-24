@@ -1,7 +1,14 @@
-import { AlertCircle, Check, Circle, LoaderCircle } from "lucide-react";
+import {
+  AlertCircle,
+  CalendarDays,
+  Check,
+  Circle,
+  Clock3,
+  LoaderCircle
+} from "lucide-react";
 
 import type { Run } from "@/lib/api/types";
-import { formatDate } from "@/lib/format/value";
+import { formatDate, formatNumber } from "@/lib/format/value";
 import { timelineFor } from "@/lib/runs/timeline";
 
 export function RunTimeline({ run }: { run: Run }) {
@@ -13,6 +20,10 @@ export function RunTimeline({ run }: { run: Run }) {
         <span>AGENT EXECUTION</span>
         <h3>智能体执行时间线</h3>
         <p>进度完全来自后端状态，不使用前端计时器补造百分比。</p>
+        <div className="timeline-meta">
+          <span><Clock3 size={13} />{formatNumber(run.runtime_ms, 0)} ms</span>
+          <span><CalendarDays size={13} />更新于 {formatDate(run.updated_at)}</span>
+        </div>
       </div>
       <ol>
         {timelineFor(run.status).map((step) => (

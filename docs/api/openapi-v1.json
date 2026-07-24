@@ -5033,13 +5033,13 @@
             }
           },
           {
-            "description": "Return a browser-native PNG when the artifact is TIFF.",
+            "description": "Return a browser-native PNG when the artifact is TIFF or a numeric NumPy array.",
             "in": "query",
             "name": "preview",
             "required": false,
             "schema": {
               "default": false,
-              "description": "Return a browser-native PNG when the artifact is TIFF.",
+              "description": "Return a browser-native PNG when the artifact is TIFF or a numeric NumPy array.",
               "title": "Preview",
               "type": "boolean"
             }

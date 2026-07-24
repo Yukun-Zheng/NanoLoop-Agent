@@ -67,7 +67,7 @@ export function parseJobReference(value: string): string | null {
     const url = new URL(reference, "http://nanoloop.local");
     const match = url.pathname.match(/^\/workspace\/([^/]+)\/?$/);
     if (!match) return null;
-    const jobId = decodeURIComponent(match[1]);
+    const jobId = decodeURIComponent(match[1] ?? "");
     return /^job_[A-Za-z0-9_-]{8,255}$/.test(jobId) ? jobId : null;
   } catch {
     return null;

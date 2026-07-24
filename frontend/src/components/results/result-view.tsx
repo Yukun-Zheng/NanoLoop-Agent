@@ -3,10 +3,13 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   CheckCircle2,
+  CircleDot,
   Download,
   FileCheck2,
   GitCompareArrows,
+  Info,
   RotateCcw,
+  Settings2,
   ShieldAlert,
   Upload
 } from "lucide-react";
@@ -28,6 +31,7 @@ import type {
 } from "@/lib/api/types";
 import { formatNumber } from "@/lib/format/value";
 import { loadInstanceArtifact } from "@/lib/results/instance-artifact";
+import { runParameterError } from "@/lib/runs/configuration";
 
 import { ArtifactPreview } from "./artifact-preview";
 
@@ -35,24 +39,34 @@ type LayerKey = "original" | "mask" | "overlay" | "probability" | "labeled";
 
 const terminal = new Set(["COMPLETED", "COMPLETED_WITH_WARNINGS"]);
 
+function initialLayer(run: Run | null): LayerKey {
+  if (run?.artifacts?.overlay_url) return "overlay";
+  if (run?.artifacts?.mask_url) return "mask";
+  return "original";
+}
+
 export function ResultView({
   jobId,
   image,
   run,
+  availableRuns,
   comparisonRuns,
   writeBlocker,
+  onSelectRun,
   onChildCreated
 }: {
   jobId: string;
   image: ImageAsset | null;
   run: Run | null;
+  availableRuns: Run[];
   comparisonRuns: Run[];
   writeBlocker: string | null;
+  onSelectRun: (runId: string) => void;
   onChildCreated: (runId: string) => void;
 }) {
   const queryClient = useQueryClient();
   const maskInput = useRef<HTMLInputElement>(null);
-  const [layer, setLayer] = useState<LayerKey>("overlay");
+  const [layer, setLayer] = useState<LayerKey>(() => initialLayer(run));
   const [threshold, setThreshold] = useState("");
   const [minArea, setMinArea] = useState("");
   const [watershed, setWatershed] = useState<boolean | null>(null);
@@ -102,6 +116,8 @@ export function ResultView({
   const review = useMutation({
     mutationFn: async () => {
       if (!run) throw new Error("请先选择运行");
+      const invalidParameters = runParameterError(threshold, minArea);
+      if (invalidParameters) throw new Error(invalidParameters);
       const payload: Record<string, unknown> = {};
       if (threshold !== "") payload.threshold = Number(threshold);
       if (minArea !== "") payload.min_area_px = Number(minArea);
@@ -165,12 +181,65 @@ export function ResultView({
     );
   }
 
+  if (!terminal.has(run.status)) {
+    const failed = run.status === "FAILED";
+    return (
+      <EmptyState
+        icon={failed ? ShieldAlert : CircleDot}
+        title={failed ? "本次运行失败，未生成分割结果" : "分割仍在运行中"}
+        detail={
+          failed
+            ? `${run.error_message || run.error_code || "请到执行时间线查看失败原因"}。界面不会把原图冒充结果。`
+            : `当前状态为 ${run.status}。完成后会自动显示识别叠加图；现在不会用原图代替结果。`
+        }
+      />
+    );
+  }
+
   const summary = run.summary;
   const quality = run.quality;
   const currentLayer = layers[layer];
+  const explanation = layerExplanation(layer, summary?.particle_count ?? null);
+  const reviewValidation = runParameterError(threshold, minArea);
+  const hasReviewChanges =
+    threshold !== "" ||
+    minArea !== "" ||
+    watershed !== null ||
+    excludeBorder !== null ||
+    correctedMask !== null;
 
   return (
     <div className="result-view">
+      <section className="result-run-context" aria-label="当前查看的模型运行">
+        <div>
+          <span>CURRENT RESULT</span>
+          <strong>{run.model_id}</strong>
+          <small>
+            正在查看 {availableRuns.findIndex((candidate) => candidate.run_id === run.run_id) + 1}
+            /{availableRuns.length || 1} 个运行
+          </small>
+        </div>
+        {availableRuns.length > 1 ? (
+          <nav aria-label="切换模型结果">
+            {availableRuns.map((candidate) => (
+              <button
+                type="button"
+                className={candidate.run_id === run.run_id ? "active" : undefined}
+                key={candidate.run_id}
+                onClick={() => onSelectRun(candidate.run_id)}
+                aria-current={candidate.run_id === run.run_id ? "true" : undefined}
+              >
+                <CircleDot size={13} />
+                <span>{candidate.model_id}</span>
+                <StatusBadge value={candidate.status} />
+              </button>
+            ))}
+          </nav>
+        ) : (
+          <StatusBadge value={run.status} />
+        )}
+      </section>
+
       <div className="result-toolbar">
         <div className="layer-tabs" role="tablist" aria-label="结果图层">
           {(
@@ -230,18 +299,13 @@ export function ResultView({
         </div>
       </div>
 
-      {layer === "probability" ? (
-        <div className="result-layer-guidance" role="status">
-          <strong>模型置信度热图</strong>
-          <span>固定使用 0–1 色阶：深紫表示低置信度，亮黄表示高置信度。</span>
+      <div className={`result-explanation${explanation.warning ? " warning" : ""}`}>
+        <Info size={17} />
+        <div>
+          <strong>{explanation.title}</strong>
+          <p>{explanation.detail}</p>
         </div>
-      ) : null}
-      {layer === "labeled" ? (
-        <div className="result-layer-guidance" role="status">
-          <strong>交互式实例编号</strong>
-          <span>将鼠标悬浮到编号上可放大并查看置信度；点击即可复制编号。</span>
-        </div>
-      ) : null}
+      </div>
 
       <div className="result-canvas">
         <ArtifactPreview
@@ -386,113 +450,131 @@ export function ResultView({
         </section>
       ) : null}
 
-      <section className="review-panel">
-        <div className="review-heading">
+      <details className="review-panel advanced-review">
+        <summary>
+          <Settings2 size={17} />
           <div>
-            <span>HUMAN IN THE LOOP</span>
-            <h3>创建不可变复核子运行</h3>
+            <strong>结果不理想？调整参数或上传修正掩码</strong>
+            <span>这是高级复核入口；普通查看无需填写。</span>
           </div>
-          <RotateCcw size={20} />
-        </div>
-        <div className="review-grid">
-          <label className="field">
-            <span>threshold</span>
-            <input
-              className="input"
-              type="number"
-              min="0"
-              max="1"
-              step="0.01"
-              value={threshold}
-              onChange={(event) => setThreshold(event.target.value)}
-              placeholder="保持原值"
-            />
-          </label>
-          <label className="field">
-            <span>min_area_px</span>
-            <input
-              className="input"
-              type="number"
-              min="0"
-              value={minArea}
-              onChange={(event) => setMinArea(event.target.value)}
-              placeholder="保持原值"
-            />
-          </label>
-          <label className="field">
-            <span>watershed</span>
-            <select
-              className="select"
-              value={watershed === null ? "" : String(watershed)}
-              onChange={(event) =>
-                setWatershed(event.target.value === "" ? null : event.target.value === "true")
-              }
-            >
-              <option value="">保持原值</option>
-              <option value="true">启用</option>
-              <option value="false">关闭</option>
-            </select>
-          </label>
-          <label className="field">
-            <span>exclude border</span>
-            <select
-              className="select"
-              value={excludeBorder === null ? "" : String(excludeBorder)}
-              onChange={(event) =>
-                setExcludeBorder(
-                  event.target.value === "" ? null : event.target.value === "true"
-                )
-              }
-            >
-              <option value="">保持原值</option>
-              <option value="true">排除边界</option>
-              <option value="false">保留边界</option>
-            </select>
-          </label>
-        </div>
-        {writeBlocker ? (
-          <p className="form-warning" role="status">
-            {writeBlocker}
-          </p>
-        ) : null}
-        <div className="review-actions">
-          <input
-            ref={maskInput}
-            className="sr-only"
-            type="file"
-            accept=".png,.tif,.tiff,.bmp,.npy"
-            onChange={(event) => {
-              const file = event.target.files?.[0];
-              if (file) uploadMask.mutate(file);
-            }}
-          />
-          <Button
-            onClick={() => maskInput.current?.click()}
-            disabled={Boolean(writeBlocker) || uploadMask.isPending}
-            title={writeBlocker || undefined}
-          >
-            <Upload size={15} />
-            {uploadMask.isPending ? "上传中…" : "上传修正掩码"}
-          </Button>
-          {correctedMask ? (
-            <span className="mask-proof">
-              <CheckCircle2 size={14} />
-              {correctedMask.width}×{correctedMask.height} · {correctedMask.sha256.slice(0, 10)}…
-            </span>
+          <RotateCcw size={18} />
+        </summary>
+        <div className="advanced-review-body">
+          <div className="review-heading">
+            <div>
+              <span>HUMAN IN THE LOOP</span>
+              <h3>创建不可变复核子运行</h3>
+            </div>
+          </div>
+          <div className="review-grid">
+            <label className="field">
+              <span>threshold</span>
+              <input
+                className="input"
+                type="number"
+                min="0"
+                max="1"
+                step="0.01"
+                value={threshold}
+                onChange={(event) => setThreshold(event.target.value)}
+                placeholder="保持原值"
+              />
+            </label>
+            <label className="field">
+              <span>min_area_px</span>
+              <input
+                className="input"
+                type="number"
+                min="0"
+                step="1"
+                value={minArea}
+                onChange={(event) => setMinArea(event.target.value)}
+                placeholder="保持原值"
+              />
+            </label>
+            <label className="field">
+              <span>watershed</span>
+              <select
+                className="select"
+                value={watershed === null ? "" : String(watershed)}
+                onChange={(event) =>
+                  setWatershed(event.target.value === "" ? null : event.target.value === "true")
+                }
+              >
+                <option value="">保持原值</option>
+                <option value="true">启用</option>
+                <option value="false">关闭</option>
+              </select>
+            </label>
+            <label className="field">
+              <span>exclude border</span>
+              <select
+                className="select"
+                value={excludeBorder === null ? "" : String(excludeBorder)}
+                onChange={(event) =>
+                  setExcludeBorder(
+                    event.target.value === "" ? null : event.target.value === "true"
+                  )
+                }
+              >
+                <option value="">保持原值</option>
+                <option value="true">排除边界</option>
+                <option value="false">保留边界</option>
+              </select>
+            </label>
+          </div>
+          {writeBlocker || reviewValidation ? (
+            <p className="form-warning" role="status">
+              {writeBlocker || reviewValidation}
+            </p>
           ) : null}
-          <Button
-            tone="primary"
-            onClick={() => review.mutate()}
-            disabled={Boolean(writeBlocker) || review.isPending}
-            title={writeBlocker || undefined}
-          >
-            <ShieldAlert size={15} />
-            {review.isPending ? "正在创建…" : "创建复核子运行"}
-          </Button>
+          <div className="review-actions">
+            <input
+              ref={maskInput}
+              className="sr-only"
+              type="file"
+              accept=".png,.tif,.tiff,.bmp,.npy"
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                if (file) uploadMask.mutate(file);
+              }}
+            />
+            <Button
+              onClick={() => maskInput.current?.click()}
+              disabled={Boolean(writeBlocker) || uploadMask.isPending}
+              title={writeBlocker || undefined}
+            >
+              <Upload size={15} />
+              {uploadMask.isPending ? "上传中…" : "上传修正掩码"}
+            </Button>
+            {correctedMask ? (
+              <span className="mask-proof">
+                <CheckCircle2 size={14} />
+                {correctedMask.width}×{correctedMask.height} · {correctedMask.sha256.slice(0, 10)}…
+              </span>
+            ) : null}
+            <Button
+              tone="primary"
+              onClick={() => review.mutate()}
+              disabled={
+                Boolean(writeBlocker || reviewValidation) ||
+                !hasReviewChanges ||
+                review.isPending
+              }
+              title={
+                writeBlocker ||
+                reviewValidation ||
+                (!hasReviewChanges ? "请先修改至少一个参数或上传修正掩码" : undefined)
+              }
+            >
+              <ShieldAlert size={15} />
+              {review.isPending ? "正在创建…" : "创建复核子运行"}
+            </Button>
+          </div>
+          {uploadMask.isError ? <RequestError error={uploadMask.error} /> : null}
+          {review.isError ? <RequestError error={review.error} /> : null}
         </div>
-        {uploadMask.isError ? <RequestError error={uploadMask.error} /> : null}
-        {review.isError ? <RequestError error={review.error} /> : null}
-      </section>
+      </details>
     </div>
   );
 }
@@ -504,6 +586,53 @@ function Metric({ label, value }: { label: string; value: string }) {
       <strong>{value}</strong>
     </div>
   );
+}
+
+function layerExplanation(
+  layer: LayerKey,
+  particleCount: number | null
+): { title: string; detail: string; warning: boolean } {
+  if (layer === "original") {
+    return {
+      title: "当前只显示原图",
+      detail: "这个图层不包含模型输出。点击“识别叠加”或“分割掩码”查看分割结果。",
+      warning: true
+    };
+  }
+  if (particleCount === 0) {
+    return {
+      title: "模型没有识别到颗粒",
+      detail:
+        "结果与原图相似并不代表页面故障；本次后端统计确实为 0。可切换分割掩码确认，或展开下方高级复核调整参数。",
+      warning: true
+    };
+  }
+  if (layer === "overlay") {
+    return {
+      title: "彩色覆盖区域就是模型识别结果",
+      detail: "背景保留原图用于核对；覆盖色标出的区域被模型判定为颗粒。",
+      warning: false
+    };
+  }
+  if (layer === "mask") {
+    return {
+      title: "亮色区域是二值分割掩码",
+      detail: "亮色表示前景颗粒，暗色表示背景。它不是原始显微图像。",
+      warning: false
+    };
+  }
+  if (layer === "probability") {
+    return {
+      title: "当前显示模型置信度热图",
+      detail: "固定使用 0–1 色阶：深紫表示低置信度，亮黄表示高置信度。",
+      warning: false
+    };
+  }
+  return {
+    title: "当前显示交互式实例编号",
+    detail: "悬浮编号可放大并查看该实例置信度；点击编号即可复制。",
+    warning: false
+  };
 }
 
 function artifactForLayer(

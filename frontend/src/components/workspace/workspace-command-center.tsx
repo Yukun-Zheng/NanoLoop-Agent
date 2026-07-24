@@ -7,6 +7,7 @@ import {
   ArrowLeft,
   Bot,
   BoxSelect,
+  CheckCircle2,
   CircleDot,
   FileImage,
   FolderKanban,
@@ -14,6 +15,7 @@ import {
   Library,
   Microscope,
   PanelLeftClose,
+  PanelLeftOpen,
   PanelRight,
   X,
 } from "lucide-react";
@@ -22,6 +24,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { CommandComposer } from "@/components/agent/command-composer";
+import { AgentWelcome } from "@/components/agent/agent-welcome";
 import { QueryHistory } from "@/components/agent/query-history";
 import { QueryAnswer } from "@/components/agent/query-answer";
 import { ModelSelector } from "@/components/models/model-selector";
@@ -36,6 +39,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { RequestError } from "@/components/ui/request-error";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { apiRequest } from "@/lib/api/client";
+import { NanoLoopApiError } from "@/lib/api/errors";
 import { getHealth } from "@/lib/api/openapi-client";
 import { queryKeys } from "@/lib/api/query-keys";
 import type {
@@ -70,17 +74,27 @@ const RoiEditor = dynamic(
 );
 
 const stages: Array<{ value: WorkspaceStage; label: string; icon: typeof FolderKanban }> = [
-  { value: "project", label: "项目", icon: FolderKanban },
-  { value: "roi", label: "ROI", icon: BoxSelect },
-  { value: "models", label: "模型与运行", icon: Microscope },
-  { value: "runs", label: "执行时间线", icon: Activity },
-  { value: "results", label: "结果", icon: Layers3 },
-  { value: "agent", label: "Agent", icon: Bot }
+  { value: "project", label: "任务概览", icon: FolderKanban },
+  { value: "roi", label: "局部区域（可跳过）", icon: BoxSelect },
+  { value: "models", label: "开始分析", icon: Microscope },
+  { value: "runs", label: "运行进度", icon: Activity },
+  { value: "results", label: "查看结果", icon: Layers3 },
+  { value: "agent", label: "证据问答", icon: Bot }
 ];
 
 const COMPARABLE_RUN_STATUSES = new Set(["COMPLETED", "COMPLETED_WITH_WARNINGS"]);
 
-export function WorkspaceCommandCenter({ jobId }: { jobId: string }) {
+export function WorkspaceCommandCenter({
+  jobId,
+  initialRunId = null,
+  autoRun = false,
+  launchWarning = null
+}: {
+  jobId: string;
+  initialRunId?: string | null;
+  autoRun?: boolean;
+  launchWarning?: string | null;
+}) {
   const stage = useWorkspaceStore((state) => state.stage);
   const setStage = useWorkspaceStore((state) => state.setStage);
   const activeImageId = useWorkspaceStore((state) => state.activeImageId);
@@ -97,7 +111,11 @@ export function WorkspaceCommandCenter({ jobId }: { jobId: string }) {
     value: UnifiedQueryResponse;
   } | null>(null);
   const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [autoRevealRunIds, setAutoRevealRunIds] = useState<string[]>(
+    autoRun && initialRunId ? [initialRunId] : []
+  );
   const activeAnswerScope = useRef<string | null>(null);
+  const initializedAutoRevealKey = useRef("");
 
   const analysis = useQuery({
     queryKey: queryKeys.analysis(jobId),
@@ -237,6 +255,52 @@ export function WorkspaceCommandCenter({ jobId }: { jobId: string }) {
     setSelectedRuns
   ]);
 
+  useEffect(() => {
+    if (!analysis.data || !autoRevealRunIds.length) return;
+    const trackedRuns = autoRevealRunIds
+      .map((runId) => (analysis.data?.runs ?? []).find((run) => run.run_id === runId))
+      .filter((run): run is Run => Boolean(run));
+    if (trackedRuns.length !== autoRevealRunIds.length) return;
+
+    const first = trackedRuns[0];
+    const autoRevealKey = autoRevealRunIds.join("|");
+    if (first && initializedAutoRevealKey.current !== autoRevealKey) {
+      initializedAutoRevealKey.current = autoRevealKey;
+      setActiveImage(first.image_id);
+      setActiveRun(first.run_id);
+      setStage(
+        COMPARABLE_RUN_STATUSES.has(first.status) ? "results" : "runs"
+      );
+    }
+    if (!trackedRuns.every((run) => TERMINAL_RUN_STATUSES.has(run.status))) return;
+
+    const completed =
+      trackedRuns.find((run) => COMPARABLE_RUN_STATUSES.has(run.status)) || first;
+    if (completed) {
+      setActiveImage(completed.image_id);
+      setActiveRun(completed.run_id);
+      setSelectedRuns(
+        trackedRuns
+          .filter(
+            (run) =>
+              run.image_id === completed.image_id &&
+              COMPARABLE_RUN_STATUSES.has(run.status)
+          )
+          .map((run) => run.run_id)
+          .slice(0, 3)
+      );
+      setStage(COMPARABLE_RUN_STATUSES.has(completed.status) ? "results" : "runs");
+    }
+    queueMicrotask(() => setAutoRevealRunIds([]));
+  }, [
+    analysis.data,
+    autoRevealRunIds,
+    setActiveImage,
+    setActiveRun,
+    setSelectedRuns,
+    setStage
+  ]);
+
   if (analysis.isPending) {
     return (
       <main className="centered-state">
@@ -263,6 +327,7 @@ export function WorkspaceCommandCenter({ jobId }: { jobId: string }) {
   const activeModel =
     (models.data?.models ?? []).find((model) => model.model_id === activeRun?.model_id) ||
     null;
+  const availableRuns = runs.filter((run) => run.image_id === activeImage?.image_id);
   const comparisonRuns = runs.filter(
     (run) =>
       selectedRunIds.includes(run.run_id) &&
@@ -278,6 +343,7 @@ export function WorkspaceCommandCenter({ jobId }: { jobId: string }) {
     const first = runIds[0];
     if (first) setActiveRun(first);
     setSelectedRuns(runIds.slice(0, 3));
+    setAutoRevealRunIds(runIds);
     setStage("runs");
   }
 
@@ -298,8 +364,13 @@ export function WorkspaceCommandCenter({ jobId }: { jobId: string }) {
     <main className="workspace-page">
       <header className="workspace-topbar">
         <div className="workspace-brand">
-          <Button tone="ghost" size="sm" onClick={toggleRail} aria-label="折叠项目栏">
-            <PanelLeftClose size={17} />
+          <Button
+            tone="ghost"
+            size="sm"
+            onClick={toggleRail}
+            aria-label={railCollapsed ? "展开项目栏" : "折叠项目栏"}
+          >
+            {railCollapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
           </Button>
           <Brand />
           <span className="topbar-divider" />
@@ -312,7 +383,10 @@ export function WorkspaceCommandCenter({ jobId }: { jobId: string }) {
           <StatusBadge value={detail.job.status} />
           <HealthIndicator />
           <Button asChild tone="ghost" size="sm">
-            <Link href="/knowledge"><Library size={15} />知识库</Link>
+            <Link className="workspace-knowledge-link" href="/knowledge">
+              <Library size={15} />
+              <span className="workspace-knowledge-label">知识库</span>
+            </Link>
           </Button>
         </div>
       </header>
@@ -332,6 +406,8 @@ export function WorkspaceCommandCenter({ jobId }: { jobId: string }) {
                   key={item.value}
                   onClick={() => setStage(item.value)}
                   title={railCollapsed ? item.label : undefined}
+                  aria-label={item.label}
+                  aria-current={stage === item.value ? "page" : undefined}
                 >
                   <Icon size={16} />
                   <span>{item.label}</span>
@@ -358,6 +434,7 @@ export function WorkspaceCommandCenter({ jobId }: { jobId: string }) {
                     setSelectedRuns([]);
                   }}
                   title={image.filename}
+                  aria-label={`${image.filename}${image.sample_id ? ` · ${image.sample_id}` : ""}`}
                 >
                   <FileImage size={14} />
                   <span>
@@ -396,6 +473,7 @@ export function WorkspaceCommandCenter({ jobId }: { jobId: string }) {
                       setStage(TERMINAL_RUN_STATUSES.has(run.status) ? "results" : "runs");
                     }}
                     title={`${run.model_id} · ${run.status}`}
+                    aria-label={`${run.model_id} · ${run.status}`}
                   >
                     <CircleDot size={14} />
                     <span>
@@ -422,7 +500,7 @@ export function WorkspaceCommandCenter({ jobId }: { jobId: string }) {
             <div>
               <span>{stage.toUpperCase()}</span>
               <h1>{stages.find((item) => item.value === stage)?.label}</h1>
-              <p>{stageDescription(stage, activeImage?.filename, activeRun?.model_id)}</p>
+              <p>{stageDescription(stage, activeImage?.filename, activeRun)}</p>
             </div>
             <div className="stage-header-actions">
               {activeImage ? <code>{activeImage.filename}</code> : null}
@@ -432,7 +510,72 @@ export function WorkspaceCommandCenter({ jobId }: { jobId: string }) {
 
           <div className="stage-content">
             {analysis.isRefetchError ? <RequestError error={analysis.error} /> : null}
-            {stage === "project" ? <ProjectOverview detail={detail} /> : null}
+            {launchWarning ? (
+              <section className="next-action-banner launch-warning" role="alert">
+                <div>
+                  <CircleDot size={18} />
+                  <span>
+                    <strong>项目已保存，但自动分割没有启动</strong>
+                    <p>{launchWarning}。可以检查模型后重试，上传的图像不会丢失。</p>
+                  </span>
+                </div>
+                <Button tone="primary" onClick={() => setStage("models")}>
+                  检查模型并重试
+                </Button>
+              </section>
+            ) : null}
+            {stage === "project" ? (
+              <>
+                <ProjectOverview detail={detail} />
+                {!runs.length ? (
+                  <>
+                    <section className="first-run-guide" aria-labelledby="first-run-title">
+                      <div className="first-run-heading">
+                        <span>第一次使用，只需走这三步</span>
+                        <h2 id="first-run-title">接下来系统会做什么</h2>
+                      </div>
+                      <ol>
+                        <li className="complete">
+                          <span><CheckCircle2 size={17} /></span>
+                          <div>
+                            <strong>图像已上传</strong>
+                            <p>{images.length} 张图像已经校验，可以直接分析。</p>
+                          </div>
+                        </li>
+                        <li className="current">
+                          <span>2</span>
+                          <div>
+                            <strong>开始全图分割</strong>
+                            <p>系统已准备好模型和默认参数；ROI 与调参都可以跳过。</p>
+                          </div>
+                        </li>
+                        <li>
+                          <span>3</span>
+                          <div>
+                            <strong>自动打开结果</strong>
+                            <p>运行完成后会直接展示颗粒叠加图、统计和质量状态。</p>
+                          </div>
+                        </li>
+                      </ol>
+                    </section>
+                    <section className="next-action-banner">
+                      <div>
+                        <Microscope size={20} />
+                        <div>
+                          <strong>现在只需点击一次</strong>
+                          <p>
+                            下一页会先显示本次分析范围、模型和参数摘要，再由你确认开始。
+                          </p>
+                        </div>
+                      </div>
+                      <Button tone="primary" onClick={() => setStage("models")}>
+                        下一步：确认并开始
+                      </Button>
+                    </section>
+                  </>
+                ) : null}
+              </>
+            ) : null}
 
             {stage === "roi" ? (
               !activeImage ? (
@@ -503,10 +646,13 @@ export function WorkspaceCommandCenter({ jobId }: { jobId: string }) {
                 jobId={jobId}
                 image={activeImage}
                 run={activeRun}
+                availableRuns={availableRuns}
                 comparisonRuns={comparisonRuns}
                 writeBlocker={writeBlocker}
+                onSelectRun={(runId) => setActiveRun(runId)}
                 onChildCreated={(runId) => {
                   setActiveRun(runId);
+                  setAutoRevealRunIds([runId]);
                   setStage("runs");
                 }}
               />
@@ -517,22 +663,25 @@ export function WorkspaceCommandCenter({ jobId }: { jobId: string }) {
                 {answer ? (
                   <QueryAnswer response={answer} />
                 ) : (
-                  <EmptyState
-                    icon={Bot}
-                    title="向当前实验提出问题"
-                    detail="底部命令框会携带当前图像和所选运行作用域，回答将区分实验数据证据、材料知识引用和限制。"
+                  <AgentWelcome
+                    imageName={activeImage?.filename ?? null}
+                    runCount={composerRunIds.length}
                   />
                 )}
-                {queryHistory.isError ? (
+                {queryHistory.isError &&
+                !(
+                  queryHistory.error instanceof NanoLoopApiError &&
+                  queryHistory.error.status === 404
+                ) ? (
                   <RequestError error={queryHistory.error} />
-                ) : (
+                ) : !queryHistory.isError ? (
                   <QueryHistory
                     items={scopedQueryHistory}
                     onSelect={(item) =>
                       setAnswerState({ scope: answerScope, value: item.response })
                     }
                   />
-                )}
+                ) : null}
               </div>
             ) : null}
           </div>
@@ -579,20 +728,22 @@ export function WorkspaceCommandCenter({ jobId }: { jobId: string }) {
           </Dialog.Portal>
         </Dialog.Root>
 
-        <CommandComposer
-          key={answerScope}
-          jobId={jobId}
-          image={activeImage}
-          runIds={composerRunIds}
-          writeBlocker={writeBlocker}
-          clarification={answer}
-          onAnswer={(value, scope) => {
-            if (scope !== activeAnswerScope.current) return;
-            setAnswerState({ scope, value });
-            setStage("agent");
-            setInspectorTab("evidence");
-          }}
-        />
+        {stage === "agent" ? (
+          <CommandComposer
+            key={answerScope}
+            jobId={jobId}
+            image={activeImage}
+            runIds={composerRunIds}
+            writeBlocker={writeBlocker}
+            clarification={answer}
+            onAnswer={(value, scope) => {
+              if (scope !== activeAnswerScope.current) return;
+              setAnswerState({ scope, value });
+              setStage("agent");
+              setInspectorTab("evidence");
+            }}
+          />
+        ) : null}
       </div>
     </main>
   );
@@ -601,15 +752,26 @@ export function WorkspaceCommandCenter({ jobId }: { jobId: string }) {
 function stageDescription(
   stage: WorkspaceStage,
   image: string | undefined,
-  model: string | undefined
+  run: Run | null | undefined
 ) {
+  const model = run?.model_id || "当前模型";
+  const runDescription = !run
+    ? "尚未创建运行；先到“模型与运行”选择默认流程。"
+    : run.status === "COMPLETED"
+      ? `${model} 已完成；可以打开结果并继续形成实验结论。`
+      : run.status === "COMPLETED_WITH_WARNINGS"
+        ? `${model} 已完成但有警告；请先审查质量与溯源，再使用结果。`
+        : run.status === "FAILED"
+          ? `${model} 运行失败；请查看时间线中的错误与审计记录。`
+          : `正在执行 ${model}；完成后会自动打开结果。`;
+
   const descriptions: Record<WorkspaceStage, string> = {
-    project: "审查输入图像、材料上下文和尺度状态。",
-    roi: `在 ${image || "当前图像"} 的原图坐标中定义分析区域。`,
-    models: "查看真实模型健康状态、获取推荐并显式确认不可变运行。",
-    runs: `观察 ${model || "当前模型"} 的后端执行状态与审计历史。`,
-    results: "先审查质量，再查看后端权威统计、图层与复核入口。",
-    agent: "用数据工具和材料知识形成分区、可验证的回答。"
+    project: "先确认图像，然后按页面中的主按钮继续；系统会告诉你下一页发生什么。",
+    roi: `只有想分析局部区域时，才需要为 ${image || "当前图像"} 画框；普通全图分析请直接跳过。`,
+    models: "先查看本次分析摘要，再点“开始分割”；模型、阈值和设备都已有默认值。",
+    runs: runDescription,
+    results: "默认显示识别叠加图，并明确区分原图、掩码和模型结果。",
+    agent: "这里不是通用聊天；每个问题都限定在当前图像、所选运行和材料证据内。"
   };
   return descriptions[stage];
 }

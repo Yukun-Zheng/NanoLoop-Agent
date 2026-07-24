@@ -8,9 +8,9 @@ from typing import Annotated, cast
 from urllib.parse import quote
 
 import numpy as np
-from numpy.typing import NDArray
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import Response, StreamingResponse
+from numpy.typing import NDArray
 from PIL import Image, ImageOps, UnidentifiedImageError
 from starlette.background import BackgroundTask
 from starlette.types import Receive, Scope, Send
@@ -175,7 +175,7 @@ def _tiff_preview_response(resolved: ResolvedFileDownload) -> Response:
 
 
 def _probability_preview_response(resolved: ResolvedFileDownload) -> Response:
-    """Render a model probability array with one fixed, interpretable 0–1 color scale."""
+    """Render a model probability array with one fixed, interpretable 0-1 color scale."""
 
     pinned = resolved.pinned_file
     try:

@@ -9,8 +9,8 @@ from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
 
-import pytest
 import numpy as np
+import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 from sqlalchemy import func, select

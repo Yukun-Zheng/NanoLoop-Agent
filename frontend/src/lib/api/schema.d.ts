@@ -2573,7 +2573,7 @@ export interface operations {
     downloadFile: {
         parameters: {
             query?: {
-                /** @description Return a browser-native PNG when the artifact is TIFF. */
+                /** @description Return a browser-native PNG when the artifact is TIFF or a numeric NumPy array. */
                 preview?: boolean;
             };
             header?: never;
