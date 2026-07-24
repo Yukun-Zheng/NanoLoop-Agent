@@ -67,6 +67,16 @@ describe("ArtifactPreview", () => {
         "blob:second"
       )
     );
+    expect(apiMocks.fetchArtifact).toHaveBeenNthCalledWith(
+      1,
+      "/api/v1/files/first",
+      { preview: true }
+    );
+    expect(apiMocks.fetchArtifact).toHaveBeenNthCalledWith(
+      2,
+      "/api/v1/files/second",
+      { preview: true }
+    );
     expect(createObjectUrl).toHaveBeenCalledTimes(2);
   });
 
@@ -94,5 +104,23 @@ describe("ArtifactPreview", () => {
     await act(async () => current.resolve(imageResponse("current")));
     expect(await screen.findByRole("img", { name: "当前图层" })).toBeVisible();
     expect(createObjectUrl).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the raw artifact download available when preview generation fails", async () => {
+    apiMocks.fetchArtifact.mockRejectedValueOnce(new Error("preview failed"));
+
+    render(
+      <ArtifactPreview
+        url="/api/v1/files/tiff"
+        alt="TIFF 原图"
+        filename="sample.tif"
+      />
+    );
+
+    expect(await screen.findByText("图层暂时无法载入")).toBeVisible();
+    expect(screen.getByRole("link", { name: "下载原始制品" })).toHaveAttribute(
+      "href",
+      "/api/v1/files/tiff"
+    );
   });
 });

@@ -2387,7 +2387,10 @@ export interface operations {
     };
     downloadFile: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Return a browser-native PNG when the artifact is TIFF. */
+                preview?: boolean;
+            };
             header?: never;
             path: {
                 token: string;
@@ -2403,6 +2406,7 @@ export interface operations {
                 };
                 content: {
                     "application/octet-stream": string;
+                    "image/png": string;
                 };
             };
             /** @description Bad request */

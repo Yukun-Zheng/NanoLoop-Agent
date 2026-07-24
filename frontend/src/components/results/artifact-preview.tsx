@@ -33,10 +33,10 @@ export function ArtifactPreview({
     if (!url) return;
     let active = true;
     let objectUrl: string | null = null;
-    void fetchArtifact(url)
+    void fetchArtifact(url, { preview: true })
       .then(async (response) => {
         const contentType = response.headers.get("content-type") || "application/octet-stream";
-        if (!contentType.startsWith("image/") || contentType.includes("tiff")) {
+        if (!contentType.startsWith("image/")) {
           if (active) setState({ source: url, status: "unsupported", contentType });
           return;
         }
@@ -133,11 +133,7 @@ export function ArtifactPreview({
       <div className="artifact-fallback">
         <FileQuestion size={22} />
         <strong>此制品仅支持下载审查</strong>
-        <p>
-          {visibleState.contentType.includes("tiff")
-            ? "浏览器没有统一的 TIFF 预览能力。"
-            : "概率数组或结构化制品不是可直接显示的图片。"}
-        </p>
+        <p>概率数组或结构化制品不是可直接显示的图片。</p>
         <Button asChild size="sm">
           <a href={toBffArtifactUrl(url) || "#"} download={filename}>
             <Download size={14} />下载原始制品
@@ -153,6 +149,11 @@ export function ArtifactPreview({
         <ImageOff size={22} />
         <strong>图层暂时无法载入</strong>
         <p>{visibleState.message}</p>
+        <Button asChild size="sm">
+          <a href={toBffArtifactUrl(url) || "#"} download={filename}>
+            <Download size={14} />下载原始制品
+          </a>
+        </Button>
       </div>
     );
   }

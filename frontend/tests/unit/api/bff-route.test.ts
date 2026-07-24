@@ -172,4 +172,57 @@ describe("NanoLoop BFF route", () => {
     });
     expect(upstream).not.toHaveBeenCalled();
   });
+
+  it("forwards artifact preview requests and preserves the backend PNG", async () => {
+    process.env.NANOLOOP_API_INTERNAL_URL = "http://backend:8000";
+    const png = new Uint8Array([137, 80, 78, 71]);
+    const upstream = vi.fn(async (input: RequestInfo | URL) => {
+      void input;
+      return new Response(png, {
+        headers: {
+          "content-disposition": 'inline; filename="preview.png"',
+          "content-type": "image/png",
+          "x-request-id": "req-tiff-preview"
+        }
+      });
+    });
+    vi.stubGlobal("fetch", upstream);
+
+    const response = await GET(
+      new Request("http://localhost:3000/api/nanoloop/files/signed-token?preview=1"),
+      { params: Promise.resolve({ path: ["files", "signed-token"] }) }
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("image/png");
+    expect(response.headers.get("content-disposition")).toBe(
+      'inline; filename="preview.png"'
+    );
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(png);
+    expect(upstream).toHaveBeenCalledOnce();
+    expect(String(upstream.mock.calls[0]![0])).toBe(
+      "http://backend:8000/api/v1/files/signed-token?preview=1"
+    );
+  });
+
+  it("leaves non-preview TIFF downloads byte-for-byte unchanged", async () => {
+    process.env.NANOLOOP_API_INTERNAL_URL = "http://backend:8000";
+    const bytes = new Uint8Array([73, 73, 42, 0]);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return new Response(bytes, {
+          headers: { "content-type": "image/tiff" }
+        });
+      })
+    );
+
+    const response = await GET(
+      new Request("http://localhost:3000/api/nanoloop/files/signed-token"),
+      { params: Promise.resolve({ path: ["files", "signed-token"] }) }
+    );
+
+    expect(response.headers.get("content-type")).toBe("image/tiff");
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(bytes);
+  });
 });

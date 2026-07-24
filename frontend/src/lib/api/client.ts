@@ -122,8 +122,14 @@ export function toBffArtifactUrl(value: string | null | undefined): string | nul
   return `${BFF_ROOT}/files/${token}`;
 }
 
-export async function fetchArtifact(value: string): Promise<Response> {
-  const url = toBffArtifactUrl(value);
+export async function fetchArtifact(
+  value: string,
+  options: { preview?: boolean } = {}
+): Promise<Response> {
+  const artifactUrl = toBffArtifactUrl(value);
+  const url = artifactUrl
+    ? `${artifactUrl}${options.preview ? "?preview=1" : ""}`
+    : null;
   if (!url) {
     throw new NanoLoopApiError({
       status: 400,

@@ -66,4 +66,6 @@ def test_file_success_is_binary_not_json_envelope(api_harness: ApiHarness) -> No
     schema = api_harness.client.get("/openapi.json").json()
     response = schema["paths"]["/api/v1/files/{token}"]["get"]["responses"]["200"]
     binary = response["content"]["application/octet-stream"]["schema"]
+    preview = response["content"]["image/png"]["schema"]
     assert binary == {"type": "string", "format": "binary"}
+    assert preview == {"type": "string", "format": "binary"}
