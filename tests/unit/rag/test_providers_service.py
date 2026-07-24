@@ -503,6 +503,48 @@ def test_openai_compatible_provider_parses_json_and_validates_citations() -> Non
     assert untrusted_input["retrieved_contexts"][0]["text"] == _context().chunk.text
 
 
+def test_conversation_prompt_distinguishes_uploaded_image_from_missing_material() -> None:
+    client = FakeHttpClient(
+        '{"answer":"图像已上传，材料未填写。","used_data_ids":[],'
+        '"used_citation_ids":[],"confidence":"high","limitations":[]}'
+    )
+    provider = OpenAICompatibleProvider(
+        base_url="http://llm.test/v1",
+        api_key="secret",
+        model="fixture-model",
+        client=client,
+    )
+    task_context = {
+        "selected_image": {
+            "filename": "BaNi-3.tif",
+            "sample_id": "BaNi-3",
+            "material_name": None,
+            "material_formula": None,
+        }
+    }
+
+    answer = provider.generate_conversation(
+        question="那我现在是什么情况？",
+        query_type="general_chat",
+        history=[],
+        data_evidence=[],
+        contexts=[],
+        material_context=None,
+        task_context=task_context,
+    )
+
+    assert answer.answer == "图像已上传，材料未填写。"
+    messages = client.calls[0]["json"]["messages"]
+    system_prompt = messages[0]["content"]
+    assert "必须承认图像已经上传并被当前任务选中" in system_prompt
+    assert "材料元数据不是开始图像分割的必填项" in system_prompt
+    assert "数字必须逐字复制" in system_prompt
+    serialized = messages[1]["content"].removeprefix(
+        "BEGIN_UNTRUSTED_CONVERSATION_INPUT_JSON\n"
+    ).removesuffix("\nEND_UNTRUSTED_CONVERSATION_INPUT_JSON")
+    assert json.loads(serialized)["TASK_CONTEXT"] == task_context
+
+
 def test_openai_provider_is_unavailable_without_configuration() -> None:
     provider = OpenAICompatibleProvider(base_url=None, api_key=None, model=None)
 

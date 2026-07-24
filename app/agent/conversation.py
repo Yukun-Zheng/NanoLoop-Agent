@@ -601,8 +601,6 @@ class ConversationService:
                 {
                     "filename": image.filename,
                     "sample_id": image.sample_id,
-                    "width_px": image.width,
-                    "height_px": image.height,
                     "material_name": image.material_name,
                     "material_formula": image.material_formula,
                     "has_physical_scale": image.scale_nm_per_pixel is not None,

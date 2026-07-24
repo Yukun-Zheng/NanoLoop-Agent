@@ -205,8 +205,6 @@ def test_open_ended_request_is_answered_as_safe_general_chat(tmp_path: Path) -> 
         assert provider.task_contexts[-1]["selected_image"] == {
             "filename": "BaNi-3.tif",
             "sample_id": "BaNi-3",
-            "width_px": 2048,
-            "height_px": 1536,
             "material_name": None,
             "material_formula": None,
             "has_physical_scale": False,
