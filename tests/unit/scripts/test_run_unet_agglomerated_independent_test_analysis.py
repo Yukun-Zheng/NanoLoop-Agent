@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -24,12 +25,17 @@ from app.db.models import ModelRegistryRecord
 from app.db.session import Database
 from app.storage import LocalFileStore, StoragePaths
 from scripts.models.run_unet_agglomerated_independent_test_analysis import (
+    ADAPTER_SHA256,
+    CHECKPOINT_SHA256,
+    CONFIG_SHA256,
+    MODEL_CARD_SHA256,
     MODEL_ID,
+    MODEL_VERSION,
     TEST_FILENAMES,
     TORCHSCRIPT_SHA256,
     IndependentTestParameters,
+    _validate_frozen_identity,
     _validate_inputs,
-    _validate_promotion_manifest,
     _validated_parameters,
     build_parser,
     execute_analyses,
@@ -286,15 +292,20 @@ def test_cli_has_no_ground_truth_or_metric_inputs_and_requires_fresh_external_ou
         )
 
 
-def test_ready_manifest_without_promotion_evidence_is_rejected(tmp_path: Path) -> None:
-    registry = tmp_path / "private-ready.yaml"
-    registry.write_text(
-        "models:\n"
-        "  - metadata:\n"
-        f"      model_id: {MODEL_ID}\n"
-        "      status: ready\n",
-        encoding="utf-8",
+def test_current_frozen_identity_does_not_require_legacy_promotion_evidence() -> None:
+    registration = SimpleNamespace(
+        metadata=SimpleNamespace(
+            model_id=MODEL_ID,
+            version=MODEL_VERSION,
+            metric_context={"checkpoint_sha256": CHECKPOINT_SHA256},
+        ),
+        weight_sha256=TORCHSCRIPT_SHA256,
+        config_sha256=CONFIG_SHA256,
+        model_card_sha256=MODEL_CARD_SHA256,
+        adapter_sha256=ADAPTER_SHA256,
     )
 
-    with pytest.raises(ValueError, match="promotion evidence"):
-        _validate_promotion_manifest(registry, registration=object())
+    _validate_frozen_identity(registration)
+    registration.metadata.metric_context["checkpoint_sha256"] = "0" * 64
+    with pytest.raises(ValueError, match="checkpoint identity"):
+        _validate_frozen_identity(registration)
