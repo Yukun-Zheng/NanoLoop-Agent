@@ -18,6 +18,7 @@ ENV COREPACK_HOME=/tmp/corepack \
 
 WORKDIR /app
 
+COPY --from=dependencies /tmp/corepack /tmp/corepack
 RUN corepack enable
 
 COPY --from=dependencies /app/node_modules ./node_modules

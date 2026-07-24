@@ -52,6 +52,7 @@ class QualityStatus(StrEnum):
 
 class QueryType(StrEnum):
     AUTO = "auto"
+    GENERAL_CHAT = "general_chat"
     ANALYSIS_DATA = "analysis_data"
     MATERIAL_KNOWLEDGE = "material_knowledge"
     MIXED = "mixed"

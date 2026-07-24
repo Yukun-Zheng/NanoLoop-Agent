@@ -23,10 +23,7 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { CommandComposer } from "@/components/agent/command-composer";
-import { AgentWelcome } from "@/components/agent/agent-welcome";
-import { QueryHistory } from "@/components/agent/query-history";
-import { QueryAnswer } from "@/components/agent/query-answer";
+import { ConversationPanel } from "@/components/agent/conversation-panel";
 import { ModelSelector } from "@/components/models/model-selector";
 import { ProjectOverview } from "@/components/project/project-overview";
 import { ResultView } from "@/components/results/result-view";
@@ -39,21 +36,19 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { RequestError } from "@/components/ui/request-error";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { apiRequest } from "@/lib/api/client";
-import { NanoLoopApiError } from "@/lib/api/errors";
 import { getHealth } from "@/lib/api/openapi-client";
 import { queryKeys } from "@/lib/api/query-keys";
 import type {
   BoxSet,
   JobDetail,
   ModelList,
-  QueryHistoryData,
   Run,
   UnifiedQueryResponse
 } from "@/lib/api/types";
 import { compactId } from "@/lib/format/value";
 import { coreMutationBlocker } from "@/lib/health";
 import { rememberJob } from "@/lib/recent-jobs";
-import { buildQueryScopeKey, selectRunForImage } from "@/lib/runs/selection";
+import { selectRunForImage } from "@/lib/runs/selection";
 import { TERMINAL_RUN_STATUSES } from "@/lib/runs/timeline";
 import {
   type WorkspaceStage,
@@ -79,7 +74,7 @@ const stages: Array<{ value: WorkspaceStage; label: string; icon: typeof FolderK
   { value: "models", label: "开始分析", icon: Microscope },
   { value: "runs", label: "运行进度", icon: Activity },
   { value: "results", label: "查看结果", icon: Layers3 },
-  { value: "agent", label: "证据问答", icon: Bot }
+  { value: "agent", label: "科研助手", icon: Bot }
 ];
 
 const COMPARABLE_RUN_STATUSES = new Set(["COMPLETED", "COMPLETED_WITH_WARNINGS"]);
@@ -103,18 +98,13 @@ export function WorkspaceCommandCenter({
   const setActiveRun = useWorkspaceStore((state) => state.setActiveRun);
   const selectedRunIds = useWorkspaceStore((state) => state.selectedRunIds);
   const setSelectedRuns = useWorkspaceStore((state) => state.setSelectedRuns);
-  const setInspectorTab = useWorkspaceStore((state) => state.setInspectorTab);
   const railCollapsed = useWorkspaceStore((state) => state.railCollapsed);
   const toggleRail = useWorkspaceStore((state) => state.toggleRail);
-  const [answerState, setAnswerState] = useState<{
-    scope: string;
-    value: UnifiedQueryResponse;
-  } | null>(null);
+  const [answer, setAnswer] = useState<UnifiedQueryResponse | null>(null);
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [autoRevealRunIds, setAutoRevealRunIds] = useState<string[]>(
     autoRun && initialRunId ? [initialRunId] : []
   );
-  const activeAnswerScope = useRef<string | null>(null);
   const initializedAutoRevealKey = useRef("");
 
   const analysis = useQuery({
@@ -175,36 +165,6 @@ export function WorkspaceCommandCenter({
       ? [activeRun.run_id]
       : [];
   }, [activeImage, activeRun, analysis.data, selectedRunIds]);
-  const answerScope = buildQueryScopeKey(
-    jobId,
-    activeImage?.image_id ?? null,
-    composerRunIds
-  );
-  useEffect(() => {
-    activeAnswerScope.current = answerScope;
-  }, [answerScope]);
-  const answer = answerState?.scope === answerScope ? answerState.value : null;
-  const queryHistory = useQuery({
-    queryKey: queryKeys.queryHistory(jobId),
-    queryFn: () =>
-      apiRequest<QueryHistoryData>(
-        `analyses/${encodeURIComponent(jobId)}/queries?limit=50`
-      ).then((response) => response.data),
-    enabled: stage === "agent"
-  });
-  const scopedQueryHistory = useMemo(
-    () =>
-      (queryHistory.data?.items ?? []).filter(
-        (item) =>
-          buildQueryScopeKey(
-            item.job_id,
-            item.request.image_id ?? null,
-            item.request.run_ids ?? []
-          ) === answerScope
-      ),
-    [answerScope, queryHistory.data]
-  );
-
   const boxes = useQuery({
     queryKey: queryKeys.boxes(jobId, activeImage?.image_id || "none"),
     queryFn: () =>
@@ -659,30 +619,14 @@ export function WorkspaceCommandCenter({
             ) : null}
 
             {stage === "agent" ? (
-              <div className="agent-stage">
-                {answer ? (
-                  <QueryAnswer response={answer} />
-                ) : (
-                  <AgentWelcome
-                    imageName={activeImage?.filename ?? null}
-                    runCount={composerRunIds.length}
-                  />
-                )}
-                {queryHistory.isError &&
-                !(
-                  queryHistory.error instanceof NanoLoopApiError &&
-                  queryHistory.error.status === 404
-                ) ? (
-                  <RequestError error={queryHistory.error} />
-                ) : !queryHistory.isError ? (
-                  <QueryHistory
-                    items={scopedQueryHistory}
-                    onSelect={(item) =>
-                      setAnswerState({ scope: answerScope, value: item.response })
-                    }
-                  />
-                ) : null}
-              </div>
+              <ConversationPanel
+                jobId={jobId}
+                image={activeImage}
+                runIds={composerRunIds}
+                health={health.data || null}
+                writeBlocker={writeBlocker}
+                onLatestAnswer={setAnswer}
+              />
             ) : null}
           </div>
         </section>
@@ -728,22 +672,6 @@ export function WorkspaceCommandCenter({
           </Dialog.Portal>
         </Dialog.Root>
 
-        {stage === "agent" ? (
-          <CommandComposer
-            key={answerScope}
-            jobId={jobId}
-            image={activeImage}
-            runIds={composerRunIds}
-            writeBlocker={writeBlocker}
-            clarification={answer}
-            onAnswer={(value, scope) => {
-              if (scope !== activeAnswerScope.current) return;
-              setAnswerState({ scope, value });
-              setStage("agent");
-              setInspectorTab("evidence");
-            }}
-          />
-        ) : null}
       </div>
     </main>
   );
@@ -771,7 +699,7 @@ function stageDescription(
     models: "先查看本次分析摘要，再点“开始分割”；模型、阈值和设备都已有默认值。",
     runs: runDescription,
     results: "默认显示识别叠加图，并明确区分原图、掩码和模型结果。",
-    agent: "这里不是通用聊天；每个问题都限定在当前图像、所选运行和材料证据内。"
+    agent: "这里不是通用聊天；问题会限定在当前图像、所选运行和材料证据内，并自动调用可审计工具。"
   };
   return descriptions[stage];
 }

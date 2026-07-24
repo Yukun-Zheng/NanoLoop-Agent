@@ -270,6 +270,7 @@ def _resolve_intent(question: str) -> _Intent:
         "模型比较",
         "比较模型",
         "不同模型",
+        "哪个模型",
         "compare models",
         "model comparison",
     )
@@ -362,6 +363,8 @@ def _resolve_intent(question: str) -> _Intent:
         "结果汇总",
         "当前结果",
         "当前数据",
+        "概括当前任务",
+        "总结当前任务",
         "overview",
         "summary",
     )
@@ -405,9 +408,17 @@ def _mentioned_metrics(question: str) -> list[_Metric]:
     density_mentioned = any(word in question for word in density_signals)
     if density_mentioned:
         metrics.append(_Metric.NUMBER_DENSITY_PX2)
-    if not density_mentioned and any(
-        word in question for word in ("颗粒数", "粒子数", "particle count")
-    ):
+    particle_count_signals = (
+        "颗粒数",
+        "粒子数",
+        "颗粒更多",
+        "粒子更多",
+        "检测到的颗粒",
+        "检测到的粒子",
+        "particle count",
+        "more particles",
+    )
+    if not density_mentioned and any(word in question for word in particle_count_signals):
         metrics.append(_Metric.PARTICLE_COUNT)
     diameter_signals = ("平均粒径", "粒径均值", "mean diameter", "average diameter")
     if any(word in question for word in diameter_signals):

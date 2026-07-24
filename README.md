@@ -36,7 +36,11 @@ ID、数值、数据库回查、自动化结果和限制见
 - ROI 页使用 React-Konva 画布与数值编辑器，支持拖拽建框、选择/删除、有效/无效区显示、原图半开坐标换算及 revision CAS 保存；纯几何有 Vitest，本机 Next.js → BFF → FastAPI → SQLite 的数值框保存、revision 1 与刷新持久化已 live 验收。多浏览器矩阵、409 并发冲突的目标环境演练仍需单独留证。
 - 缺少比例尺时仅给像素单位，不伪造 nm/µm 结果。
 - 数据问答支持计数、粒径、覆盖率、颗粒数密度和周长密度，以及排序、分组比较、分布、异常与模型比较；密度类跨图比较优先使用物理单位，缺少可比尺度时会拒绝给出误导结果。
-- 每次问答都写入带 actor、图像和 run 作用域的数据库审计；前端可回看当前作用域最近 50 条记录，但这只是可追溯历史，不会把旧回答静默注入新问题。
+- 旧 `/query` 调用仍写入带 actor、图像和 run 作用域的数据库审计；新的科研助手使用独立、持久化的任务内会话和消息历史，不会把旧单次问答静默注入新会话。
+- 科研助手支持任务内多轮对话、历史重载和确定性路由。可选的本地 Qwen3 只在数据工具与 RAG
+  收集完本轮证据后做一次自然语言综合；每个实验数值句必须引用 `[D#]`，每个材料事实句必须引用
+  `[C#]`。模型不可用、JSON/引用/数值/单位校验失败时自动回退可信模板或摘录，并保存
+  `fallback_used`、模型身份、耗时和版本化 prompt 摘要，不保存思维链。
 - 材料不匹配或证据不足时返回明确的澄清/证据不足结果，不跨材料拼接引用；多材料且未选图像时返回候选材料，引用保留页码、chunk、来源类型和规范引文。
 - 知识库支持导入、列出、启用/禁用和重建；前端可管理状态。可选向量 runtime 已实现本地只读 SentenceTransformers、原子 FAISS generation、manifest/数据库映射校验、原始 cosine 门槛和 keyword-only 降级；连续中文在 `unicode61` 无命中时使用有界 CJK n-gram 回退。仓库不提交 embedding snapshot、FAISS 文件或正式外部语料，因此仍不宣称生产向量 RAG 已交付。
 - 模型 API 支持 family、variant、quality tier、状态和材料筛选，并展示指标上下文、预/后处理、备注与健康原因；前端目录只允许选择后端标记为 `ready` 的条目，推荐和创建运行分开确认。
@@ -113,6 +117,17 @@ docker compose logs -f api frontend
 `torch 2.13.0`/`torchvision 0.28.0`，并串行构建 API 与前端，避免 CPU 部署误拉 CUDA
 运行时或并发重型构建。构建期间不要在其他终端重复执行同一目标。
 
+若宿主机已经安装并启动 Ollama，且已有 Qwen3 模型：
+
+```bash
+export LLM_MODEL="替换为 ollama list 中的精确 Qwen3 tag"
+make compose-up-local-llm-models
+```
+
+该模式不下载模型、不启动 Ollama 容器；容器通过 `host.docker.internal` 访问宿主机。完整的
+macOS、Windows PowerShell、Linux 启停、健康检查、真实 smoke 和 extractive 回退说明见
+[本地 Qwen3 科研对话指南](docs/LOCAL_LLM_CHAT_GUIDE.md)。
+
 默认只绑定 `127.0.0.1`。API 会拒绝不受信任/歧义的 Host，并对浏览器写请求校验 Origin 与 `Sec-Fetch-Site`；这些网络边界控制本身不构成身份认证。应用已经支持由运维 CLI 预置的 tenant/principal 可撤销凭据，并对 Analysis 聚合、Query 和 v2 文件能力执行相应的租户、主体、角色或用途约束，但仍不提供交互式用户登录。knowledge 尚未完成同等级租户隔离，因此 principal 模式下知识管理与知识问答全部 fail-closed 为 `503`；不得用 disabled/shared-key 的全局语料行为冒充多租户授权。若要开放到其他机器，仍必须先在受信任反向代理上增加 TLS、所需的用户认证与授权、边缘限速和访问日志，再显式设置 `NANOLOOP_BIND_HOST`。
 
 API 使用单个 Uvicorn worker、SQLite WAL 和进程内有界 worker pool。数据库中的 `QUEUED` 记录是持久事实来源，队列溢出会由调度器继续领取。当前支持单 API 容器；多副本部署需要把数据库、导出锁和调度所有权迁移到共享基础设施。
@@ -141,6 +156,14 @@ python scripts/mvp_fixture_smoke.py
 `unavailable`。仓库内 Large 与 Small-A TorchScript 在安装所需依赖且 bundle 校验通过时为
 `ready`，不属于本段降级说明。实现边界与接手说明见
 [MVP 后端交接记录](docs/MVP_BACKEND_HANDOFF.md)。
+
+本地 Qwen3 就绪检查和真实多轮 smoke：
+
+```bash
+export LLM_MODEL="替换为精确 tag"
+.venv/bin/python scripts/check_local_llm.py
+NANOLOOP_SMOKE_JOB_ID="job_..." .venv/bin/python scripts/smoke_local_llm_chat.py
+```
 
 完整本地门禁：
 

@@ -53,6 +53,24 @@ def test_unknown_intent_requests_clarification_without_guessing() -> None:
     assert decision.confidence == 0
 
 
+def test_general_chat_and_history_aware_follow_up_are_deterministic() -> None:
+    router = QueryRouter()
+
+    greeting = router.classify("你好，你能帮我做什么？")
+    follow_up = router.classify(
+        "那 NdNi 呢？",
+        previous_query_type=QueryType.MATERIAL_KNOWLEDGE,
+    )
+    mechanism_follow_up = router.classify(
+        "为什么可能出现这种差异？",
+        previous_query_type=QueryType.ANALYSIS_DATA,
+    )
+
+    assert greeting.query_type is QueryType.GENERAL_CHAT
+    assert follow_up.query_type is QueryType.MATERIAL_KNOWLEDGE
+    assert mechanism_follow_up.query_type is QueryType.MIXED
+
+
 def test_curated_questions_route_from_auto_without_using_expected_type_as_input() -> None:
     questions_path = (
         Path(__file__).resolve().parents[3] / "demo_data" / "rag" / "questions.jsonl"

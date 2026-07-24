@@ -12,7 +12,15 @@ import { toBffArtifactUrl } from "@/lib/api/client";
 import type { UnifiedQueryResponse } from "@/lib/api/types";
 import { compactId, formatNumber } from "@/lib/format/value";
 
-export function QueryAnswer({ response }: { response: UnifiedQueryResponse }) {
+export function QueryAnswer({
+  response,
+  evidenceOnly = false,
+  idPrefix = ""
+}: {
+  response: UnifiedQueryResponse;
+  evidenceOnly?: boolean;
+  idPrefix?: string;
+}) {
   const dataEvidence = response.data_evidence ?? [];
   const citations = response.citations ?? [];
   const limitations = response.limitations ?? [];
@@ -20,35 +28,49 @@ export function QueryAnswer({ response }: { response: UnifiedQueryResponse }) {
   const citationTargets = new Map(
     citations.map((citation, index) => [
       citation.citation_id,
-      `citation-${safeDomToken(citation.citation_id)}-${index + 1}`
+      prefixedId(
+        idPrefix,
+        `citation-${safeDomToken(citation.citation_id)}-${index + 1}`
+      )
+    ])
+  );
+  const dataTargets = new Map(
+    dataEvidence.map((_, index) => [
+      `D${index + 1}`,
+      prefixedId(idPrefix, `data-evidence-${index + 1}`)
     ])
   );
   return (
     <div className="query-answer">
-      <div className="answer-summary">
-        <div>
-          <span>AGENT ANSWER</span>
-          <h3>NanoLoop 回答</h3>
-        </div>
-        <StatusBadge
-          value={
-            response.outcome_code === "INSUFFICIENT_EVIDENCE"
-              ? "insufficient_evidence"
-              : "pass"
-          }
-          label={
-            response.outcome_code === "INSUFFICIENT_EVIDENCE"
-              ? "证据不足"
-              : `置信度 ${response.confidence}`
-          }
-        />
-      </div>
-      <div className="answer-copy" data-testid="answer-copy">
-        <AnswerBody
-          answer={response.answer || "后端没有返回回答正文。"}
-          citationTargets={citationTargets}
-        />
-      </div>
+      {!evidenceOnly ? (
+        <>
+          <div className="answer-summary">
+            <div>
+              <span>AGENT ANSWER</span>
+              <h3>NanoLoop 回答</h3>
+            </div>
+            <StatusBadge
+              value={
+                response.outcome_code === "INSUFFICIENT_EVIDENCE"
+                  ? "insufficient_evidence"
+                  : "pass"
+              }
+              label={
+                response.outcome_code === "INSUFFICIENT_EVIDENCE"
+                  ? "证据不足"
+                  : `置信度 ${response.confidence}`
+              }
+            />
+          </div>
+          <div className="answer-copy" data-testid="answer-copy">
+            <AnswerBody
+              answer={response.answer || "后端没有返回回答正文。"}
+              citationTargets={citationTargets}
+              dataTargets={dataTargets}
+            />
+          </div>
+        </>
+      ) : null}
 
       <section className="evidence-section">
         <div className="evidence-title">
@@ -60,6 +82,8 @@ export function QueryAnswer({ response }: { response: UnifiedQueryResponse }) {
             {dataEvidence.map((item, index) => (
               <ToolEvidenceCard
                 item={item}
+                evidenceId={`D${index + 1}`}
+                targetId={dataTargets.get(`D${index + 1}`) || `data-evidence-${index + 1}`}
                 key={`${item.tool_name}-${(item.source_run_ids ?? []).join("-")}-${index}`}
               />
             ))}
@@ -138,16 +162,27 @@ type ToolEvidence = NonNullable<UnifiedQueryResponse["data_evidence"]>[number];
 function AnswerBody({
   answer,
   citationTargets
+  ,
+  dataTargets
 }: {
   answer: string;
   citationTargets: ReadonlyMap<string, string>;
+  dataTargets: ReadonlyMap<string, string>;
 }) {
-  return answer.split(/(\[C\d+\])/g).map((part, index) => {
-    const citationId = /^\[(C\d+)\]$/.exec(part)?.[1];
-    const target = citationId ? citationTargets.get(citationId) : undefined;
+  return answer.split(/(\[(?:C|D)\d+\])/g).map((part, index) => {
+    const evidenceId = /^\[((?:C|D)\d+)\]$/.exec(part)?.[1];
+    const target = evidenceId?.startsWith("C")
+      ? citationTargets.get(evidenceId)
+      : evidenceId
+        ? dataTargets.get(evidenceId)
+        : undefined;
     return target ? (
       <a
-        aria-label={`跳转到引用 ${citationId}`}
+        aria-label={
+          evidenceId?.startsWith("C")
+            ? `跳转到引用 ${evidenceId}`
+            : `跳转到数据证据 ${evidenceId}`
+        }
         className="citation-reference"
         href={`#${target}`}
         key={`${part}-${index}`}
@@ -160,16 +195,24 @@ function AnswerBody({
   });
 }
 
-function ToolEvidenceCard({ item }: { item: ToolEvidence }) {
+function ToolEvidenceCard({
+  item,
+  evidenceId,
+  targetId
+}: {
+  item: ToolEvidence;
+  evidenceId: string;
+  targetId: string;
+}) {
   const rows = item.rows ?? [];
   const units = item.units ?? {};
   const columns = Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
   const safeChartUrl = toBffArtifactUrl(item.chart_url);
 
   return (
-    <article>
+    <article id={targetId}>
       <div className="evidence-card-header">
-        <strong>{item.tool_name}</strong>
+        <strong>[{evidenceId}] {item.tool_name}</strong>
         <span>
           来源 {(item.source_run_ids ?? []).map((id) => compactId(id)).join("、") || "—"}
         </span>
@@ -256,6 +299,10 @@ function citationMarker(citationId: string): string {
 
 function safeDomToken(value: string): string {
   return value.replace(/[^A-Za-z0-9_-]/g, "-") || "unknown";
+}
+
+function prefixedId(prefix: string, value: string): string {
+  return prefix ? `${safeDomToken(prefix)}-${value}` : value;
 }
 
 function jsonText(value: unknown): string {

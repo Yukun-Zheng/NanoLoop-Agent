@@ -10,6 +10,7 @@ command.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from app.contracts.enums import QueryType
@@ -20,6 +21,7 @@ _DATA_METRIC_SIGNALS = (
     "颗粒密度",
     "number density",
     "颗粒数",
+    "颗粒",
     "particle count",
     "平均粒径",
     "mean diameter",
@@ -48,6 +50,7 @@ _DATA_SCOPE_SIGNALS = (
     "哪组",
     "哪张",
     "哪个样品",
+    "哪个模型",
     "任务",
     "结果",
     "数据",
@@ -80,6 +83,8 @@ _DATA_COMMAND_SIGNALS = (
     "当前结果",
     "当前数据",
     "任务概览",
+    "概括当前任务",
+    "总结当前任务",
     "结果概览",
     "数据概览",
     "结果汇总",
@@ -139,6 +144,25 @@ _KNOWLEDGE_SIGNALS = (
     "mechanism",
 )
 _CONTEXTUAL_MATERIAL_QUESTIONS = ("这个材料", "该材料", "这种材料")
+_GENERAL_CHAT_SIGNALS = (
+    "你好",
+    "您好",
+    "hello",
+    "hi",
+    "你是谁",
+    "能做什么",
+    "怎么用",
+    "如何使用",
+    "这个系统",
+    "当前页面",
+    "下一步",
+    "操作",
+    "帮助",
+    "概括当前任务",
+    "总结当前任务",
+)
+_FOLLOW_UP_PREFIXES = ("那", "那么", "这个", "这种", "它", "为什么", "呢", "再说")
+_MATERIAL_TOKEN = re.compile(r"\b(?:La|Nd|Ba|Sr|Ca)[A-Z][A-Za-z0-9]*\b")
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,6 +185,7 @@ class QueryRouter:
         question: str,
         *,
         material_context: MaterialContext | None = None,
+        previous_query_type: QueryType | None = None,
     ) -> RouteDecision:
         normalized = question.casefold().strip()
         metrics = tuple(signal for signal in _DATA_METRIC_SIGNALS if signal in normalized)
@@ -175,16 +200,36 @@ class QueryRouter:
             else ()
         )
         knowledge = tuple(signal for signal in _KNOWLEDGE_SIGNALS if signal in normalized)
+        if _MATERIAL_TOKEN.search(question):
+            knowledge = tuple(dict.fromkeys((*knowledge, "material token")))
         contextual = self.requires_material_context(question)
         has_material = material_context is not None and bool(
             material_context.formula or material_context.name or material_context.aliases
         )
         if data and knowledge:
             return RouteDecision(QueryType.MIXED, 0.95, False, data, knowledge)
+        if (
+            "为什么" in normalized
+            and previous_query_type in {QueryType.ANALYSIS_DATA, QueryType.MIXED}
+        ):
+            return RouteDecision(QueryType.MIXED, 0.92, False, data, knowledge)
         if data:
             return RouteDecision(QueryType.ANALYSIS_DATA, 0.90, False, data, knowledge)
         if knowledge or (contextual and has_material):
             return RouteDecision(QueryType.MATERIAL_KNOWLEDGE, 0.90, False, data, knowledge)
+        if (
+            previous_query_type is not None
+            and normalized.startswith(_FOLLOW_UP_PREFIXES)
+            and previous_query_type
+            in {
+                QueryType.ANALYSIS_DATA,
+                QueryType.MATERIAL_KNOWLEDGE,
+                QueryType.MIXED,
+            }
+        ):
+            return RouteDecision(previous_query_type, 0.82, False, data, knowledge)
+        if any(signal in normalized for signal in _GENERAL_CHAT_SIGNALS):
+            return RouteDecision(QueryType.GENERAL_CHAT, 0.95, False, data, knowledge)
         return RouteDecision(
             QueryType.AUTO,
             0.0,

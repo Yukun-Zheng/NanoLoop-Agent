@@ -77,6 +77,27 @@ def test_job_overview_is_persisted_and_auditable(service: SqlAlchemyDataToolServ
     assert result.tool_calls[0].source_run_ids == ["run_a", "run_b"]
 
 
+def test_natural_conversation_phrases_map_to_existing_deterministic_tools(
+    service: SqlAlchemyDataToolService,
+    database: Database,
+) -> None:
+    overview = service.answer(_query("帮我概括当前任务。", run_ids=("run_a",)))
+    assert overview.outcome_code == "OK"
+    assert overview.evidence[0].tool_name == "get_job_overview"
+
+    _add_second_model_run(database)
+    comparison = service.answer(
+        _query(
+            "哪个模型检测到的颗粒更多？",
+            image_id="img_a",
+            run_ids=("run_a", "run_a2"),
+        )
+    )
+    assert comparison.outcome_code == "OK"
+    assert comparison.evidence[0].tool_name == "compare_models"
+    assert comparison.evidence[0].validated_arguments["metric"] == "particle_count"
+
+
 def test_particle_count_respects_image_and_run_filters(
     service: SqlAlchemyDataToolService,
 ) -> None:

@@ -13,6 +13,24 @@ def test_total_request_limit_must_cover_a_single_file_limit() -> None:
     assert settings.max_request_mb == 10
 
 
+def test_llm_generation_and_history_limits_are_bounded() -> None:
+    settings = Settings(
+        llm_timeout_seconds=90,
+        llm_max_tokens=1024,
+        llm_temperature=0,
+        llm_history_turns=8,
+        llm_history_max_chars=12_000,
+    )
+
+    assert settings.llm_timeout_seconds == 90
+    assert settings.llm_max_tokens == 1024
+    assert settings.llm_history_turns == 8
+    with pytest.raises(ValidationError):
+        Settings(llm_history_turns=0)
+    with pytest.raises(ValidationError):
+        Settings(llm_history_max_chars=100)
+
+
 def test_api_security_defaults_are_disabled() -> None:
     settings = Settings()
 

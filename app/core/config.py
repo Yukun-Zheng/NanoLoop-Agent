@@ -59,6 +59,11 @@ class Settings(BaseSettings):
     llm_base_url: str | None = None
     llm_api_key: str | None = None
     llm_model: str | None = None
+    llm_timeout_seconds: float = Field(default=90.0, ge=1, le=300)
+    llm_max_tokens: int = Field(default=1_024, ge=64, le=8_192)
+    llm_temperature: float = Field(default=0.0, ge=0, le=2)
+    llm_history_turns: int = Field(default=8, ge=1, le=20)
+    llm_history_max_chars: int = Field(default=12_000, ge=1_000, le=50_000)
     max_upload_mb: int = Field(default=200, ge=1, le=2048)
     max_request_mb: int = Field(default=512, ge=1, le=4096)
     analysis_worker_count: int = Field(default=2, ge=1, le=16)

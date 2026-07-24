@@ -65,6 +65,23 @@ ADR。不得只改某一层后让其他层猜测新合同。
 - 安装与开发：`make frontend-install`、`make frontend`。提交前运行 `make frontend-check`；
   Chromium 场景另运行 `make frontend-e2e`（首次需安装 Playwright Chromium）。
 
+### 多轮科研对话边界
+
+- 旧 `POST /analyses/{job_id}/query` 是兼容合同；新会话使用
+  `chat_conversations`、`chat_messages`、`chat_turn_evidence` 和 `/conversations` API。
+  合同或字段变化必须同步 Alembic、OpenAPI、生成的前端类型和 BFF allowlist。
+- `ConversationService` 的顺序固定为：有界历史 → 确定性 `QueryRouter` → 数据工具/RAG
+  收集证据 → 最多一次生成调用 → 最终可见文本校验 → 持久化。不得让知识路径先生成一次、
+  聊天层再生成一次。
+- 用户提示注入在 SQL、检索和模型调用之前拒绝。实验数值与单位按 `[D#]` 对应工具证据精确
+  校验，材料事实按当前检索 chunk 的 `[C#]` 校验；失败只允许确定性/摘录回退。
+- prompt 模板集中在 `app/rag/prompts.py`，以模板 ID 和 SHA-256 入审计。完整 prompt、
+  `<think>`、隐藏推理、API key 和对话隐私不得进入健康响应或日志。
+- 历史默认取最近 8 turn，并同时受 `LLM_HISTORY_MAX_CHARS` 约束；不得把无限会话传给模型。
+  principal 模式下 material/mixed 继续在知识资源租户化之前 fail closed。
+- 普通 CI 必须使用 stub/fake OpenAI-compatible provider，不能依赖真实 Ollama。真实模型只通过
+  `scripts/check_local_llm.py` 和 `scripts/smoke_local_llm_chat.py` 在开发机额外验收。
+
 ## 历史分发文档
 
 v4.0/v3.0 DOCX 与 Markdown 仅保留为历史团队快照；当前已暂停维护和分发。除非项目负责人明确

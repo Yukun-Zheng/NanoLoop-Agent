@@ -17,6 +17,7 @@ const imageBytes = Buffer.from(
   "base64"
 );
 const knowledgeDocId = "doc-e2e";
+const conversationId = "conv-e2e";
 
 const knowledgeDocument = {
   doc_id: knowledgeDocId,
@@ -216,7 +217,7 @@ async function installApiMock(
   let savedBoxes: Array<Record<string, unknown>> = [];
   let boxRevision = 0;
   let knowledgeDocuments: Array<typeof knowledgeDocument> = [];
-  const queryRecords: Array<Record<string, unknown>> = [];
+  let conversationMessages: Array<Record<string, unknown>> = [];
   const browserApiRequests: string[] = [];
   const captured = {
     createAnalysisBody: null as string | null,
@@ -251,6 +252,7 @@ async function installApiMock(
             database: { status: "healthy", detail: "ready" },
             model_registry: { status: "healthy", detail: "1 ready" },
             rag_index: { status: "healthy", detail: "ready" },
+            llm_provider: { status: "healthy", detail: "qwen3 ready" },
             version: "1.0.0"
           })
         )
@@ -386,52 +388,98 @@ async function installApiMock(
         )
       });
     }
-    if (path === `analyses/${jobId}/query` && method === "POST") {
-      captured.query = request.postDataJSON() as Record<string, unknown>;
-      const response = {
-        query_type: "mixed",
-        answer: "该运行识别到 42 个颗粒；当前知识证据仅支持保守解释。",
-        confidence: "medium",
-        outcome_code: "OK",
-        needs_clarification: false,
-        data_evidence: [
-          {
-            tool_name: "get_run_summary",
-            validated_arguments: { run_id: runId },
-            source_run_ids: [runId],
-            aggregates: { particle_count: 42 },
-            rows: [],
-            units: { particle_count: "count" },
-            quality_warnings: []
-          }
-        ],
-        citations: [],
-        limitations: ["仅有单张图像"],
-        tool_calls: []
-      };
-      queryRecords.push({
-        query_id: `query-${queryRecords.length + 1}`,
-        job_id: jobId,
-        image_id: captured.query.image_id,
-        request: captured.query,
-        response,
-        created_at: now
-      });
-      return route.fulfill({
-        contentType: "application/json",
-        body: JSON.stringify(envelope(response))
-      });
-    }
-    if (path === `analyses/${jobId}/queries` && method === "GET") {
+    if (path === `analyses/${jobId}/conversations` && method === "GET") {
       return route.fulfill({
         contentType: "application/json",
         body: JSON.stringify(
           envelope({
-            items: queryRecords,
-            returned_count: queryRecords.length,
-            limit: 50
+            conversations: conversationMessages.length
+              ? [
+                  {
+                    conversation_id: conversationId,
+                    job_id: jobId,
+                    title: "颗粒结果",
+                    created_by: `prn_${"0".repeat(32)}`,
+                    created_at: now,
+                    updated_at: now,
+                    message_count: conversationMessages.length
+                  }
+                ]
+              : []
           })
         )
+      });
+    }
+    if (path === `analyses/${jobId}/conversations` && method === "POST") {
+      return route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify(envelope(conversationDetail()))
+      });
+    }
+    if (
+      path === `analyses/${jobId}/conversations/${conversationId}` &&
+      method === "GET"
+    ) {
+      return route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify(envelope(conversationDetail()))
+      });
+    }
+    if (
+      path === `analyses/${jobId}/conversations/${conversationId}/messages` &&
+      method === "POST"
+    ) {
+      captured.query = request.postDataJSON() as Record<string, unknown>;
+      conversationMessages = [
+        ...conversationMessages,
+        {
+          message_id: `msg-user-${conversationMessages.length + 1}`,
+          conversation_id: conversationId,
+          role: "user",
+          content: captured.query.content,
+          query_type: "analysis_data",
+          image_id: imageId,
+          run_ids: [reviewRunId],
+          created_at: now
+        },
+        {
+          message_id: `msg-assistant-${conversationMessages.length + 2}`,
+          conversation_id: conversationId,
+          role: "assistant",
+          content: "该复核运行识别到 40 个颗粒 [D1]；当前知识证据仅支持保守解释。",
+          query_type: "analysis_data",
+          image_id: imageId,
+          run_ids: [reviewRunId],
+          confidence: "high",
+          outcome_code: "OK",
+          created_at: now,
+          evidence: {
+            llm_provider: "openai_compatible",
+            llm_model: "qwen3:test",
+            fallback_used: false,
+            generation_time_ms: 18,
+            prompt_template_id: "nanoloop-scientist-copilot-v1",
+            prompt_template_sha256: sha,
+            limitations: ["仅有单张图像"],
+            citations: [],
+            tool_calls: [],
+            data_evidence: [
+              {
+                tool_name: "get_run_summary",
+                validated_arguments: { run_id: reviewRunId },
+                source_run_ids: [reviewRunId],
+                aggregates: { particle_count: 40 },
+                rows: [],
+                units: { particle_count: "count" },
+                quality_warnings: []
+              }
+            ]
+          }
+        }
+      ];
+      return route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify(envelope(conversationDetail()))
       });
     }
     if (path === `analyses/${jobId}/export` && method === "GET") {
@@ -549,6 +597,19 @@ async function installApiMock(
       }
     }
   };
+
+  function conversationDetail() {
+    return {
+      conversation_id: conversationId,
+      job_id: jobId,
+      title: "颗粒结果",
+      created_by: `prn_${"0".repeat(32)}`,
+      created_at: now,
+      updated_at: now,
+      message_count: conversationMessages.length,
+      messages: conversationMessages
+    };
+  }
 }
 
 test("auto-segments one image without requiring a task name or parameters", async ({
@@ -702,27 +763,27 @@ test("completes the mocked scientific workflow through verified export", async (
     watershed_enabled: true
   });
 
-  await page.getByRole("button", { name: "证据问答" }).click();
-  await page.getByRole("button", { name: "交叉核对" }).click();
-  await page.getByLabel("向当前实验的证据提问").fill("这张图识别了多少颗粒？");
-  await page.getByRole("button", { name: "提交证据问题" }).click();
+  await page.getByRole("button", { name: "科研助手" }).click();
+  await page.getByLabel("发送实验问题").fill("这张图识别了多少颗粒？");
+  await page.getByRole("button", { name: "发送消息" }).click();
 
-  await expect(page.getByText("该运行识别到 42 个颗粒")).toBeVisible();
+  await expect(page.getByText("该复核运行识别到 40 个颗粒")).toBeVisible();
+  await page.getByRole("button", { name: "展开并定位证据 D1" }).click();
   await expect(page.getByText("实验数据证据")).toBeVisible();
-  await expect(page.getByRole("heading", { name: "当前作用域问答历史" })).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "查看历史问答：这张图识别了多少颗粒？" })
-  ).toBeVisible();
   expect(captured.query).toMatchObject({
-    question: "这张图识别了多少颗粒？",
-    query_type: "mixed",
+    content: "这张图识别了多少颗粒？",
+    query_type: "auto",
     image_id: imageId,
     run_ids: [reviewRunId]
   });
 
+  await page.reload();
+  await page.getByRole("button", { name: "科研助手" }).click();
+  await expect(page.getByText("该复核运行识别到 40 个颗粒")).toBeVisible();
+
   await page.getByRole("button", { name: "查看结果", exact: true }).click();
   const downloadPromise = page.waitForEvent("download");
-  await page.getByRole("button", { name: "导出当前及所选运行" }).click();
+  await page.getByRole("button", { name: "导出当前运行" }).click();
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toBe("nanoloop-e2e-export.zip");
   await expect(page.getByText("SHA-256 已验证，可信报告已下载。")).toBeVisible();
