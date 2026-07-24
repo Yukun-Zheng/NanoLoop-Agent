@@ -1,6 +1,6 @@
 "use client";
 
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   CheckCircle2,
   Download,
@@ -27,6 +27,7 @@ import type {
   Run
 } from "@/lib/api/types";
 import { formatNumber } from "@/lib/format/value";
+import { loadInstanceArtifact } from "@/lib/results/instance-artifact";
 
 import { ArtifactPreview } from "./artifact-preview";
 
@@ -58,6 +59,16 @@ export function ResultView({
   const [excludeBorder, setExcludeBorder] = useState<boolean | null>(null);
   const [correctedMask, setCorrectedMask] = useState<CorrectedMaskUpload | null>(null);
   const [exportStatus, setExportStatus] = useState<string | null>(null);
+  const instancesUrl = run?.artifacts?.instances_url;
+  const instanceArtifact = useQuery({
+    queryKey: queryKeys.instanceArtifact(run?.run_id ?? "none"),
+    queryFn: () => {
+      if (!instancesUrl) throw new Error("本次运行没有实例数据");
+      return loadInstanceArtifact(instancesUrl);
+    },
+    enabled: layer === "labeled" && Boolean(instancesUrl),
+    staleTime: Number.POSITIVE_INFINITY
+  });
 
   const layers = useMemo(
     () =>
@@ -165,10 +176,10 @@ export function ResultView({
           {(
             [
               ["original", "原图"],
-              ["mask", "Mask"],
-              ["overlay", "Overlay"],
-              ["probability", "Probability"],
-              ["labeled", "实例标注"]
+              ["mask", "分割掩码"],
+              ["overlay", "识别叠加"],
+              ["probability", "置信度"],
+              ["labeled", "实例编号"]
             ] as const
           ).map(([key, label]) => (
             <button
@@ -219,6 +230,19 @@ export function ResultView({
         </div>
       </div>
 
+      {layer === "probability" ? (
+        <div className="result-layer-guidance" role="status">
+          <strong>模型置信度热图</strong>
+          <span>固定使用 0–1 色阶：深紫表示低置信度，亮黄表示高置信度。</span>
+        </div>
+      ) : null}
+      {layer === "labeled" ? (
+        <div className="result-layer-guidance" role="status">
+          <strong>交互式实例编号</strong>
+          <span>将鼠标悬浮到编号上可放大并查看置信度；点击即可复制编号。</span>
+        </div>
+      ) : null}
+
       <div className="result-canvas">
         <ArtifactPreview
           url={currentLayer}
@@ -228,8 +252,19 @@ export function ResultView({
               ? image.filename
               : `${run.run_id}-${layer}`
           }
+          mode={
+            layer === "probability"
+              ? "probability"
+              : layer === "labeled"
+                ? "instances"
+                : "standard"
+          }
+          instances={layer === "labeled" ? instanceArtifact.data : null}
         />
       </div>
+      {layer === "labeled" && instanceArtifact.isError ? (
+        <RequestError error={instanceArtifact.error} />
+      ) : null}
 
       {exportStatus ? (
         <div className="verified-message">
@@ -333,6 +368,7 @@ export function ResultView({
                         ? image.filename
                         : `${candidate.run_id}-${layer}`
                     }
+                    mode={layer === "probability" ? "probability" : "standard"}
                   />
                 </div>
                 <span>颗粒 {formatNumber(candidate.summary?.particle_count, 0)}</span>

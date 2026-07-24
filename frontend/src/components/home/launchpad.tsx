@@ -5,12 +5,15 @@ import {
   ArrowRight,
   BookOpen,
   Boxes,
+  Check,
+  Copy,
   FileImage,
   FolderClock,
   ImagePlus,
   Layers3,
   Search,
   Sparkles,
+  Trash2,
   X
 } from "lucide-react";
 import Link from "next/link";
@@ -30,7 +33,10 @@ import { analysisMetadataSchema } from "@/lib/contracts/metadata";
 import { formatDate } from "@/lib/format/value";
 import { coreMutationBlocker } from "@/lib/health";
 import {
+  clearRecentJobs,
+  parseJobReference,
   readRecentJobs,
+  removeRecentJob,
   rememberJob,
   type RecentJob
 } from "@/lib/recent-jobs";
@@ -66,6 +72,8 @@ export function Launchpad() {
   const fileInput = useRef<HTMLInputElement>(null);
   const [task, setTask] = useState("");
   const [openId, setOpenId] = useState("");
+  const [openError, setOpenError] = useState<string | null>(null);
+  const [copiedJobId, setCopiedJobId] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<ImageDraft[]>([]);
   const [recent, setRecent] = useState<RecentJob[]>([]);
   const [bulkMaterial, setBulkMaterial] = useState("");
@@ -149,9 +157,21 @@ export function Launchpad() {
   }
 
   function openExisting() {
-    const jobId = openId.trim();
-    if (!jobId) return;
+    const jobId = parseJobReference(openId);
+    if (!jobId) {
+      setOpenError("请粘贴完整任务链接或有效的 job_id");
+      return;
+    }
+    setOpenError(null);
     router.push(`/workspace/${encodeURIComponent(jobId)}`);
+  }
+
+  async function copyJobId(jobId: string) {
+    await navigator.clipboard.writeText(jobId);
+    setCopiedJobId(jobId);
+    window.setTimeout(() => {
+      setCopiedJobId((current) => (current === jobId ? null : current));
+    }, 1600);
   }
 
   return (
@@ -404,35 +424,78 @@ export function Launchpad() {
             <span>LOCAL HISTORY</span>
             <h2>本机最近打开</h2>
           </div>
-          <div className="open-job">
-            <input
-              className="input"
-              value={openId}
-              onChange={(event) => setOpenId(event.target.value)}
-              onKeyDown={(event) => event.key === "Enter" && openExisting()}
-              placeholder="输入 job_id"
-              aria-label="输入 job_id 打开项目"
-            />
-            <Button onClick={openExisting} disabled={!openId.trim()}>
-              打开
-            </Button>
+          <div className="recent-heading-actions">
+            {recent.length ? (
+              <Button
+                size="sm"
+                tone="ghost"
+                onClick={() => setRecent(clearRecentJobs())}
+                title="只清空这台设备上的打开记录，不删除服务器任务"
+              >
+                <Trash2 size={14} />
+                清空记录
+              </Button>
+            ) : null}
+            <div className="open-job">
+              <input
+                className="input"
+                value={openId}
+                onChange={(event) => {
+                  setOpenId(event.target.value);
+                  setOpenError(null);
+                }}
+                onKeyDown={(event) => event.key === "Enter" && openExisting()}
+                placeholder="粘贴任务链接或完整 ID（可选）"
+                aria-label="粘贴任务链接或完整 ID"
+              />
+              <Button onClick={openExisting} disabled={!openId.trim()}>
+                打开
+              </Button>
+            </div>
           </div>
         </div>
+        {openError ? <p className="recent-open-error" role="alert">{openError}</p> : null}
 
         {recent.length ? (
           <div className="recent-grid">
             {recent.map((job) => (
-              <Link href={`/workspace/${encodeURIComponent(job.jobId)}`} key={job.jobId}>
-                <span className="recent-icon">
-                  <FolderClock size={18} />
-                </span>
-                <div>
-                  <strong>{job.name}</strong>
-                  <code>{job.jobId}</code>
-                  <small>最近打开 {formatDate(job.openedAt)}</small>
+              <article className="recent-card" key={job.jobId}>
+                <Link
+                  className="recent-card-main"
+                  href={`/workspace/${encodeURIComponent(job.jobId)}`}
+                >
+                  <span className="recent-icon">
+                    <FolderClock size={18} />
+                  </span>
+                  <div>
+                    <strong>{job.name}</strong>
+                    <code title={job.jobId}>{compactJobId(job.jobId)}</code>
+                    <small>最近打开 {formatDate(job.openedAt)}</small>
+                  </div>
+                  <ArrowRight size={17} />
+                </Link>
+                <div className="recent-card-actions">
+                  <button
+                    type="button"
+                    onClick={() => void copyJobId(job.jobId)}
+                    aria-label={`复制 ${job.name} 的任务 ID`}
+                    title="复制完整任务 ID"
+                  >
+                    {copiedJobId === job.jobId ? <Check size={14} /> : <Copy size={14} />}
+                    {copiedJobId === job.jobId ? "已复制" : "复制 ID"}
+                  </button>
+                  <button
+                    type="button"
+                    className="recent-remove"
+                    onClick={() => setRecent(removeRecentJob(job.jobId))}
+                    aria-label={`从最近记录移除 ${job.name}`}
+                    title="仅移除本机记录，不删除服务器任务"
+                  >
+                    <Trash2 size={14} />
+                    移除
+                  </button>
                 </div>
-                <ArrowRight size={17} />
-              </Link>
+              </article>
             ))}
           </div>
         ) : (
@@ -445,4 +508,9 @@ export function Launchpad() {
       </section>
     </main>
   );
+}
+
+function compactJobId(jobId: string) {
+  if (jobId.length <= 22) return jobId;
+  return `${jobId.slice(0, 12)}…${jobId.slice(-6)}`;
 }

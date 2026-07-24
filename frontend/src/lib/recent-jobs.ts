@@ -41,3 +41,35 @@ export function rememberJob(
   storage.setItem(storageKey, JSON.stringify(next));
   return next;
 }
+
+export function removeRecentJob(
+  jobId: string,
+  storage: Pick<Storage, "getItem" | "setItem"> = localStorage
+) {
+  const next = readRecentJobs(storage).filter((item) => item.jobId !== jobId);
+  storage.setItem(storageKey, JSON.stringify(next));
+  return next;
+}
+
+export function clearRecentJobs(
+  storage: Pick<Storage, "setItem"> = localStorage
+) {
+  storage.setItem(storageKey, "[]");
+  return [] satisfies RecentJob[];
+}
+
+export function parseJobReference(value: string): string | null {
+  const reference = value.trim();
+  if (!reference) return null;
+  if (/^job_[A-Za-z0-9_-]{8,255}$/.test(reference)) return reference;
+
+  try {
+    const url = new URL(reference, "http://nanoloop.local");
+    const match = url.pathname.match(/^\/workspace\/([^/]+)\/?$/);
+    if (!match) return null;
+    const jobId = decodeURIComponent(match[1]);
+    return /^job_[A-Za-z0-9_-]{8,255}$/.test(jobId) ? jobId : null;
+  } catch {
+    return null;
+  }
+}
