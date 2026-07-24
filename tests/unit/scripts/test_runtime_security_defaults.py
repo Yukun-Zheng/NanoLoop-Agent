@@ -110,6 +110,27 @@ def test_compose_and_example_use_the_settings_keyring_environment_name() -> None
     assert "FILE_TOKEN_V2_KEYRING_PATH=./data/.file_token_v2_keyring.json" in example
 
 
+def test_base_compose_connects_to_host_qwen_by_default() -> None:
+    compose = yaml.safe_load(
+        (_REPOSITORY_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    )
+    api = compose["services"]["api"]
+    environment = api["environment"]
+
+    assert (
+        environment["LLM_PROVIDER"]
+        == "${NANOLOOP_COMPOSE_LLM_PROVIDER:-openai_compatible}"
+    )
+    assert environment["LLM_BASE_URL"] == (
+        "${NANOLOOP_COMPOSE_LLM_BASE_URL:-"
+        "http://host.docker.internal:11434/v1}"
+    )
+    assert environment["LLM_MODEL"] == (
+        "${NANOLOOP_COMPOSE_LLM_MODEL:-qwen3:4b-instruct-2507-q4_K_M}"
+    )
+    assert "host.docker.internal:host-gateway" in api["extra_hosts"]
+
+
 def test_api_image_includes_the_non_secret_keyring_operator_cli() -> None:
     dockerfile = (_REPOSITORY_ROOT / "Dockerfile").read_text(encoding="utf-8")
 

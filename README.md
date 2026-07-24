@@ -37,9 +37,10 @@ ID、数值、数据库回查、自动化结果和限制见
 - 缺少比例尺时仅给像素单位，不伪造 nm/µm 结果。
 - 数据问答支持计数、粒径、覆盖率、颗粒数密度和周长密度，以及排序、分组比较、分布、异常与模型比较；密度类跨图比较优先使用物理单位，缺少可比尺度时会拒绝给出误导结果。
 - 旧 `/query` 调用仍写入带 actor、图像和 run 作用域的数据库审计；新的科研助手使用独立、持久化的任务内会话和消息历史，不会把旧单次问答静默注入新会话。
-- 科研助手支持任务内多轮对话、历史重载和确定性路由。可选的本地 Qwen3 只在数据工具与 RAG
-  收集完本轮证据后做一次自然语言综合；每个实验数值句必须引用 `[D#]`，每个材料事实句必须引用
-  `[C#]`。模型不可用、JSON/引用/数值/单位校验失败时自动回退可信模板或摘录，并保存
+- 科研助手支持任务内多轮对话、历史重载和通用对话优先路由。本地 Qwen3 可回答普通交流、
+  写作、编程和一般科学背景；只有问题明确涉及当前实验数据或要求文献/知识库证据时才调用对应
+  工具。每个当前实验数值句必须引用 `[D#]`，证据模式中的材料事实句必须引用 `[C#]`。模型
+  不可用、JSON/引用/数值/单位校验失败时自动回退可信模板或摘录，并保存
   `fallback_used`、模型身份、耗时和版本化 prompt 摘要，不保存思维链。
 - 材料不匹配或证据不足时返回明确的澄清/证据不足结果，不跨材料拼接引用；多材料且未选图像时返回候选材料，引用保留页码、chunk、来源类型和规范引文。
 - 知识库支持导入、列出、启用/禁用和重建；前端可管理状态。可选向量 runtime 已实现本地只读 SentenceTransformers、原子 FAISS generation、manifest/数据库映射校验、原始 cosine 门槛和 keyword-only 降级；连续中文在 `unicode61` 无命中时使用有界 CJK n-gram 回退。仓库不提交 embedding snapshot、FAISS 文件或正式外部语料，因此仍不宣称生产向量 RAG 已交付。
@@ -117,14 +118,23 @@ docker compose logs -f api frontend
 `torch 2.13.0`/`torchvision 0.28.0`，并串行构建 API 与前端，避免 CPU 部署误拉 CUDA
 运行时或并发重型构建。构建期间不要在其他终端重复执行同一目标。
 
-若宿主机已经安装并启动 Ollama，且已有 Qwen3 模型：
+基础 Compose 会默认连接宿主机 Ollama 中的
+`qwen3:4b-instruct-2507-q4_K_M`。因此在该模型已经安装并启动时，常用启动命令无需额外
+overlay：
 
 ```bash
-export LLM_MODEL="替换为 ollama list 中的精确 Qwen3 tag"
-make compose-up-local-llm-models
+NANOLOOP_API_EXTRAS=models docker compose up -d --no-build
 ```
 
-该模式不下载模型、不启动 Ollama 容器；容器通过 `host.docker.internal` 访问宿主机。完整的
+若本机使用其他已安装的 Qwen3 tag，可显式覆盖：
+
+```bash
+export NANOLOOP_COMPOSE_LLM_MODEL="替换为 ollama list 中的精确 Qwen3 tag"
+NANOLOOP_API_EXTRAS=models docker compose up -d --no-build
+```
+
+Compose 不下载模型、不启动 Ollama 容器；容器通过 `host.docker.internal` 访问宿主机。
+模型不可达时会明确进入证据降级模式，不会伪装成通用 AI 对话。完整的
 macOS、Windows PowerShell、Linux 启停、健康检查、真实 smoke 和 extractive 回退说明见
 [本地 Qwen3 科研对话指南](docs/LOCAL_LLM_CHAT_GUIDE.md)。
 

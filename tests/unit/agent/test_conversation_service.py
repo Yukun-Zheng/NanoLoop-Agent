@@ -63,6 +63,7 @@ class FakeConversationProvider:
     def __init__(self) -> None:
         self.histories: list[list[dict[str, str]]] = []
         self.task_contexts: list[dict[str, Any]] = []
+        self.query_types: list[str] = []
         self.calls = 0
 
     def health(self) -> HealthComponent:
@@ -72,6 +73,7 @@ class FakeConversationProvider:
         self.calls += 1
         self.histories.append([dict(item) for item in kwargs["history"]])
         self.task_contexts.append(dict(kwargs["task_context"]))
+        self.query_types.append(str(kwargs["query_type"]))
         return ConversationProviderAnswer(
             answer="你好，我可以解释流程并使用当前任务证据回答。",
             used_data_ids=(),
@@ -210,6 +212,7 @@ def test_open_ended_request_is_answered_as_safe_general_chat(tmp_path: Path) -> 
             "has_physical_scale": False,
         }
         assert provider.task_contexts[-1]["runs"]["job_total_count"] == 0
+        assert provider.task_contexts[-1]["runs"]["selected"] == []
         assert provider.task_contexts[-1]["available_next_steps"] == [
             "进入“开始分析”选择模型并创建一次全图分割运行。",
             "局部区域（ROI）是可选步骤，可以直接跳过。",
@@ -268,6 +271,37 @@ def test_difference_follow_up_reuses_previous_user_metric_for_data_tool(
         assert service.data_tools.questions[-1] == (  # type: ignore[attr-defined]
             "哪个模型检测到的颗粒更多？；为什么可能出现这种差异？"
         )
+    finally:
+        database.dispose()
+
+
+def test_general_follow_up_does_not_repeat_previous_data_tool_route(
+    tmp_path: Path,
+) -> None:
+    service, database, provider = _service(tmp_path)
+    try:
+        conversation = service.create(
+            "job_chat",
+            CreateConversationRequest(),
+            principal=_PRINCIPAL,
+        )
+        for question in (
+            "哪个模型检测到的颗粒更多？",
+            "那我现在是什么情况？",
+        ):
+            result = service.send(
+                "job_chat",
+                conversation.conversation_id,
+                ConversationMessageRequest(content=question, image_id="img_chat"),
+                principal=_PRINCIPAL,
+            )
+
+        assert service.data_tools.questions == [  # type: ignore[attr-defined]
+            "哪个模型检测到的颗粒更多？"
+        ]
+        assert provider.query_types == ["analysis_data", "general_chat"]
+        assert result.messages[-1].query_type == "general_chat"
+        assert service.knowledge_service.calls == 0  # type: ignore[attr-defined]
     finally:
         database.dispose()
 

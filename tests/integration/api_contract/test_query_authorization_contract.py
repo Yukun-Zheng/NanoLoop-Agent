@@ -303,13 +303,8 @@ def test_explicit_foreign_child_ids_are_404_before_tools_or_audit(
             "query_type": "mixed",
             "material_context": {"formula": "TiO2"},
         },
-        {
-            "question": "这个材料为什么具有催化用途？",
-            "query_type": "auto",
-            "material_context": {"formula": "TiO2"},
-        },
     ],
-    ids=["explicit-knowledge", "explicit-mixed", "auto-to-knowledge"],
+    ids=["explicit-knowledge", "explicit-mixed"],
 )
 def test_principal_knowledge_paths_fail_closed_before_retrieval_or_audit(
     query_authorization_harness: QueryAuthorizationHarness,
@@ -331,6 +326,27 @@ def test_principal_knowledge_paths_fail_closed_before_retrieval_or_audit(
     assert response.json()["error"]["details"] == {"component": "knowledge_tenant_scope"}
     assert _query_count(harness) == 0
     assert _projection_snapshot(harness, "job_a") == before_projection
+    _assert_no_provider_calls(harness)
+
+
+def test_principal_auto_science_question_stays_general_without_global_retrieval(
+    query_authorization_harness: QueryAuthorizationHarness,
+) -> None:
+    harness = query_authorization_harness
+
+    response = harness.client.post(
+        "/api/v1/analyses/job_a/query",
+        headers=_headers(harness, "owner"),
+        json={
+            "question": "这个材料为什么具有催化用途？",
+            "query_type": "auto",
+            "material_context": {"formula": "TiO2"},
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["query_type"] == "general_chat"
+    assert _query_count(harness) == 1
     _assert_no_provider_calls(harness)
 
 

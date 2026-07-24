@@ -28,7 +28,15 @@ services:
       KNOWLEDGE_MAX_VECTOR_INDEX_CHUNKS: ${KNOWLEDGE_MAX_VECTOR_INDEX_CHUNKS:-100000}
       EMBEDDING_INDEX_BATCH_SIZE: ${EMBEDDING_INDEX_BATCH_SIZE:-128}
       DATA_DISTRIBUTION_EVIDENCE_LIMIT: ${DATA_DISTRIBUTION_EVIDENCE_LIMIT:-200}
-      LLM_PROVIDER: extractive
+      LLM_PROVIDER: ${NANOLOOP_COMPOSE_LLM_PROVIDER:-openai_compatible}
+      LLM_BASE_URL: ${NANOLOOP_COMPOSE_LLM_BASE_URL:-http://host.docker.internal:11434/v1}
+      LLM_API_KEY: ${NANOLOOP_COMPOSE_LLM_API_KEY:-ollama}
+      LLM_MODEL: ${NANOLOOP_COMPOSE_LLM_MODEL:-qwen3:4b-instruct-2507-q4_K_M}
+      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-90}
+      LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-1024}
+      LLM_TEMPERATURE: ${LLM_TEMPERATURE:-0}
+      LLM_HISTORY_TURNS: ${LLM_HISTORY_TURNS:-8}
+      LLM_HISTORY_MAX_CHARS: ${LLM_HISTORY_MAX_CHARS:-12000}
       LOG_DIR: /app/logs
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-200}
@@ -51,6 +59,8 @@ services:
       NANOLOOP_SKIP_MIGRATIONS: "0"
     ports:
       - "${NANOLOOP_BIND_HOST:-127.0.0.1}:${NANOLOOP_PORT:-8000}:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       # Registry, configs, model cards, adapters, and checkpoints are one operator-supplied
       # bundle. Mount it read-only so private weights never need to be baked into the image.

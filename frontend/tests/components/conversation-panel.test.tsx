@@ -176,7 +176,7 @@ describe("ConversationPanel", () => {
       await screen.findByRole("button", { name: "展开并定位证据 D1" })
     ).toBeVisible();
     expect(screen.getByText("已安全降级")).toBeVisible();
-    expect(screen.getByText("本地模型不可用，回答将安全降级")).toBeVisible();
+    expect(screen.getByText("Qwen 未连接：当前仅为证据降级模式")).toBeVisible();
     expect(screen.getByText(/查看证据与限制/)).toBeVisible();
 
     await user.click(screen.getByRole("button", { name: "展开并定位证据 D1" }));
