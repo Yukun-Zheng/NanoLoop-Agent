@@ -82,7 +82,7 @@ const model = {
   quality_tier: "validated",
   version: "1.0.0",
   status: "ready",
-  supports_box_prompt: true,
+  supports_box_prompt: false,
   preprocess_profile: "grayscale-v1",
   postprocess_profile: "large-particle-v1",
   default_threshold: 0.55,
@@ -732,6 +732,10 @@ test("completes the mocked scientific workflow through verified export", async (
     page.getByRole("button", { name: `选择 ${unavailableModel.model_id}` })
   ).toBeDisabled();
   await page.getByRole("button", { name: "已保存 ROI" }).click();
+  await expect(
+    page.getByRole("button", { name: `取消选择 ${model.model_id}` })
+  ).toBeEnabled();
+  await expect(page.getByRole("button", { name: "开始分割", exact: true })).toBeEnabled();
   await page.getByRole("button", { name: "开始分割", exact: true }).click();
 
   await expect(page.getByRole("heading", { name: "查看结果" })).toBeVisible();
