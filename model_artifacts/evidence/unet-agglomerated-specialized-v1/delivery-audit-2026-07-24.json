@@ -1,0 +1,153 @@
+{
+  "schema_version": "1",
+  "model_id": "unet-agglomerated-specialized-v1",
+  "model_version": "1",
+  "reviewed_at": "2026-07-24",
+  "repository_base_commit": "1ee3850d13b7a0336847fc79a736bdb0d2455a2d",
+  "review_scope": "private_runtime_asset_and_full_analysis_smoke_only",
+  "source_package": {
+    "filename": "agglomerated-a-linux-final.zip",
+    "size_bytes": 56451110,
+    "sha256": "e86e4a0530c84f011b4bbdf86a5d2823df044170ae76faf97d904ac084a58b62",
+    "entry_count": 46,
+    "uncompressed_size_bytes": 61153466,
+    "crc_verified": true,
+    "archive_safety_verified": true,
+    "retention": "external_private_not_committed"
+  },
+  "runtime_identity": {
+    "torchscript_size_bytes": 20702390,
+    "torchscript_sha256": "d36cf627dc6d1eea83b769743b657e6bb3d9a1af39ddc6a00ae95acc3b20ffc9",
+    "adapter_sha256": "a40d7df346675946a280df9a1f0eeecc42bc8d6261f10e375f6f2ab6631f184a",
+    "config_sha256": "a001eae1723ff8c9474f5cfd24117396071a48f2e92806598d107f3ec5c8687b",
+    "model_card_sha256": "b1b7fdc3d1de87379273c849e667a5a7cfde6886d976b371144fc475052c06f1",
+    "model_bundle_id": "10e68dbd32afeafaee3629564807bbb57472c05515caab47c24637558be5fab1",
+    "bundle_manifest_sha256": "10e68dbd32afeafaee3629564807bbb57472c05515caab47c24637558be5fab1",
+    "content_addressed_paths_verified": true
+  },
+  "source_contract_equivalence": {
+    "delivery_line_endings": "crlf",
+    "repository_line_endings": "lf",
+    "adapter_matches_after_crlf_normalization": true,
+    "config_matches_after_crlf_normalization": true,
+    "model_card_matches_after_crlf_normalization": true,
+    "repository_base_sha256": {
+      "adapter": "6055db452f0a78a0352732d66ea3436f16a558cf19d1a6f022a78627136dfab6",
+      "config": "54f5113d0de4b5d2a26e48e8c231b5223c43b373ba8a496934f2b4bbd1bfc524",
+      "model_card": "6a56b5b29cb2f8c1b8d1893ca072a2dab0ad309708d9f682f9374f6ea279fef1"
+    },
+    "model_card_updated_after_review": true
+  },
+  "private_registry_manifest": {
+    "filename": "private-registry-ready.yaml",
+    "sha256": "22e7d86c0581449a54c09abd9eb57cabf40503a0f6982cbdd9c8c1426a5714c0",
+    "declared_status": "ready",
+    "exact_asset_only": true,
+    "repository_external": true
+  },
+  "gateway_analysis_smoke": {
+    "report_filename": "gateway-analysis-smoke.json",
+    "report_sha256": "5d471649e08dd79348ed89a71a4a26a40ccf46bcd7cf9bbde47d5dcbad80ed14",
+    "execution_git_commit": "0c07de7ae853270386e6d7a14ad4a588b32b48b8",
+    "python_version": "3.12.13",
+    "torch_version": "2.13.0+cu130",
+    "torchvision_version": "0.28.0",
+    "requested_device": "cpu",
+    "resolved_device": "cpu",
+    "seed": 2026,
+    "input_filename": "BiCu-3.tif",
+    "input_sha256": "79376cc42e5cf036b1e5e1108e5eaed16c9434816772d3f130a057e643643b29",
+    "final_status": "COMPLETED_WITH_WARNINGS",
+    "quality_status": "WARN",
+    "quality_reasons": [
+      "small_fragment_ratio_high"
+    ],
+    "registry_loaded": true,
+    "snapshot_bundle_validated": true,
+    "load_completed_via_predict": true,
+    "predict_completed": true,
+    "analysis_completed": true,
+    "unload_completed": true,
+    "cache_count_after_unload": 0,
+    "bottom_130_rows_zero": true,
+    "effective_roi_excludes_bottom_130_rows": true,
+    "canonical_artifact_count": 11,
+    "execution_bundle_present": true,
+    "build_identity_matches_contract": true,
+    "private_registry_ready_eligible": true,
+    "report_zip_sha256": "444f603b198dbb37db73ba7622d47be6dd04dd22db33606d7290bbff6d5496e1",
+    "report_zip_size_bytes": 17436131
+  },
+  "local_cpu_reverification": {
+    "platform": "linux_aarch64",
+    "python_version": "3.12.13",
+    "torch_version": "2.13.0+cpu",
+    "source_checkout_adapter_sha256": "6055db452f0a78a0352732d66ea3436f16a558cf19d1a6f022a78627136dfab6",
+    "resolved_bundle_id": "bb90e46efd2962ebbb54dccef9ecccf8aa37a649fd76346cf93f9b7d37fbf5ab",
+    "registry_status": "ready",
+    "requested_device": "cpu",
+    "resolved_device": "cpu",
+    "probability_shape": [
+      1536,
+      2048
+    ],
+    "probability_finite": true,
+    "delivered_probability_max_abs_diff": 1.9371509552001953e-06,
+    "threshold_pixel_diff": 0,
+    "binary_mask_sha256": "b1daa041e479b0041695bc0942a22a07c66c8c1d82dda35cfd391fe9f9034c51",
+    "binary_mask_matches_delivery": true,
+    "foreground_pixel_count": 241774,
+    "bottom_130_probability_nonzero": 0,
+    "bottom_130_mask_nonzero": 0,
+    "load_health_status": "ready",
+    "unload_health_status": "ready",
+    "cache_device_after_unload": null
+  },
+  "frozen_analysis_contract": {
+    "threshold": 0.25,
+    "threshold_comparison": "gte",
+    "min_area_px": 1024,
+    "watershed_enabled": false,
+    "fill_holes": true,
+    "exclude_border": true,
+    "connectivity": 2,
+    "perimeter_neighborhood": 8,
+    "bottom_crop_px": 130,
+    "scale_nm_per_pixel": 0.5434782608695652,
+    "target_definition": "whole_agglomerate"
+  },
+  "repository_import_policy": {
+    "public_registry_status": "unavailable",
+    "runtime_asset_committed": false,
+    "private_input_or_outputs_committed": false,
+    "imported": [
+      "sanitized_hash_ledger",
+      "runtime_smoke_acceptance_facts",
+      "private_registry_readiness_scope"
+    ],
+    "not_imported": [
+      "raw_zip",
+      "torchscript",
+      "private_registry",
+      "input_sem_image",
+      "sqlite_database",
+      "probability_array",
+      "prediction_and_review_images",
+      "run_output_tree",
+      "report_zip"
+    ],
+    "reason": "public_repository_minimization_and_missing_redistribution_authorization"
+  },
+  "scientific_acceptance": {
+    "status": "pending",
+    "smoke_scope": "runtime_integration_without_ground_truth",
+    "blockers": [
+      "license_or_written_redistribution_authorization_missing",
+      "complete_asset_custody_ledger_missing",
+      "source_or_sample_split_manifest_missing",
+      "repository_independent_calibration_reproduction_missing",
+      "current_bundle_ground_truth_scientific_acceptance_missing",
+      "target_deployment_cold_start_acceptance_missing"
+    ]
+  }
+}

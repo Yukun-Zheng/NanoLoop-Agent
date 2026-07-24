@@ -19,7 +19,7 @@ docs 为准。仓库当前达到 **工程 MVP / 内部 Alpha（M1）**：FastAPI
 
 | 当前阶段 | 已有工程基线 | M2 真实可演示 MVP 的主要阻塞 |
 | --- | --- | --- |
-| M1 工程 MVP / 内部 Alpha | 需求矩阵为 `implemented 10 / partial 4 / external-blocked 0`；Large 与 Small-A U-Net 运行资产已接入，并在本机公开合成图上完成 live UI 运行、比较与导出；Large 历史独立集像素指标已按交付字节复核；仓库内提供 30 题公开 RAG 工程回归包 | 两个 U-Net 已通过 CPU 运行校验并登记为 `ready`，其余三个模型仍为 `unavailable`；仍缺 Small-B、共同授权 SEM/GT 与当前分割 bundle 的完整科学重跑、正式外部语料及许可台账，以及目标部署环境上的正式 FAISS 重启与无降级 E2E |
+| M1 工程 MVP / 内部 Alpha | 需求矩阵为 `implemented 10 / partial 4 / external-blocked 0`；Large 与 Small-A U-Net 运行资产已接入，并在本机公开合成图上完成 live UI 运行、比较与导出；Agglomerated-A 精确私有 bundle 已完成 Gateway→Analysis 冒烟；仓库内提供 30 题公开 RAG 工程回归包 | 公开目录中两个 U-Net 登记为 `ready`，其余三个模型仍为 `unavailable`；Agglomerated-A 只允许通过外部私有 registry 运行。仍缺 Small-B、共同授权 SEM/GT 与当前分割 bundle 的完整科学重跑、正式外部语料及许可台账，以及目标部署环境上的正式 FAISS 重启与无降级 E2E |
 
 第一次演示请从[用户测试与演示指南](docs/USER_ACCEPTANCE_GUIDE.md)开始；本次真实操作对象、运行
 ID、数值、数据库回查、自动化结果和限制见
@@ -48,7 +48,7 @@ ID、数值、数据库回查、自动化结果和限制见
 - 导出按所选成员路径、精确字节 SHA-256 和长度生成内容地址；同一数据库/制品快照复用完全相同的确定性 ZIP，内容变化生成新地址，已签发令牌对应的旧字节不会被覆盖。
 - 图片在深度解码前先检查尺寸/像素数；知识摄取对 PDF 页数、提取字符数、单文档 chunk、材料别名和向量语料规模设有上限，embedding 按批处理；大粒径分布在 SQL 中精确聚合，只返回有上限的确定性证据抽样。
 - 启动恢复对普通陈旧运行复制其不可变科学输入；若人工修正掩膜运行在崩溃后缺少原始外部制品，则父运行明确失败并要求人工处理，不会用 JSON 配置伪造一个不可复现子运行。
-- Large 与 Small-A U-Net 的部署用 TorchScript 已按项目负责人要求纳入仓库并由哈希锁定；源 checkpoint 只记录身份、不重复提交。Large 的三张历史独立测试视野像素指标已从交付 prediction/GT 字节重新计算，见[Large A/B 审计](docs/model-assets-large-a-b-acceptance-2026-07-23.md)。Small-A 从严格匹配的 checkpoint 以 PyTorch 2.6 重新导出兼容制品，并通过 2.6/2.13、全图/ROI 与确定性运行检查，见[Small-A 审计](docs/model-assets-small-a-acceptance-2026-07-23.md)；Small-B 科学校准与独立评测尚未交付。Agglomerated U-Net、YOLO-Seg、SAM2、生产知识语料、向量索引和本地大模型仍是外部资产；`ready` 只代表运行 bundle 可用，不代表科研验收通过。
+- Large 与 Small-A U-Net 的部署用 TorchScript 已按项目负责人要求纳入仓库并由哈希锁定；源 checkpoint 只记录身份、不重复提交。Large 的三张历史独立测试视野像素指标已从交付 prediction/GT 字节重新计算，见[Large A/B 审计](docs/model-assets-large-a-b-acceptance-2026-07-23.md)。Small-A 从严格匹配的 checkpoint 以 PyTorch 2.6 重新导出兼容制品，并通过 2.6/2.13、全图/ROI 与确定性运行检查，见[Small-A 审计](docs/model-assets-small-a-acceptance-2026-07-23.md)；Small-B 科学校准与独立评测尚未交付。Agglomerated-A 的精确外部私有 bundle 已通过 CPU Gateway→Analysis 冒烟，见[Agglomerated-A 审计](docs/model-assets-agglomerated-a-acceptance-2026-07-24.md)，但公开仓库仍不分发该权重。YOLO-Seg、SAM2、生产知识语料、向量索引和本地大模型也仍是外部资产；`ready` 只代表运行 bundle 可用，不代表科研验收通过。
 
 详细覆盖情况见 [需求追踪表](docs/requirements-traceability.md)，RAG 技术合同见 [RAG 与检索功能开发指南](docs/RAG_RETRIEVAL_DEVELOPMENT_GUIDE.md)，外部模型与长期接手方式见 [模型与 RAG 交接](docs/model-rag-handoff.md)，单机/公网/多实例的发布边界见 [生产就绪说明](docs/PRODUCTION_READINESS.md)，全部入口见 [文档索引](docs/README.md)。专项指南中的旧时间表、人员分工或旧前端描述只作历史参考。
 

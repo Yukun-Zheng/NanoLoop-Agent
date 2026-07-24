@@ -2,8 +2,7 @@
 
 Status: **unavailable**. The TorchScript identity and validation-only parameters are frozen at
 `probability >= 0.25` and `min_area_px=1024`. The public registry must remain unavailable, and a
-private registry must not mark this model ready before the frozen configuration completes a full
-Analysis smoke run.
+private registry may mark only the exact verified asset ready.
 
 ## Delivery audit boundary
 
@@ -12,8 +11,16 @@ calibration or independent-test JSON, a source/sample-level split manifest, or a
 custody ledger for the images, masks, and model assets. Therefore every numerical result below is
 recorded as a developer-reported result, not as a result independently reproduced from this Git
 repository. The missing original training metadata also means training/test independence cannot be
-verified. These gaps block readiness and scientific-MVP acceptance even though the code seam and
-synthetic tests can be reviewed.
+verified.
+
+On 2026-07-24, `agglomerated-a-linux-final.zip` delivered the exact external TorchScript,
+content-addressed model bundle, private ready registry, one `BiCu-3.tif` full-Analysis run, and its
+canonical review artifacts. The ZIP SHA-256 is
+`e86e4a0530c84f011b4bbdf86a5d2823df044170ae76faf97d904ac084a58b62`; the complete machine audit
+is `model_artifacts/evidence/unet-agglomerated-specialized-v1/delivery-audit-2026-07-24.json`.
+The Adapter, config, and model-card delivery copies match this repository after CRLF normalization.
+This closes the exact private asset's runtime-smoke gate, but it does not close the custody,
+redistribution, training-split, independent reproduction, or scientific-acceptance gaps.
 
 ## Scientific target definition
 
@@ -141,8 +148,8 @@ Current readiness limits are:
   supported.
 
 The public registry status must remain `unavailable`. Recording the frozen default threshold is
-scientific metadata, not authorization to run the model; the missing asset and evidence package
-still blocks public or private readiness.
+scientific metadata, not authorization to distribute the model. The exact delivered asset is
+runtime-ready only through its repository-external private registry.
 
 ## Full Analysis smoke acceptance gate
 
@@ -154,10 +161,11 @@ mask input and must not read YCu data. The required production path is
 The smoke is accepted only when the exact external TorchScript SHA-256 is verified, the resolved
 inference/postprocessing/morphometry configuration equals the frozen contract, the prediction mask
 contains zero foreground pixels in the bottom 130 rows, the effective ROI and density calculations
-exclude those rows, and all Analysis metadata and review artifacts exist. Until a real cloud run
-passes these checks, this model remains unavailable. A successful report permits the exact asset to
-be declared ready in a repository-external private registry only; it does not change the public
-registry and does not authorize YCu execution.
+exclude those rows, and all Analysis metadata and review artifacts exist. The 2026-07-24 delivery
+passed these checks on CPU with PyTorch `2.13.0+cu130`; its final status was
+`COMPLETED_WITH_WARNINGS` solely because of `small_fragment_ratio_high`. The successful report
+permits the exact asset to be declared ready in a repository-external private registry only; it
+does not change the public registry, establish scientific accuracy, or authorize YCu execution.
 
 The CLI private-registry input must itself remain `unavailable`. The script validates that
 preflight declaration, constructs a temporary smoke-only Gateway manifest, and writes
