@@ -14,6 +14,7 @@ from app.contracts.queries import MaterialContext
     ("question", "expected"),
     [
         ("哪组颗粒数密度最高？", QueryType.ANALYSIS_DATA),
+        ("当前样品的周长密度是多少？", QueryType.ANALYSIS_DATA),
         ("SrNi 有哪些已知应用和文献？", QueryType.MATERIAL_KNOWLEDGE),
         ("已有研究怎么说，我们这批覆盖率最高吗？", QueryType.MIXED),
         ("这个材料可以在什么领域发挥作用？", QueryType.MATERIAL_KNOWLEDGE),

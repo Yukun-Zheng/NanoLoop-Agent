@@ -18,6 +18,7 @@ export type ModelMetadata = components["schemas"]["ModelMetadata"];
 export type ModelRecommendation = components["schemas"]["ModelRecommendationData"];
 export type ModelRecommendationRequest =
   components["schemas"]["ModelRecommendationRequest"];
+export type QueryHistoryData = components["schemas"]["QueryHistoryData"];
 export type ReindexReport = components["schemas"]["ReindexReport"];
 export type ReviewRunData = components["schemas"]["ReviewRunData"];
 export type ReviewRunRequest = components["schemas"]["ReviewRunRequest"];

@@ -542,6 +542,19 @@ def test_knowledge_ingestion_listing_idempotency_and_reindex(
     assert api_harness.file_store.paths.query_history("job_1").is_file()
     assert api_harness.file_store.paths.rag_citations("job_1").is_file()
 
+    history = api_harness.client.get("/api/v1/analyses/job_1/queries?limit=1")
+    assert history.status_code == 200
+    history_payload = history.json()["data"]
+    assert history_payload["returned_count"] == 1
+    assert history_payload["limit"] == 1
+    assert history_payload["items"][0]["request"]["question"] == (
+        "What catalyst applications are supported by the evidence?"
+    )
+    assert history_payload["items"][0]["response"]["citations"][0]["doc_id"] == (
+        ingest_payload["data"]["doc_id"]
+    )
+    assert "actor" not in history_payload["items"][0]
+
     mismatched = api_harness.client.post(
         "/api/v1/analyses/job_1/query",
         json={
