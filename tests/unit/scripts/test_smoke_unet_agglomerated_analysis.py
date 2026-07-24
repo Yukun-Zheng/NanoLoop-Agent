@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -23,14 +25,13 @@ from app.db.base import Base
 from app.db.models import ModelRegistryRecord
 from app.db.session import Database
 from app.storage import LocalFileStore, StoragePaths
+from scripts.models import smoke_unet_agglomerated_analysis as smoke
 from scripts.models.smoke_unet_agglomerated_analysis import (
     EXPECTED_IMAGE_SIZE,
     MODEL_ID,
     TEST_FILENAMES,
     TORCHSCRIPT_SHA256,
-    PromotionEvidence,
     SmokeParameters,
-    _load_promotion_evidence,
     _mask_bottom_evidence,
     _ready_smoke_registry_entry,
     _validate_output_root,
@@ -95,7 +96,24 @@ class FakeGateway:
             adapter_sha256="d" * 64,
         )
 
-    def freeze_model_bundle(self, _model_id: str, **_expected: Any) -> ModelBundleReference:
+    def freeze_model_bundle(
+        self,
+        model_id: str,
+        *,
+        expected_model_version: str | None = None,
+        expected_adapter_path: str | None = None,
+        expected_weight_sha256: str | None = None,
+        expected_config_sha256: str | None = None,
+        expected_model_card_sha256: str | None = None,
+        expected_adapter_sha256: str | None = None,
+    ) -> ModelBundleReference:
+        assert model_id == self.model.model_id
+        assert expected_model_version in {None, self.model.version}
+        assert expected_adapter_path in {None, self.model.adapter_path}
+        assert expected_weight_sha256 in {None, self.model.weight_sha256}
+        assert expected_config_sha256 in {None, self.model.config_sha256}
+        assert expected_model_card_sha256 in {None, self.model.model_card_sha256}
+        assert expected_adapter_sha256 in {None, self.model.adapter_sha256}
         return self.bundle
 
     def list_models(self, only_ready: bool = False) -> list[ModelMetadata]:
@@ -137,8 +155,6 @@ class FakeGateway:
         assert expected_adapter_sha256 == "d" * 64
         assert model_bundle == self.bundle
         mask = np.zeros((240, 80), dtype=np.uint8)
-        # A 40x40 component is above the frozen 1024 px minimum and remains
-        # strictly inside the 80x110 effective ROI after the 130 px bottom crop.
         mask[10:50, 10:50] = 255
         mask_path = request.run_dir / "fake-mask.png"
         Image.fromarray(mask).save(mask_path)
@@ -166,9 +182,8 @@ def _write_test_images(image_dir: Path, *, size: tuple[int, int] = (80, 240)) ->
     rows = np.arange(size[1], dtype=np.uint16)[:, None]
     columns = np.arange(size[0], dtype=np.uint16)[None, :]
     gray = (rows * 7 + columns * 11) % 251
-    for index, filename in enumerate(TEST_FILENAMES):
-        image = (gray + index) % 251
-        Image.fromarray(image.astype(np.uint8)).save(image_dir / filename)
+    for filename in TEST_FILENAMES:
+        Image.fromarray(gray.astype(np.uint8)).save(image_dir / filename)
 
 
 def _database(output_root: Path) -> Database:
@@ -183,35 +198,31 @@ def _database(output_root: Path) -> Database:
     return database
 
 
-def test_loads_all_frozen_agglomerated_scientific_parameters() -> None:
+def test_loads_frozen_runtime_settings_without_external_calibration_evidence() -> None:
     gateway = FakeGateway()
 
-    calibrated = load_calibrated_analysis(_config(), gateway.model)
+    frozen = load_calibrated_analysis(_config(), gateway.model)
 
-    assert calibrated.threshold == 0.25
-    assert calibrated.min_area_px == 1024
-    assert calibrated.watershed_enabled is False
-    assert calibrated.fill_holes is True
-    assert calibrated.exclude_border is True
-    assert calibrated.connectivity == 2
-    assert calibrated.perimeter_neighborhood == 8
-    assert calibrated.bottom_crop_px == 130
-    assert calibrated.scale_nm_per_pixel == pytest.approx(100 / 184)
-    assert calibrated.postprocess_profile().min_area_px == 1024
-    assert calibrated.morphometry_config().perimeter_neighborhood == 8
+    assert frozen.threshold == 0.25
+    assert frozen.min_area_px == 1024
+    assert frozen.bottom_crop_px == 130
+    assert frozen.postprocess_profile().min_area_px == 1024
+    assert frozen.morphometry_config().perimeter_neighborhood == 8
 
 
-def test_rejects_internally_inconsistent_calibrated_config() -> None:
+def test_rejects_runtime_config_that_differs_from_frozen_contract() -> None:
     gateway = FakeGateway()
     config = _config()
-    config["calibrated_analysis"]["min_area_nm2"] = 1.0
+    config["calibrated_analysis"]["min_area_px"] = 2048
 
-    with pytest.raises(ValueError, match="physical conversion is inconsistent"):
+    with pytest.raises(ValueError, match="frozen agglomerated contract"):
         load_calibrated_analysis(config, gateway.model)
 
 
-def test_full_image_run_freezes_config_and_excludes_bottom_roi(tmp_path: Path) -> None:
-    image_dir = tmp_path / "validation-images"
+def test_full_image_a_only_run_generates_canonical_artifacts_and_report_zip(
+    tmp_path: Path,
+) -> None:
+    image_dir = tmp_path / "a-only-images"
     output_root = tmp_path / "smoke-output"
     registry_path = tmp_path / "private-registry.yaml"
     output_root.mkdir()
@@ -233,15 +244,7 @@ def test_full_image_run_freezes_config_and_excludes_bottom_roi(tmp_path: Path) -
         )
     try:
         result = execute_analyses(
-            SmokeParameters(
-                image_dir,
-                registry_path,
-                output_root,
-                tmp_path / "threshold-calibration.json",
-                "a" * 64,
-                tmp_path / "min-area-calibration.json",
-                "b" * 64,
-            ),
+            SmokeParameters(image_dir, registry_path, output_root),
             load_calibrated_analysis(_config(), gateway.model),
             database=database,
             file_store=LocalFileStore(
@@ -255,69 +258,36 @@ def test_full_image_run_freezes_config_and_excludes_bottom_roi(tmp_path: Path) -
     finally:
         database.dispose()
 
-    assert result["validation_images"] == list(TEST_FILENAMES)
-    assert "no masks or YCu test data were read" in result["test_scope"]
-    assert result["private_registry_ready_eligible"] is True
-    assert len(result["runs"]) == 1
+    assert result["test_scope"] == (
+        "Agglomerated-A runtime integration only; no GT or scientific evaluation"
+    )
+    assert "validation_images" not in result
+    assert "scientific_results" not in result["runs"][0]
     assert len(gateway.requests) == 1
-    for run in result["runs"]:
-        assert run["frozen_inference"] == {
-            "threshold": 0.25,
-            "min_area_px": 1024,
-            "watershed_enabled": False,
-            "exclude_border": True,
-            "device": "cpu",
-            "seed": 2026,
-        }
-        assert run["resolved_postprocess"] == {
-            "profile_id": "semantic-agglomerate-mask-v1",
-            "min_area_px": 1024,
-            "fill_holes": True,
-            "watershed_enabled": False,
-            "exclude_border": True,
-            "connectivity": 2,
-            "instance_iou_threshold": 0.7,
-        }
-        assert run["resolved_morphometry"] == {"perimeter_neighborhood": 8}
-        assert run["roi"]["effective_roi_area_px"] == 80 * (240 - 130)
-        bottom = run["roi"]["bottom_exclusion"]
-        assert bottom["matching_model_bottom_region_present"] is True
-        assert bottom["expected_bottom_area_px"] == 80 * 130
-        assert run["roi"]["prediction_bottom_check"] == {
-            "bottom_rows_checked": 130,
-            "bottom_nonzero_pixels": 0,
-            "bottom_prediction_is_zero": True,
-        }
-        density = run["roi"]["density_consistency"]
-        assert density["all_particle_bboxes_within_effective_roi"] is True
-        assert density["coverage_uses_effective_roi"] is True
-        assert density["number_density_uses_effective_roi"] is True
-        assert density["perimeter_density_uses_effective_roi"] is True
-        assert run["scientific_results"]["particle_count"] == 1
-        for artifact in (
-            "mask",
-            "instances",
-            "particles_csv",
-            "overlay",
-            "labeled_particles",
-            "report",
-            "execution_evidence",
-            "probability",
-        ):
-            assert run["artifacts"][artifact] is not None
-        assert set(run["canonical_artifact_identities"]) == {
-            "pred_mask_path",
-            "probability_path",
-            "instances_path",
-            "particles_csv_path",
-            "overlay_path",
-            "labeled_particles_path",
-            "image_summary_path",
-            "quality_report_path",
-            "execution_provenance_path",
-            "run_config_path",
-            "transform_path",
-        }
+    run = result["runs"][0]
+    assert run["roi"]["prediction_bottom_check"]["bottom_prediction_is_zero"] is True
+    assert run["predict_summary"]["resolved_device"] == "cpu"
+    assert all(run["artifact_linkage"].values())
+    assert set(run["canonical_artifact_identities"]) == {
+        "pred_mask_path",
+        "probability_path",
+        "instances_path",
+        "particles_csv_path",
+        "overlay_path",
+        "labeled_particles_path",
+        "image_summary_path",
+        "quality_report_path",
+        "execution_provenance_path",
+        "run_config_path",
+        "transform_path",
+    }
+    report = output_root / str(result["report_zip"]["path"])
+    assert report.is_file()
+    assert hashlib.sha256(report.read_bytes()).hexdigest() == result["report_zip"]["sha256"]
+    assert all(result["report_zip"]["binding"].values())
+    with zipfile.ZipFile(report) as archive:
+        assert "export_manifest.json" in archive.namelist()
+        assert archive.testzip() is None
 
 
 @pytest.mark.parametrize("kind", ["existing", "repository"])
@@ -334,30 +304,26 @@ def test_output_root_protection(tmp_path: Path, kind: str) -> None:
         _validate_output_root(output_root)
 
 
-def test_cli_has_no_test_mask_input(tmp_path: Path) -> None:
+def test_cli_is_a_only_and_validates_fixed_input_sha(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     image_dir = tmp_path / "images"
     registry = tmp_path / "registry.yaml"
     output_root = tmp_path / "output"
     _write_test_images(image_dir, size=EXPECTED_IMAGE_SIZE)
     registry.write_text("models: []\n", encoding="utf-8")
-    threshold_evidence = tmp_path / "threshold-calibration.json"
-    min_area_evidence = tmp_path / "min-area-calibration.json"
-    threshold_evidence.write_text("{}", encoding="utf-8")
-    min_area_evidence.write_text("{}", encoding="utf-8")
+    digest = hashlib.sha256((image_dir / TEST_FILENAMES[0]).read_bytes()).hexdigest()
+    monkeypatch.setattr(smoke, "INPUT_SHA256", digest)
     parser = build_parser()
-    assert all(
-        "mask" not in option
-        for action in parser._actions
-        for option in action.option_strings
-    )
+    options = {option for action in parser._actions for option in action.option_strings}
+    assert "--threshold-evidence" not in options
+    assert "--min-area-evidence" not in options
+    assert all("mask" not in option for option in options)
     namespace = argparse.Namespace(
         image_dir=image_dir,
         registry=registry,
         output_root=output_root,
-        threshold_evidence=threshold_evidence,
-        threshold_evidence_sha256="a" * 64,
-        min_area_evidence=min_area_evidence,
-        min_area_evidence_sha256="b" * 64,
         model_id=MODEL_ID,
     )
 
@@ -365,34 +331,33 @@ def test_cli_has_no_test_mask_input(tmp_path: Path) -> None:
 
     assert validated.image_dir == image_dir.resolve()
 
+    monkeypatch.setattr(smoke, "INPUT_SHA256", "0" * 64)
+    with pytest.raises(ValueError, match="input SHA-256 mismatch"):
+        _validated_parameters(namespace)
 
-def test_cli_rejects_public_registry_and_test_directory(tmp_path: Path) -> None:
+
+def test_cli_rejects_public_registry_and_independent_test_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     image_dir = tmp_path / "test_images"
     registry = tmp_path / "private-registry.yaml"
     _write_test_images(image_dir, size=EXPECTED_IMAGE_SIZE)
     registry.write_text("models: []\n", encoding="utf-8")
-    threshold_evidence = tmp_path / "threshold-calibration.json"
-    min_area_evidence = tmp_path / "min-area-calibration.json"
-    threshold_evidence.write_text("{}", encoding="utf-8")
-    min_area_evidence.write_text("{}", encoding="utf-8")
+    digest = hashlib.sha256((image_dir / TEST_FILENAMES[0]).read_bytes()).hexdigest()
+    monkeypatch.setattr(smoke, "INPUT_SHA256", digest)
     namespace = argparse.Namespace(
         image_dir=image_dir,
         registry=registry,
         output_root=tmp_path / "output",
-        threshold_evidence=threshold_evidence,
-        threshold_evidence_sha256="a" * 64,
-        min_area_evidence=min_area_evidence,
-        min_area_evidence_sha256="b" * 64,
         model_id=MODEL_ID,
     )
     with pytest.raises(ValueError, match="independent test directory"):
         _validated_parameters(namespace)
 
-    namespace.image_dir = tmp_path / "validation"
+    namespace.image_dir = tmp_path / "a-only-input"
     _write_test_images(namespace.image_dir, size=EXPECTED_IMAGE_SIZE)
-    namespace.registry = (
-        Path(__file__).resolve().parents[3] / "model_artifacts" / "registry.yaml"
-    )
+    namespace.registry = Path(__file__).resolve().parents[3] / "model_artifacts" / "registry.yaml"
     with pytest.raises(ValueError, match="private registry"):
         _validated_parameters(namespace)
 
@@ -407,44 +372,12 @@ def test_bottom_prediction_check_rejects_nonzero_pixels(tmp_path: Path) -> None:
         _mask_bottom_evidence(mask_path, width=80, height=240, bottom_crop_px=130)
 
 
-def test_preflight_private_registry_must_not_be_ready(tmp_path: Path) -> None:
+def test_preflight_private_registry_must_not_claim_ready(tmp_path: Path) -> None:
     registry = tmp_path / "private-preflight.yaml"
     registry.write_text(
-        "models:\n"
-        "  - metadata:\n"
-        f"      model_id: {MODEL_ID}\n"
-        "      status: ready\n",
+        f"models:\n  - metadata:\n      model_id: {MODEL_ID}\n      status: ready\n",
         encoding="utf-8",
     )
 
     with pytest.raises(ValueError, match="remain unavailable before the smoke"):
-        _ready_smoke_registry_entry(
-            registry,
-            PromotionEvidence(
-                tmp_path / "threshold-calibration.json",
-                "a" * 64,
-                {},
-                tmp_path / "min-area-calibration.json",
-                "b" * 64,
-                {},
-            ),
-        )
-
-
-def test_promotion_evidence_digest_is_mandatory(tmp_path: Path) -> None:
-    threshold = tmp_path / "threshold-calibration.json"
-    min_area = tmp_path / "min-area-calibration.json"
-    threshold.write_text("{}", encoding="utf-8")
-    min_area.write_text("{}", encoding="utf-8")
-    parameters = SmokeParameters(
-        tmp_path,
-        tmp_path / "private.yaml",
-        tmp_path / "output",
-        threshold,
-        "0" * 64,
-        min_area,
-        "1" * 64,
-    )
-
-    with pytest.raises(ValueError, match="SHA-256 mismatch"):
-        _load_promotion_evidence(parameters)
+        _ready_smoke_registry_entry(registry)

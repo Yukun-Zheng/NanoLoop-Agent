@@ -1,16 +1,20 @@
-"""Run one fixed agglomerated U-Net validation view through the full Analysis chain."""
+"""Run the fixed Agglomerated-A SEM through the real Gateway and Analysis chain."""
 
 from __future__ import annotations
 
 import argparse
-import csv
 import hashlib
+import importlib
+import importlib.metadata
 import json
 import math
+import os
+import platform
 import re
-import shutil
+import subprocess
 import sys
 import tempfile
+import zipfile
 from collections.abc import Mapping, Sequence
 from contextlib import ExitStack
 from copy import deepcopy
@@ -56,17 +60,11 @@ from app.inference.gateway import InferenceGateway
 from app.inference.model_sync import sync_model_registry
 from app.inference.registry import ModelRegistryService
 from app.storage import LocalFileStore, StoragePaths
-from scripts.models.calibrate_unet_agglomerated_min_area import (
-    CHECKPOINT_SHA256,
-    VALIDATION_FILENAMES,
-    _load_threshold_evidence,
-    _probability_paths,
-)
 
 MODEL_ID = "unet-agglomerated-specialized-v1"
 TORCHSCRIPT_SHA256 = "d36cf627dc6d1eea83b769743b657e6bb3d9a1af39ddc6a00ae95acc3b20ffc9"
 TEST_FILENAMES = ("BiCu-3.tif",)
-INDEPENDENT_TEST_FILENAMES = ("YCu-1.tif", "YCu-2.tif", "YCu-3.tif")
+INPUT_SHA256 = "79376cc42e5cf036b1e5e1108e5eaed16c9434816772d3f130a057e643643b29"
 EXPECTED_IMAGE_SIZE = (2048, 1536)
 THRESHOLD = 0.25
 MIN_AREA_PX = 1024
@@ -76,7 +74,6 @@ BOTTOM_CROP_PX = 130
 SCALE_NM_PER_PIXEL = 100 / 184
 DEVICE = DevicePreference.CPU
 SEED = 2026
-_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 CANONICAL_ARTIFACT_KEYS = (
     "pred_mask_path",
     "probability_path",
@@ -90,6 +87,14 @@ CANONICAL_ARTIFACT_KEYS = (
     "run_config_path",
     "transform_path",
 )
+JSON_ARTIFACT_KEYS = (
+    "instances_path",
+    "image_summary_path",
+    "quality_report_path",
+    "execution_provenance_path",
+    "run_config_path",
+    "transform_path",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,21 +102,7 @@ class SmokeParameters:
     image_dir: Path
     registry: Path
     output_root: Path
-    threshold_evidence: Path
-    threshold_evidence_sha256: str
-    min_area_evidence: Path
-    min_area_evidence_sha256: str
     model_id: str = MODEL_ID
-
-
-@dataclass(frozen=True, slots=True)
-class PromotionEvidence:
-    threshold_path: Path
-    threshold_sha256: str
-    threshold_payload: Mapping[str, Any]
-    min_area_path: Path
-    min_area_sha256: str
-    min_area_payload: Mapping[str, Any]
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,13 +147,6 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _sha256_argument(value: str) -> str:
-    normalized = value.strip().lower()
-    if _SHA256_RE.fullmatch(normalized) is None:
-        raise argparse.ArgumentTypeError("expected a lowercase SHA-256 digest")
-    return normalized
-
-
 def _load_json(path: Path, *, label: str) -> dict[str, Any]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -171,101 +155,6 @@ def _load_json(path: Path, *, label: str) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError(f"{label} must be a JSON object")
     return payload
-
-
-def _load_promotion_evidence(parameters: SmokeParameters) -> PromotionEvidence:
-    if parameters.threshold_evidence.name != "threshold-calibration.json":
-        raise ValueError("threshold evidence must be named threshold-calibration.json")
-    if parameters.min_area_evidence.name != "min-area-calibration.json":
-        raise ValueError("min-area evidence must be named min-area-calibration.json")
-    for label, path, expected_digest in (
-        (
-            "threshold calibration evidence",
-            parameters.threshold_evidence,
-            parameters.threshold_evidence_sha256,
-        ),
-        (
-            "min-area calibration evidence",
-            parameters.min_area_evidence,
-            parameters.min_area_evidence_sha256,
-        ),
-    ):
-        if (
-            _SHA256_RE.fullmatch(expected_digest) is None
-            or _sha256(path) != expected_digest
-        ):
-            raise ValueError(f"{label} SHA-256 mismatch")
-
-    threshold_payload = _load_threshold_evidence(
-        parameters.threshold_evidence.parent,
-        expected_sha256=parameters.threshold_evidence_sha256,
-    )
-    # Readiness requires the probability identities sealed by the threshold evidence
-    # to still resolve to the reviewed bytes.
-    _probability_paths(parameters.threshold_evidence.parent, threshold_payload)
-
-    min_area_payload = _load_json(parameters.min_area_evidence, label="min-area evidence")
-    contract_expected: dict[str, object] = {
-        "schema_version": "1",
-        "model_id": MODEL_ID,
-        "torchscript_sha256": TORCHSCRIPT_SHA256,
-        "checkpoint_sha256": CHECKPOINT_SHA256,
-        "validation_images": list(VALIDATION_FILENAMES),
-    }
-    mismatches: dict[str, dict[str, object]] = {
-        key: {"expected": value, "observed": min_area_payload.get(key)}
-        for key, value in contract_expected.items()
-        if min_area_payload.get(key) != value
-    }
-    selected = min_area_payload.get("selected")
-    if not isinstance(selected, Mapping) or selected.get("min_area_px") != MIN_AREA_PX:
-        mismatches["selected.min_area_px"] = {
-            "expected": MIN_AREA_PX,
-            "observed": selected.get("min_area_px") if isinstance(selected, Mapping) else None,
-        }
-    fixed = min_area_payload.get("fixed_parameters")
-    fixed_expected = {
-        "threshold": THRESHOLD,
-        "threshold_comparison": "gte",
-        "bottom_crop_px": BOTTOM_CROP_PX,
-        "watershed_enabled": False,
-        "fill_holes": True,
-        "exclude_border": True,
-        "connectivity": 2,
-        "perimeter_neighborhood": 8,
-    }
-    if not isinstance(fixed, Mapping):
-        mismatches["fixed_parameters"] = {"expected": "mapping", "observed": fixed}
-    else:
-        for key, value in fixed_expected.items():
-            if fixed.get(key) != value:
-                mismatches[f"fixed_parameters.{key}"] = {
-                    "expected": value,
-                    "observed": fixed.get(key),
-                }
-    threshold_ref = min_area_payload.get("threshold_calibration_evidence")
-    if (
-        not isinstance(threshold_ref, Mapping)
-        or threshold_ref.get("sha256") != parameters.threshold_evidence_sha256
-        or threshold_ref.get("selected_threshold") != THRESHOLD
-    ):
-        mismatches["threshold_calibration_evidence"] = {
-            "expected_sha256": parameters.threshold_evidence_sha256,
-            "observed": threshold_ref,
-        }
-    if mismatches:
-        raise ValueError(
-            "min-area evidence does not match the frozen agglomerated contract: "
-            + json.dumps(mismatches, ensure_ascii=False, sort_keys=True)
-        )
-    return PromotionEvidence(
-        threshold_path=parameters.threshold_evidence,
-        threshold_sha256=parameters.threshold_evidence_sha256,
-        threshold_payload=threshold_payload,
-        min_area_path=parameters.min_area_evidence,
-        min_area_sha256=parameters.min_area_evidence_sha256,
-        min_area_payload=min_area_payload,
-    )
 
 
 def _validate_output_root(output_root: Path, *, repository: Path | None = None) -> Path:
@@ -283,15 +172,11 @@ def _validated_parameters(namespace: argparse.Namespace) -> SmokeParameters:
         raise ValueError(f"model-id must be the frozen Agglomerated model: {MODEL_ID}")
     image_dir = namespace.image_dir.expanduser().resolve(strict=True)
     registry = namespace.registry.expanduser().resolve(strict=True)
-    threshold_evidence = namespace.threshold_evidence.expanduser().resolve(strict=True)
-    min_area_evidence = namespace.min_area_evidence.expanduser().resolve(strict=True)
     output_root = _validate_output_root(namespace.output_root)
     if not image_dir.is_dir():
         raise ValueError(f"image-dir is not a directory: {image_dir}")
     if not registry.is_file():
         raise ValueError(f"registry is not a file: {registry}")
-    if not threshold_evidence.is_file() or not min_area_evidence.is_file():
-        raise ValueError("threshold and min-area evidence must both be existing files")
     public_registry = (_repository_root() / "model_artifacts" / "registry.yaml").resolve()
     if registry == public_registry:
         raise ValueError("--registry must be a repository-external private registry")
@@ -305,14 +190,16 @@ def _validated_parameters(namespace: argparse.Namespace) -> SmokeParameters:
         with Image.open(image_path) as image:
             if image.size != EXPECTED_IMAGE_SIZE:
                 raise ValueError(f"validation image must be 2048x1536: {filename}")
+        observed_sha256 = _sha256(image_path)
+        if observed_sha256 != INPUT_SHA256:
+            raise ValueError(
+                "fixed Agglomerated-A input SHA-256 mismatch: "
+                f"expected={INPUT_SHA256}, observed={observed_sha256}"
+            )
     return SmokeParameters(
         image_dir=image_dir,
         registry=registry,
         output_root=output_root,
-        threshold_evidence=threshold_evidence,
-        threshold_evidence_sha256=namespace.threshold_evidence_sha256,
-        min_area_evidence=min_area_evidence,
-        min_area_evidence_sha256=namespace.min_area_evidence_sha256,
         model_id=namespace.model_id,
     )
 
@@ -322,18 +209,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--image-dir", required=True, type=Path)
     parser.add_argument("--registry", required=True, type=Path)
     parser.add_argument("--output-root", required=True, type=Path)
-    parser.add_argument("--threshold-evidence", required=True, type=Path)
-    parser.add_argument("--threshold-evidence-sha256", required=True, type=_sha256_argument)
-    parser.add_argument("--min-area-evidence", required=True, type=Path)
-    parser.add_argument("--min-area-evidence-sha256", required=True, type=_sha256_argument)
     parser.add_argument("--model-id", default=MODEL_ID)
     return parser
 
 
-def _ready_smoke_registry_entry(
-    registry_path: Path,
-    evidence: PromotionEvidence,
-) -> dict[str, Any]:
+def _ready_smoke_registry_entry(registry_path: Path) -> dict[str, Any]:
     try:
         raw = yaml.safe_load(registry_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, yaml.YAMLError) as error:
@@ -380,27 +260,43 @@ def _ready_smoke_registry_entry(
             "status": "ready",
             "default_threshold": THRESHOLD,
             "inference_invalid_bottom_px": BOTTOM_CROP_PX,
+            "expected_input_width": EXPECTED_IMAGE_SIZE[0],
+            "expected_input_height": EXPECTED_IMAGE_SIZE[1],
             "health_error": None,
             "notes": "Temporary smoke-only execution manifest; persistent readiness pending.",
         }
     )
+    current_root = _repository_root()
+    expected_identities = {
+        "config": _sha256(
+            current_root / "model_artifacts/configs/unet-agglomerated-specialized-v1.yaml"
+        ),
+        "model_card": _sha256(
+            current_root / "model_artifacts/model_cards/unet-agglomerated-specialized-v1.md"
+        ),
+        "adapter": _sha256(current_root / "app/inference/adapters/unet.py"),
+    }
+    observed_identities = {
+        "config": registration.config_sha256,
+        "model_card": registration.model_card_sha256,
+        "adapter": registration.adapter_sha256,
+    }
+    mismatches = {
+        name: {"expected": expected_identities[name], "observed": observed_identities[name]}
+        for name in expected_identities
+        if observed_identities[name] != expected_identities[name]
+    }
+    if mismatches:
+        raise ValueError(
+            "private bundle does not use the current repository config/model card/Adapter: "
+            + json.dumps(mismatches, sort_keys=True)
+        )
     source.update(
         {
             "weight_path": str(registration.weight_path),
             "weight_sha256": TORCHSCRIPT_SHA256,
             "config_path": str(registration.config_path),
             "model_card_path": str(registration.model_card_path),
-            "promotion_evidence": {
-                "schema_version": 1,
-                "threshold_calibration": {
-                    "path": str(evidence.threshold_path),
-                    "sha256": evidence.threshold_sha256,
-                },
-                "min_area_calibration": {
-                    "path": str(evidence.min_area_path),
-                    "sha256": evidence.min_area_sha256,
-                },
-            },
         }
     )
     return source
@@ -446,9 +342,7 @@ def load_calibrated_analysis(
         threshold_comparison=comparison,
         min_area_px=_require_int(raw, "min_area_px"),
         min_area_nm2=_require_float(raw, "min_area_nm2"),
-        min_area_equivalent_diameter_nm=_require_float(
-            raw, "min_area_equivalent_diameter_nm"
-        ),
+        min_area_equivalent_diameter_nm=_require_float(raw, "min_area_equivalent_diameter_nm"),
         watershed_enabled=_require_bool(raw, "watershed_enabled"),
         fill_holes=_require_bool(raw, "fill_holes"),
         exclude_border=_require_bool(raw, "exclude_border"),
@@ -465,20 +359,6 @@ def load_calibrated_analysis(
         raise ValueError("calibrated bottom crop differs from inference config")
     if config.get("threshold_comparison") != calibrated.threshold_comparison:
         raise ValueError("calibrated threshold comparison differs from inference config")
-    expected_area = calibrated.min_area_px * calibrated.scale_nm_per_pixel**2
-    expected_diameter = (
-        2.0
-        * math.sqrt(calibrated.min_area_px / math.pi)
-        * calibrated.scale_nm_per_pixel
-    )
-    if not math.isclose(calibrated.min_area_nm2, expected_area, rel_tol=1e-12):
-        raise ValueError("calibrated min-area physical conversion is inconsistent")
-    if not math.isclose(
-        calibrated.min_area_equivalent_diameter_nm,
-        expected_diameter,
-        rel_tol=1e-12,
-    ):
-        raise ValueError("calibrated equivalent-diameter conversion is inconsistent")
     calibrated.postprocess_profile()
     calibrated.morphometry_config()
     expected = CalibratedAnalysis(
@@ -523,9 +403,9 @@ def _canonical_artifact_identities(
     artifacts: Mapping[str, str | None],
     *,
     output_root: Path,
-) -> dict[str, dict[str, str]]:
+) -> dict[str, dict[str, str | int]]:
     resolved_root = output_root.resolve(strict=True)
-    identities: dict[str, dict[str, str]] = {}
+    identities: dict[str, dict[str, str | int]] = {}
     for key in CANONICAL_ARTIFACT_KEYS:
         raw_path = artifacts.get(key)
         if raw_path is None:
@@ -535,8 +415,46 @@ def _canonical_artifact_identities(
             relative = path.relative_to(resolved_root)
         except ValueError as error:
             raise RuntimeError(f"canonical artifact escaped the smoke output: {key}") from error
-        identities[key] = {"path": relative.as_posix(), "sha256": _sha256(path)}
+        identities[key] = {
+            "path": relative.as_posix(),
+            "sha256": _sha256(path),
+            "size_bytes": path.stat().st_size,
+        }
+        if key in JSON_ARTIFACT_KEYS:
+            _load_json(path, label=f"canonical artifact {key}")
     return identities
+
+
+def _validate_artifact_linkage(
+    *,
+    artifacts: Mapping[str, str | None],
+    run_id: str,
+    image_sha256: str,
+    model_id: str,
+    weight_sha256: str,
+) -> dict[str, Any]:
+    required = {
+        "run_config": artifacts.get("run_config_path"),
+        "image_summary": artifacts.get("image_summary_path"),
+        "execution_provenance": artifacts.get("execution_provenance_path"),
+    }
+    if any(path is None for path in required.values()):
+        raise RuntimeError("canonical linkage files are missing")
+    run_config = _load_json(Path(str(required["run_config"])), label="run configuration")
+    summary = _load_json(Path(str(required["image_summary"])), label="image summary")
+    execution = _load_json(
+        Path(str(required["execution_provenance"])), label="execution provenance"
+    )
+    checks = {
+        "summary_run_id_matches": summary.get("run_id") == run_id,
+        "input_sha256_matches": run_config.get("image_sha256") == image_sha256,
+        "model_id_matches": run_config.get("model_id") == model_id,
+        "weight_sha256_matches": run_config.get("weight_sha256") == weight_sha256,
+        "execution_bundle_present": isinstance(execution.get("model_bundle_id"), str),
+    }
+    if not all(checks.values()):
+        raise RuntimeError(f"canonical artifact linkage failed: {checks}")
+    return checks
 
 
 def _validate_schema3_execution(
@@ -638,67 +556,6 @@ def _bottom_exclusion_evidence(
     }
 
 
-def _density_evidence(
-    *,
-    particles_csv: Path,
-    particle_count: int,
-    roi_area_px: int,
-    scale_nm_per_pixel: float,
-    coverage_ratio: float,
-    number_density_um2: float | None,
-    perimeter_density_um: float | None,
-    valid_height: int,
-) -> dict[str, Any]:
-    with particles_csv.open("r", encoding="utf-8-sig", newline="") as stream:
-        rows = list(csv.DictReader(stream))
-    if len(rows) != particle_count:
-        raise RuntimeError("particle CSV count differs from Analysis summary")
-    area_total_px = sum(float(row["area_px"]) for row in rows)
-    perimeter_total_px = sum(float(row["perimeter_px"]) for row in rows)
-    all_particles_above_bottom = all(int(row["bbox_y2"]) <= valid_height for row in rows)
-    roi_area_um2 = roi_area_px * (scale_nm_per_pixel / 1000.0) ** 2
-    expected_coverage = area_total_px / roi_area_px
-    expected_number_density = particle_count / roi_area_um2
-    expected_perimeter_density = (
-        perimeter_total_px * scale_nm_per_pixel / 1000.0 / roi_area_um2
-    )
-    checks = {
-        "all_particle_bboxes_within_effective_roi": all_particles_above_bottom,
-        "coverage_uses_effective_roi": math.isclose(
-            coverage_ratio, expected_coverage, rel_tol=1e-12, abs_tol=1e-15
-        ),
-        "number_density_uses_effective_roi": (
-            number_density_um2 is not None
-            and math.isclose(
-                number_density_um2,
-                expected_number_density,
-                rel_tol=1e-12,
-                abs_tol=1e-15,
-            )
-        ),
-        "perimeter_density_uses_effective_roi": (
-            perimeter_density_um is not None
-            and math.isclose(
-                perimeter_density_um,
-                expected_perimeter_density,
-                rel_tol=1e-12,
-                abs_tol=1e-15,
-            )
-        ),
-    }
-    if not all(checks.values()):
-        raise RuntimeError(f"scientific ROI consistency check failed: {checks}")
-    return {
-        "roi_area_um2": roi_area_um2,
-        "particle_area_total_px": area_total_px,
-        "particle_perimeter_total_px": perimeter_total_px,
-        "expected_coverage_ratio": expected_coverage,
-        "expected_number_density_um2": expected_number_density,
-        "expected_perimeter_density_um": expected_perimeter_density,
-        **checks,
-    }
-
-
 def _mask_bottom_evidence(
     mask_path: Path,
     *,
@@ -723,6 +580,116 @@ def _mask_bottom_evidence(
         "bottom_rows_checked": bottom_crop_px,
         "bottom_nonzero_pixels": bottom_nonzero,
         "bottom_prediction_is_zero": True,
+    }
+
+
+def _ready_health(
+    gateway: InferenceGateway,
+    *,
+    model_id: str,
+    stage: str,
+) -> dict[str, Any]:
+    health = next((item for item in gateway.health() if item.model_id == model_id), None)
+    if health is None:
+        raise RuntimeError(f"Gateway health is missing at {stage}: {model_id}")
+    if health.status != ModelStatus.READY:
+        raise RuntimeError(
+            f"Gateway health is not ready at {stage}: "
+            f"{model_id} ({health.status.value}: {health.error_summary})"
+        )
+    return health.model_dump(mode="json")
+
+
+def _package_version(distribution: str) -> str:
+    try:
+        return importlib.metadata.version(distribution)
+    except importlib.metadata.PackageNotFoundError:
+        return "unknown"
+
+
+def _git_commit() -> str:
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(_repository_root()), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    commit = completed.stdout.strip().lower()
+    return commit if re.fullmatch(r"[0-9a-f]{40}", commit) else "unknown"
+
+
+def _runtime_environment() -> dict[str, str]:
+    torch = importlib.import_module("torch")
+    return {
+        "python_version": platform.python_version(),
+        "torch_version": str(getattr(torch, "__version__", "unknown")),
+        "torchvision_version": _package_version("torchvision"),
+        "git_commit": _git_commit(),
+        "container_image": (
+            os.environ.get("NANOLOOP_CONTAINER_IMAGE")
+            or os.environ.get("CONTAINER_IMAGE")
+            or "unknown"
+        ),
+        "container_id": (
+            os.environ.get("NANOLOOP_CONTAINER_ID") or os.environ.get("HOSTNAME") or "unknown"
+        ),
+    }
+
+
+def _build_report_zip(
+    *,
+    file_store: LocalFileStore,
+    job_id: str,
+    run_id: str,
+    input_sha256: str,
+    model_id: str,
+    weight_sha256: str,
+    artifact_paths: Sequence[Path],
+    output_root: Path,
+) -> dict[str, Any]:
+    archive = file_store.build_zip(
+        job_id,
+        artifact_paths,
+        filename="agglomerated-a-report.zip",
+    )
+    with zipfile.ZipFile(archive.path) as bundle:
+        if "export_manifest.json" not in bundle.namelist():
+            raise RuntimeError("report ZIP is missing export_manifest.json")
+        manifest = json.loads(bundle.read("export_manifest.json").decode("utf-8"))
+        if manifest.get("job_id") != job_id:
+            raise RuntimeError("report ZIP manifest has an unexpected job_id")
+        run_config_names = [name for name in bundle.namelist() if name.endswith("/run_config.json")]
+        summary_names = [name for name in bundle.namelist() if name.endswith("/image_summary.json")]
+        if len(run_config_names) != 1 or len(summary_names) != 1:
+            raise RuntimeError(
+                "report ZIP must contain exactly one run_config.json and image_summary.json"
+            )
+        run_config = json.loads(bundle.read(run_config_names[0]).decode("utf-8"))
+        summary = json.loads(bundle.read(summary_names[0]).decode("utf-8"))
+        binding = {
+            "job_id_matches": manifest.get("job_id") == job_id,
+            "run_id_matches": summary.get("run_id") == run_id,
+            "input_sha256_matches": run_config.get("image_sha256") == input_sha256,
+            "model_id_matches": run_config.get("model_id") == model_id,
+            "weight_sha256_matches": run_config.get("weight_sha256") == weight_sha256,
+        }
+        if not all(binding.values()):
+            raise RuntimeError(f"report ZIP binding failed: {binding}")
+        if bundle.testzip() is not None:
+            raise RuntimeError("report ZIP failed CRC verification")
+    if _sha256(archive.path) != archive.sha256:
+        raise RuntimeError("report ZIP SHA-256 changed after publication")
+    return {
+        "path": archive.path.resolve(strict=True)
+        .relative_to(output_root.resolve(strict=True))
+        .as_posix(),
+        "sha256": archive.sha256,
+        "size_bytes": archive.size_bytes,
+        "binding": binding,
     }
 
 
@@ -800,7 +767,9 @@ def execute_analyses(
         raise RuntimeError(f"expected one run, got {len(run_ids)}")
 
     run_results: list[dict[str, Any]] = []
+    report_members: list[Path] = []
     model_identity: dict[str, Any] | None = None
+    input_sha256 = _sha256(parameters.image_dir / TEST_FILENAMES[0])
     for filename, run_id in zip(TEST_FILENAMES, run_ids, strict=True):
         image = images_by_name[filename]
         completed = service.execute_run(run_id)
@@ -818,6 +787,11 @@ def execute_analyses(
         artifact_identities = _canonical_artifact_identities(
             artifacts,
             output_root=parameters.output_root,
+        )
+        report_members.extend(
+            Path(path)
+            for key in CANONICAL_ARTIFACT_KEYS
+            if (path := artifacts.get(key)) is not None
         )
         configuration = completed.configuration
         postprocess = configuration.resolved_postprocess
@@ -847,22 +821,19 @@ def execute_analyses(
             height=image.height,
             bottom_crop_px=calibrated.bottom_crop_px,
         )
-        particles_csv_value = artifacts.get("particles_csv_path")
-        if particles_csv_value is None:
+        if artifacts.get("particles_csv_path") is None:
             raise RuntimeError(f"particles CSV is missing: {filename}")
-        density = _density_evidence(
-            particles_csv=Path(particles_csv_value),
-            particle_count=completed.summary.particle_count,
-            roi_area_px=completed.summary.roi_area_px,
-            scale_nm_per_pixel=calibrated.scale_nm_per_pixel,
-            coverage_ratio=completed.summary.coverage_ratio,
-            number_density_um2=completed.summary.number_density_um2,
-            perimeter_density_um=completed.summary.perimeter_density_um,
-            valid_height=image.height - calibrated.bottom_crop_px,
-        )
         bundle = configuration.model_bundle
         if bundle is None:
             raise RuntimeError("schema-v3 model bundle unexpectedly disappeared")
+        if (
+            configuration.image_sha256 is None
+            or configuration.weight_sha256 is None
+            or configuration.config_sha256 is None
+            or configuration.model_card_sha256 is None
+            or configuration.adapter_sha256 is None
+        ):
+            raise RuntimeError("schema-v3 model or input identity unexpectedly disappeared")
         current_identity = {
             "model_id": configuration.model_id,
             "version": configuration.model_version,
@@ -876,6 +847,13 @@ def execute_analyses(
             model_identity = current_identity
         elif current_identity != model_identity:
             raise RuntimeError("model artifact identity differs between test runs")
+        linkage = _validate_artifact_linkage(
+            artifacts=artifacts,
+            run_id=completed.run_id,
+            image_sha256=configuration.image_sha256,
+            model_id=configuration.model_id,
+            weight_sha256=configuration.weight_sha256,
+        )
         run_results.append(
             {
                 "filename": filename,
@@ -899,16 +877,14 @@ def execute_analyses(
                     "analysis_roi": configuration.analysis_roi.model_dump(mode="json"),
                     "bottom_exclusion": bottom,
                     "prediction_bottom_check": mask_bottom,
-                    "density_consistency": density,
                 },
-                "scientific_results": {
-                    "particle_count": completed.summary.particle_count,
-                    "mean_equivalent_diameter_nm": (
-                        completed.summary.mean_equivalent_diameter_nm
-                    ),
-                    "number_density_um2": completed.summary.number_density_um2,
-                    "perimeter_density_um": completed.summary.perimeter_density_um,
-                    "coverage_ratio": completed.summary.coverage_ratio,
+                "predict_summary": {
+                    "final_status": completed.status.value,
+                    "quality_status": completed.quality.status.value,
+                    "requested_device": configuration.inference.device.value,
+                    "resolved_device": completed.execution.actual_device,
+                    "bottom_prediction_is_zero": mask_bottom["bottom_prediction_is_zero"],
+                    "canonical_artifact_count": len(artifact_identities),
                 },
                 "quality": {
                     "status": completed.quality.status.value,
@@ -921,33 +897,50 @@ def execute_analyses(
                     },
                 },
                 "artifacts": {
-                    "mask": artifacts.get("pred_mask_path"),
-                    "instances": artifacts.get("instances_path"),
-                    "particles_csv": particles_csv_value,
-                    "overlay": artifacts.get("overlay_path"),
-                    "labeled_particles": artifacts.get("labeled_particles_path"),
-                    "report": artifacts.get("image_summary_path"),
-                    "quality_report": artifacts.get("quality_report_path"),
-                    "execution_evidence": artifacts.get("execution_provenance_path"),
-                    "run_configuration": artifacts.get("run_config_path"),
-                    "transform": artifacts.get("transform_path"),
-                    "probability": artifacts.get("probability_path"),
+                    "mask": artifact_identities["pred_mask_path"]["path"],
+                    "instances": artifact_identities["instances_path"]["path"],
+                    "particles_csv": artifact_identities["particles_csv_path"]["path"],
+                    "overlay": artifact_identities["overlay_path"]["path"],
+                    "labeled_particles": artifact_identities["labeled_particles_path"]["path"],
+                    "report": artifact_identities["image_summary_path"]["path"],
+                    "quality_report": artifact_identities["quality_report_path"]["path"],
+                    "execution_evidence": artifact_identities["execution_provenance_path"]["path"],
+                    "run_configuration": artifact_identities["run_config_path"]["path"],
+                    "transform": artifact_identities["transform_path"]["path"],
+                    "probability": artifact_identities["probability_path"]["path"],
                 },
                 "canonical_artifact_identities": artifact_identities,
+                "artifact_linkage": linkage,
+                "execution_provenance": _load_json(
+                    Path(str(artifacts["execution_provenance_path"])),
+                    label="execution provenance",
+                ),
             }
         )
+    report_zip = _build_report_zip(
+        file_store=file_store,
+        job_id=job.job.job_id,
+        run_id=run_results[0]["run_id"],
+        input_sha256=input_sha256,
+        model_id=parameters.model_id,
+        weight_sha256=TORCHSCRIPT_SHA256,
+        artifact_paths=report_members,
+        output_root=parameters.output_root,
+    )
     return {
         "job_id": job.job.job_id,
-        "test_scope": (
-            "one calibrated validation field of view; no masks or YCu test data were read"
-        ),
-        "validation_images": list(TEST_FILENAMES),
+        "test_scope": "Agglomerated-A runtime integration only; no GT or scientific evaluation",
+        "input": {
+            "filename": TEST_FILENAMES[0],
+            "sha256": input_sha256,
+        },
         "model": model_identity,
-        "calibrated_analysis": {
+        "frozen_analysis_settings": {
             **asdict(calibrated),
             "scale_expression": "100/184 nm_per_pixel",
         },
         "runs": run_results,
+        "report_zip": report_zip,
         "private_registry_ready_eligible": True,
         "readiness_scope": (
             "successful full Analysis smoke for the exact private asset; public registry unchanged"
@@ -958,8 +951,7 @@ def execute_analyses(
 def run_smoke(parameters: SmokeParameters) -> dict[str, Any]:
     output_root = _validate_output_root(parameters.output_root)
     snapshot_root = output_root / "model-snapshots"
-    promotion_evidence = _load_promotion_evidence(parameters)
-    ready_entry = _ready_smoke_registry_entry(parameters.registry, promotion_evidence)
+    ready_entry = _ready_smoke_registry_entry(parameters.registry)
     ready_payload: dict[str, Any] = {"schema_version": "2.0", "models": [ready_entry]}
     with tempfile.TemporaryDirectory(prefix="nanoloop-agglomerated-smoke-") as temporary:
         smoke_registry_path = Path(temporary) / "smoke-registry.yaml"
@@ -992,74 +984,105 @@ def run_smoke(parameters: SmokeParameters) -> dict[str, Any]:
                 model_device=DEVICE.value,
             )
         )
+        gateway = InferenceGateway(registry)
         try:
             Base.metadata.create_all(database.engine)
             with database.session() as session:
                 sync_model_registry(session, registry)
+            health_before = _ready_health(
+                gateway,
+                model_id=parameters.model_id,
+                stage="before_load_predict",
+            )
             maximum_upload = max(
-                (parameters.image_dir / filename).stat().st_size
-                for filename in TEST_FILENAMES
+                (parameters.image_dir / filename).stat().st_size for filename in TEST_FILENAMES
             )
-            result = execute_analyses(
-                parameters,
-                calibrated,
-                database=database,
-                file_store=LocalFileStore(
-                    StoragePaths(artifact_root),
-                    max_upload_bytes=max(1, maximum_upload),
-                ),
-                gateway=InferenceGateway(registry),
-            )
+            try:
+                result = execute_analyses(
+                    parameters,
+                    calibrated,
+                    database=database,
+                    file_store=LocalFileStore(
+                        StoragePaths(artifact_root),
+                        max_upload_bytes=max(1, maximum_upload),
+                    ),
+                    gateway=gateway,
+                )
+                health_after_predict = _ready_health(
+                    gateway,
+                    model_id=parameters.model_id,
+                    stage="after_predict",
+                )
+                gateway.cache.unload(parameters.model_id)
+                health_after_unload = _ready_health(
+                    gateway,
+                    model_id=parameters.model_id,
+                    stage="after_unload",
+                )
+                cached_after_unload = len(gateway.cache.loaded())
+                if cached_after_unload != 0:
+                    raise RuntimeError(
+                        f"Adapter cache is not empty after unload: {cached_after_unload}"
+                    )
+            finally:
+                gateway.cache.unload(parameters.model_id)
         finally:
             database.dispose()
 
-    evidence_dir = output_root / "readiness-evidence"
-    evidence_dir.mkdir(exist_ok=False)
-    threshold_copy = evidence_dir / "threshold-calibration.json"
-    min_area_copy = evidence_dir / "min-area-calibration.json"
-    shutil.copyfile(promotion_evidence.threshold_path, threshold_copy)
-    shutil.copyfile(promotion_evidence.min_area_path, min_area_copy)
-    if (
-        _sha256(threshold_copy) != promotion_evidence.threshold_sha256
-        or _sha256(min_area_copy) != promotion_evidence.min_area_sha256
-    ):
-        raise RuntimeError("copied promotion evidence identity changed")
-    smoke_evidence_path = evidence_dir / "analysis-smoke-evidence.json"
-    smoke_evidence_payload = {
-        "schema_version": "1",
-        "model_id": MODEL_ID,
-        "result": result,
-    }
-    smoke_evidence_path.write_text(
-        json.dumps(smoke_evidence_payload, ensure_ascii=False, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
-
     persistent_payload: dict[str, Any] = deepcopy(ready_payload)
-    persistent_payload["models"][0]["metadata"]["notes"] = (
-        "Exact private asset passed evidence-gated Agglomerated schema-v3 Analysis smoke."
+    persistent_entry = persistent_payload["models"][0]
+    model_identity = result["model"]
+    persistent_entry["metadata"]["notes"] = (
+        "Exact private asset passed the current Agglomerated-A Gateway/Analysis smoke; "
+        "public registry remains unchanged."
     )
-    persistent_payload["models"][0]["promotion_evidence"] = {
-        "schema_version": 1,
-        "threshold_calibration": {
-            "path": threshold_copy.relative_to(output_root).as_posix(),
-            "sha256": promotion_evidence.threshold_sha256,
-        },
-        "min_area_calibration": {
-            "path": min_area_copy.relative_to(output_root).as_posix(),
-            "sha256": promotion_evidence.min_area_sha256,
-        },
-        "analysis_smoke": {
-            "path": smoke_evidence_path.relative_to(output_root).as_posix(),
-            "sha256": _sha256(smoke_evidence_path),
-        },
-    }
+    persistent_entry.update(
+        {
+            "weight_path": (f"model-snapshots/{model_identity['weight_sha256']}/weights.pt"),
+            "config_path": (f"model-snapshots/{model_identity['config_sha256']}/config.yaml"),
+            "model_card_path": (
+                f"model-snapshots/{model_identity['model_card_sha256']}/model-card.md"
+            ),
+            "weight_sha256": model_identity["weight_sha256"],
+        }
+    )
     ready_registry_path = output_root / "private-registry-ready.yaml"
     ready_registry_path.write_text(
         yaml.safe_dump(persistent_payload, sort_keys=False), encoding="utf-8"
     )
-    result["private_registry_ready_manifest"] = str(ready_registry_path)
-    result["promotion_evidence"] = persistent_payload["models"][0]["promotion_evidence"]
+    result["private_registry_ready_manifest"] = {
+        "path": ready_registry_path.relative_to(output_root).as_posix(),
+        "sha256": _sha256(ready_registry_path),
+    }
+    result["gateway_lifecycle"] = {
+        "registry_loaded": True,
+        "snapshot_bundle_validated": True,
+        "health_before_load_predict": health_before,
+        "load_completed_via_predict": True,
+        "predict_completed": True,
+        "health_after_predict": health_after_predict,
+        "analysis_completed": True,
+        "unload_completed": True,
+        "health_after_unload": health_after_unload,
+        "cache_count_after_unload": cached_after_unload,
+    }
+    result["runtime_environment"] = _runtime_environment()
+    result["model_id"] = model_identity["model_id"]
+    result["torchscript_sha256"] = model_identity["weight_sha256"]
+    result["config_sha256"] = model_identity["config_sha256"]
+    result["model_card_sha256"] = model_identity["model_card_sha256"]
+    result["adapter_sha256"] = model_identity["adapter_sha256"]
+    result["input_sha256"] = result["input"]["sha256"]
+    result["seed"] = SEED
+    result["run_id"] = result["runs"][0]["run_id"]
+    result["final_status"] = result["runs"][0]["final_status"]
+    result["requested_device"] = DEVICE.value
+    result["resolved_device"] = result["runs"][0]["predict_summary"]["resolved_device"]
+    result["warnings"] = {
+        "quality": result["runs"][0]["quality"]["reasons"],
+        "configuration": result["runs"][0]["quality"]["warnings"]["configuration"],
+        "execution": result["runs"][0]["quality"]["warnings"]["execution"],
+    }
     return result
 
 
@@ -1067,8 +1090,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         parameters = _validated_parameters(build_parser().parse_args(argv))
         result = run_smoke(parameters)
-        report_path = parameters.output_root / "agglomerated-analysis-smoke.json"
-        result["smoke_report"] = str(report_path)
+        report_path = parameters.output_root / "gateway-analysis-smoke.json"
+        result["smoke_report"] = {
+            "path": report_path.relative_to(parameters.output_root).as_posix(),
+        }
         report_path.write_text(
             json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True),
             encoding="utf-8",
