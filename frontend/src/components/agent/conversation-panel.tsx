@@ -7,6 +7,7 @@ import {
   ChevronDown,
   MessageSquarePlus,
   SlidersHorizontal,
+  Sparkles,
   UserRound
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -67,6 +68,7 @@ export function ConversationPanel({
   const [materialFormula, setMaterialFormula] = useState("");
   const [materialAliases, setMaterialAliases] = useState("");
   const [phaseIndex, setPhaseIndex] = useState(0);
+  const [pendingQuestion, setPendingQuestion] = useState<string | null>(null);
   const scrollAnchor = useRef<HTMLDivElement>(null);
 
   const conversations = useQuery({
@@ -85,7 +87,8 @@ export function ConversationPanel({
       apiRequest<ConversationDetail>(
         `analyses/${encodeURIComponent(jobId)}/conversations/${encodeURIComponent(resolvedActiveId || "")}`
       ).then((response) => response.data),
-    enabled: Boolean(resolvedActiveId)
+    enabled: Boolean(resolvedActiveId),
+    staleTime: 10_000
   });
 
   const createConversation = useMutation({
@@ -116,14 +119,25 @@ export function ConversationPanel({
         `analyses/${encodeURIComponent(jobId)}/conversations/${encodeURIComponent(conversationId)}/messages`,
         { method: "POST", body }
       ),
+    onMutate(variables) {
+      setPendingQuestion(variables.body.content);
+      setQuestion("");
+    },
     async onSuccess(response) {
+      await queryClient.cancelQueries({
+        queryKey: queryKeys.conversation(jobId, response.data.conversation_id)
+      });
       queryClient.setQueryData(
         queryKeys.conversation(jobId, response.data.conversation_id),
         response.data
       );
-      setQuestion("");
+      setPendingQuestion(null);
       setPhaseIndex(phases.length);
       await queryClient.invalidateQueries({ queryKey: queryKeys.conversations(jobId) });
+    },
+    onError(_error, variables) {
+      setPendingQuestion(null);
+      setQuestion((current) => current || variables.body.content);
     }
   });
 
@@ -159,8 +173,9 @@ export function ConversationPanel({
     materialName.trim() || materialFormula.trim() || aliases.length
   );
 
-  async function submit() {
-    if (!question.trim() || writeBlocker || sendMessage.isPending) return;
+  async function submit(contentOverride?: string) {
+    const content = (contentOverride ?? question).trim();
+    if (!content || writeBlocker || sendMessage.isPending) return;
     let conversationId = resolvedActiveId;
     if (!conversationId) {
       const response = await createConversation.mutateAsync();
@@ -171,7 +186,7 @@ export function ConversationPanel({
     sendMessage.mutate({
       conversationId,
       body: {
-        content: question.trim(),
+        content,
         query_type: mode,
         image_id: image?.image_id ?? null,
         run_ids: runIds.slice(0, 50),
@@ -188,7 +203,21 @@ export function ConversationPanel({
   }
 
   const messages = detail.data?.messages ?? [];
-  const llmUnavailable = health?.llm_provider?.status !== "healthy";
+  const llmHealth = health?.llm_provider;
+  const llmUnavailable = Boolean(llmHealth && llmHealth.status !== "healthy");
+  const suggestions = runIds.length
+    ? [
+        "帮我概括当前任务和已有结果",
+        "这次运行最值得先检查什么？",
+        "当前结果有哪些质量限制？",
+        "结合证据，建议我下一步怎么做？"
+      ]
+    : [
+        "帮我看看接下来该做什么",
+        "这张图现在可以做哪些分析？",
+        "开始分析前需要准备什么？",
+        "介绍一下你能调用的工具"
+      ];
 
   return (
     <div className="conversation-shell">
@@ -231,29 +260,45 @@ export function ConversationPanel({
           <span>
             材料：{materialName || image?.material_name || image?.material_formula || "未填写"}
           </span>
-          {llmUnavailable ? (
+          {!llmHealth ? (
+            <StatusBadge value="pending" label="正在检查本地 Qwen" />
+          ) : llmUnavailable ? (
             <StatusBadge value="degraded" label="本地模型不可用，回答将安全降级" />
           ) : (
-            <StatusBadge value="healthy" label="本地模型已就绪" />
+            <StatusBadge value="healthy" label="Qwen 已连接" />
           )}
         </div>
 
         <div className="conversation-messages" aria-live="polite">
           {conversations.isError ? <RequestError error={conversations.error} /> : null}
           {detail.isError ? <RequestError error={detail.error} /> : null}
-          {!messages.length && !detail.isPending ? (
+          {!messages.length && (!resolvedActiveId || !detail.isPending) ? (
             <div className="conversation-welcome">
-              <Bot size={28} />
-              <h2>下一步：直接说你想知道什么</h2>
+              <span className="conversation-welcome-icon"><Sparkles size={22} /></span>
+              <h2>和 NanoLoop 一起分析这次实验</h2>
               <p>
-                例如“概括当前任务”“哪个模型颗粒更多”或“为什么可能有这种差异”。
-                系统会自动选择数据工具和知识库，不需要把它当成通用聊天机器人。
+                像使用 Codex 一样直接描述目标。Qwen 会自然对话，并在涉及实验事实时
+                自动调用数据工具或知识库，把结论和证据放在同一条回答里。
               </p>
+              <div className="conversation-suggestions">
+                {suggestions.map((suggestion) => (
+                  <button
+                    type="button"
+                    key={suggestion}
+                    disabled={Boolean(writeBlocker) || sendMessage.isPending}
+                    onClick={() => void submit(suggestion)}
+                  >
+                    <span>{suggestion}</span>
+                    <ArrowUp size={14} />
+                  </button>
+                ))}
+              </div>
             </div>
           ) : null}
           {messages.map((message) => (
             <MessageBubble message={message} key={message.message_id} />
           ))}
+          {pendingQuestion ? <PendingUserMessage content={pendingQuestion} /> : null}
           {sendMessage.isPending ? (
             <div className="message-row assistant">
               <span className="message-avatar"><Bot size={15} /></span>
@@ -326,7 +371,7 @@ export function ConversationPanel({
                   void submit();
                 }
               }}
-              placeholder="说出你想完成的事，例如：帮我概括当前任务"
+              placeholder="向 NanoLoop 提问或安排下一步…"
             />
             <button
               type="button"
@@ -343,6 +388,18 @@ export function ConversationPanel({
           </small>
         </div>
       </section>
+    </div>
+  );
+}
+
+function PendingUserMessage({ content }: { content: string }) {
+  return (
+    <div className="message-row user pending-message" aria-label="正在发送的消息">
+      <span className="message-avatar"><UserRound size={15} /></span>
+      <article className="message-bubble">
+        <div className="message-meta"><strong>你</strong><span>正在发送</span></div>
+        <p>{content}</p>
+      </article>
     </div>
   );
 }
@@ -376,6 +433,9 @@ function MessageBubble({ message }: { message: ChatMessage }) {
           <strong>{message.role === "assistant" ? "NanoLoop" : "你"}</strong>
           {message.role === "assistant" ? (
             <>
+              {message.evidence?.llm_model ? (
+                <span className="message-model">{message.evidence.llm_model}</span>
+              ) : null}
               <StatusBadge value={message.outcome_code || "unknown"} />
               <span>{message.query_type}</span>
               {message.evidence?.fallback_used ? (

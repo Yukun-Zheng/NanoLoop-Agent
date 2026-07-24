@@ -594,8 +594,16 @@ code {
   text-align: center;
 }
 
-.conversation-welcome > svg {
+.conversation-welcome-icon {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  border: 1px solid rgba(95, 111, 245, 0.18);
+  border-radius: 14px;
   color: var(--nl-accent);
+  background: linear-gradient(145deg, white, rgba(232, 235, 255, 0.9));
+  box-shadow: 0 10px 30px rgba(71, 82, 172, 0.09);
 }
 
 .conversation-welcome h2 {
@@ -607,6 +615,53 @@ code {
 .conversation-welcome p {
   margin: 0;
   line-height: 1.7;
+}
+
+.conversation-suggestions {
+  display: grid;
+  width: min(620px, 100%);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+  margin-top: 22px;
+}
+
+.conversation-suggestions button {
+  display: flex;
+  min-height: 54px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid var(--nl-border);
+  border-radius: 12px;
+  padding: 10px 12px;
+  color: var(--nl-text-muted);
+  background: rgba(255, 255, 255, 0.82);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  transition:
+    border-color 140ms ease,
+    color 140ms ease,
+    transform 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.conversation-suggestions button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: rgba(95, 111, 245, 0.38);
+  color: var(--nl-text);
+  box-shadow: 0 8px 22px rgba(43, 50, 90, 0.07);
+}
+
+.conversation-suggestions button svg {
+  flex: 0 0 auto;
+  color: var(--nl-accent);
+  rotate: 45deg;
+}
+
+.conversation-suggestions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .message-row {
@@ -671,6 +726,17 @@ code {
 
 .message-row.user .message-meta {
   color: rgba(255, 255, 255, 0.75);
+}
+
+.pending-message {
+  opacity: 0.72;
+}
+
+.message-model {
+  overflow: hidden;
+  max-width: 210px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .message-bubble.progress {
@@ -817,6 +883,10 @@ code {
 }
 
 @media (max-width: 700px) {
+  .conversation-suggestions {
+    grid-template-columns: 1fr;
+  }
+
   .app-topbar {
     padding: 0 18px;
   }

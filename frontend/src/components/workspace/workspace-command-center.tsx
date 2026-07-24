@@ -699,7 +699,7 @@ function stageDescription(
     models: "先查看本次分析摘要，再点“开始分割”；模型、阈值和设备都已有默认值。",
     runs: runDescription,
     results: "默认显示识别叠加图，并明确区分原图、掩码和模型结果。",
-    agent: "这里不是通用聊天；问题会限定在当前图像、所选运行和材料证据内，并自动调用可审计工具。"
+    agent: "像和科研助理对话一样描述目标；Qwen 会连续理解上下文，并为实验结论自动调用可审计工具。"
   };
   return descriptions[stage];
 }

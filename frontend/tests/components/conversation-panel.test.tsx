@@ -197,6 +197,91 @@ describe("ConversationPanel", () => {
     );
   });
 
+  it("offers Codex-style task starters and sends a selected prompt", async () => {
+    const user = userEvent.setup();
+    mockedApi.mockImplementation((async (path, options) => {
+      if (path.endsWith("/messages") && options?.method === "POST") {
+        return {
+          request_id: "req_send_suggestion",
+          status: "success",
+          data: {
+            ...conversation,
+            conversation_id: "conv_new",
+            title: "下一步",
+            message_count: 2,
+            messages: [
+              {
+                message_id: "msg_suggestion_user",
+                conversation_id: "conv_new",
+                role: "user",
+                content: "帮我看看接下来该做什么",
+                query_type: "general_chat",
+                run_ids: [],
+                created_at: now
+              },
+              {
+                ...conversation.messages![1]!,
+                message_id: "msg_suggestion_assistant",
+                conversation_id: "conv_new",
+                content: "可以先选择模型并创建一次分析运行。",
+                query_type: "general_chat"
+              }
+            ]
+          },
+          error: null
+        };
+      }
+      if (path.endsWith("/conversations") && options?.method === "POST") {
+        return {
+          request_id: "req_create_suggestion",
+          status: "success",
+          data: { ...conversation, conversation_id: "conv_new", messages: [] },
+          error: null
+        };
+      }
+      if (path.endsWith("/conversations")) {
+        return {
+          request_id: "req_empty_list",
+          status: "success",
+          data: { conversations: [] },
+          error: null
+        };
+      }
+      return {
+        request_id: "req_empty_detail",
+        status: "success",
+        data: { ...conversation, conversation_id: "conv_new", messages: [] },
+        error: null
+      };
+    }) as typeof apiRequest);
+    renderPanel();
+
+    expect(
+      await screen.findByRole("heading", {
+        name: "和 NanoLoop 一起分析这次实验"
+      })
+    ).toBeVisible();
+    await user.click(
+      screen.getByRole("button", { name: /帮我看看接下来该做什么/ })
+    );
+
+    await waitFor(() =>
+      expect(mockedApi).toHaveBeenCalledWith(
+        "analyses/job_1/conversations/conv_new/messages",
+        expect.objectContaining({
+          method: "POST",
+          body: expect.objectContaining({
+            content: "帮我看看接下来该做什么",
+            query_type: "auto"
+          })
+        })
+      )
+    );
+    expect(
+      await screen.findByText("可以先选择模型并创建一次分析运行。")
+    ).toBeVisible();
+  });
+
   it("sends a general chat message through the conversation endpoint", async () => {
     const user = userEvent.setup();
     renderPanel();
