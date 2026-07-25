@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-import torch
+import pytest
 
-from app.msbi.losses import MSBILoss
+torch = pytest.importorskip("torch")
+
+from app.msbi.losses import MSBILoss  # noqa: E402
 
 
 def test_contour_consistency_loss_is_finite_and_weighted() -> None:
