@@ -612,6 +612,50 @@ async function installApiMock(
   }
 }
 
+test("lets users append images after the first selection", async ({ page }) => {
+  await installApiMock(page);
+  await page.goto("/");
+
+  await page.locator('input[type="file"]').setInputFiles({
+    name: "first.png",
+    mimeType: "image/png",
+    buffer: Buffer.from("e2e-image-first")
+  });
+  const summary = page.locator(".upload-summary");
+  const actions = page.locator(".command-actions");
+  await expect(summary.getByText("1 张图像")).toBeVisible();
+  await expect(actions.getByRole("button", { name: "继续添加" })).toBeVisible();
+  await expect(actions.getByRole("button", { name: "重新选择" })).toBeVisible();
+
+  const appendChooser = page.waitForEvent("filechooser");
+  await actions.getByRole("button", { name: "继续添加" }).click();
+  await (
+    await appendChooser
+  ).setFiles({
+    name: "second.jpg",
+    mimeType: "image/jpeg",
+    buffer: Buffer.from("e2e-image-second")
+  });
+  await expect(summary.getByText("2 张图像")).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "自动分割 2 张图像" })
+  ).toBeEnabled();
+
+  const replaceChooser = page.waitForEvent("filechooser");
+  await actions.getByRole("button", { name: "重新选择" }).click();
+  await (
+    await replaceChooser
+  ).setFiles({
+    name: "replacement.png",
+    mimeType: "image/png",
+    buffer: Buffer.from("e2e-image-replacement")
+  });
+  await expect(summary.getByText("1 张图像")).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "自动分割 1 张图像" })
+  ).toBeEnabled();
+});
+
 test("auto-segments one image without requiring a task name or parameters", async ({
   page
 }) => {
