@@ -1258,6 +1258,20 @@ class AnalysisApplicationService:
                 "labeled_particles_path": self._relative_managed(labeled_path),
                 "probability_path": self._optional_relative(output.probability_path),
                 "instances_path": self._relative_managed(normalized_instances_path),
+                **{
+                    f"{name}_path": self._relative_managed(path)
+                    for name, path in output.auxiliary_paths.items()
+                    if name
+                    in {
+                        "center_probability",
+                        "boundary_probability",
+                        "distance_field",
+                        "instance_labels",
+                        "gate_small",
+                        "gate_large",
+                        "uncertainty",
+                    }
+                },
             }
 
             with self.uow_factory() as uow:
@@ -1497,7 +1511,21 @@ class AnalysisApplicationService:
                 output.instances_path, must_exist=True
             )
             with np.load(instance_path, allow_pickle=False) as archive:
-                masks = [np.asarray(mask, dtype=bool) for mask in archive["masks"]]
+                if "masks" in archive:
+                    masks = [np.asarray(mask, dtype=bool) for mask in archive["masks"]]
+                elif "label_map" in archive:
+                    label_map = np.asarray(archive["label_map"])
+                    if label_map.shape != roi_mask.shape:
+                        raise ValueError("native instance label_map shape does not match ROI")
+                    instance_ids = archive.get("instance_ids")
+                    if instance_ids is None:
+                        instance_ids = np.arange(1, int(label_map.max()) + 1)
+                    masks = [
+                        np.asarray(label_map == int(instance_id), dtype=bool)
+                        for instance_id in instance_ids
+                    ]
+                else:
+                    raise ValueError("native instance archive has no masks or label_map")
                 scores = archive.get("confidences")
                 if scores is None:
                     scores = archive.get("scores")

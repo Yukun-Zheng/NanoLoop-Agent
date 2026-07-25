@@ -14,7 +14,7 @@ from tests.unit.inference.fakes import FakeAdapter
 from tests.unit.inference.helpers import build_registry, model_entry
 
 
-def test_bundled_registry_exposes_two_runtime_assets_and_three_unavailable_models() -> None:
+def test_bundled_registry_exposes_runtime_assets_and_unavailable_models() -> None:
     project_root = Path(__file__).parents[3]
     registry = ModelRegistryService(project_root / "model_artifacts" / "registry.yaml")
 
@@ -23,6 +23,7 @@ def test_bundled_registry_exposes_two_runtime_assets_and_three_unavailable_model
 
     assert {model.family for model in models} == {
         ModelFamily.UNET,
+        ModelFamily.MSBI,
         ModelFamily.YOLO_SEG,
         ModelFamily.SAM2,
     }
@@ -31,10 +32,15 @@ def test_bundled_registry_exposes_two_runtime_assets_and_three_unavailable_model
         "yolo-dense-fast-v1",
         "sam2-general-balanced-v1",
     }
+    runtime_ids = {"unet-large-optimized-v1", "unet-small-balanced-v1"}
+    msbi_weight = project_root / "model_artifacts" / "weights" / "msbi-instance-balanced-v1.pt"
+    if msbi_weight.is_file():
+        runtime_ids.add("msbi-instance-balanced-v1")
+    else:
+        unavailable_ids.add("msbi-instance-balanced-v1")
     assert all(by_id[model_id].status == ModelStatus.UNAVAILABLE for model_id in unavailable_ids)
     assert all(by_id[model_id].health_error for model_id in unavailable_ids)
 
-    runtime_ids = {"unet-large-optimized-v1", "unet-small-balanced-v1"}
     torch_available = importlib.util.find_spec("torch") is not None
     expected_runtime_status = ModelStatus.READY if torch_available else ModelStatus.UNAVAILABLE
     assert all(by_id[model_id].status == expected_runtime_status for model_id in runtime_ids)

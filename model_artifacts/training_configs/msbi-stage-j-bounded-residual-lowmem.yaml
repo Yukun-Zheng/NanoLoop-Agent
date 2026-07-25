@@ -1,0 +1,55 @@
+schema_version: "1"
+stage: J-lowmem
+model_id: msbi-instance-balanced-v1
+model:
+  encoder: unet_small_efficient_anchor
+  expert_channels: 16
+  freeze_encoder: true
+  freeze_anchor_head: true
+  foreground_correction_limit: 0.75
+  expert_correction_limit: 0.5
+  enable_sdf: true
+data:
+  manifest_root: ${NANOLOOP_MSBI_MANIFEST_ROOT}
+  normalization: fixed
+  patch_size: 256
+  train_samples_per_epoch: 1536
+  validation_samples_per_epoch: 512
+  density_sampling_probability: 0.75
+  preload_records: true
+  morphology_balanced_sampling: true
+loss:
+  weights:
+    foreground: 0.70
+    foreground_edge: 0.20
+    foreground_tversky: 0.30
+    center: 0.85
+    boundary: 1.20
+    contour: 0.10
+    sdf: 0.15
+    gate: 0.20
+    distill: 0.25
+    teacher_foreground: 0.02
+    mentor_foreground: 0.0
+    mentor_center: 0.0
+    mentor_boundary: 0.0
+    mentor_sdf: 0.0
+    mentor_gate: 0.0
+    consistency: 0.0
+training:
+  seed: 2026
+  epochs: 12
+  batch_size: 4
+  gradient_accumulation_steps: 8
+  num_workers: 2
+  encoder_learning_rate: 0.0
+  head_learning_rate: 0.00008
+  weight_decay: 0.0001
+  gradient_clip_norm: 0.5
+  amp: false
+  amp_dtype: bfloat16
+  ema_decay: 0.995
+  warmup_epochs: 1
+  warmup_start_factor: 0.1
+  early_stopping_patience: 4
+  output_root: ${NANOLOOP_MSBI_OUTPUT_ROOT}/stage-j-lowmem

@@ -326,6 +326,13 @@ class RunArtifacts(ContractModel):
     particles_csv_url: str | None = None
     quality_report_url: str | None = None
     execution_provenance_url: str | None = None
+    center_probability_url: str | None = None
+    boundary_probability_url: str | None = None
+    distance_field_url: str | None = None
+    instance_labels_url: str | None = None
+    gate_small_url: str | None = None
+    gate_large_url: str | None = None
+    uncertainty_url: str | None = None
 
 
 class ParticleRecordDTO(ContractModel):

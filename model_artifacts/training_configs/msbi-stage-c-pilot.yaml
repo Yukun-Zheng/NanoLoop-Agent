@@ -1,0 +1,35 @@
+schema_version: "1"
+stage: C_REAL_DATA_PILOT
+model_id: msbi-instance-balanced-v1
+model:
+  encoder: convnext_tiny
+  encoder_pretrained: true
+  freeze_encoder: true
+  fpn_channels: 64
+  fusion_mode: gate
+  enable_sdf: true
+data:
+  manifest_root: ${NANOLOOP_MSBI_MANIFEST_ROOT}
+  patch_size: 256
+  train_samples_per_epoch: 64
+  validation_samples_per_epoch: 19
+  density_sampling_probability: 0.65
+loss:
+  weights:
+    foreground: 1.0
+    center: 0.75
+    boundary: 0.75
+    sdf: 0.20
+    gate: 0.10
+    distill: 0.25
+    consistency: 0.0
+training:
+  seed: 2026
+  epochs: 3
+  batch_size: 1
+  num_workers: 0
+  encoder_learning_rate: 0.00001
+  head_learning_rate: 0.0003
+  weight_decay: 0.0001
+  gradient_clip_norm: 1.0
+  output_root: ${NANOLOOP_MSBI_OUTPUT_ROOT}/stage-c-pilot

@@ -1,0 +1,55 @@
+schema_version: "1"
+stage: I
+model_id: msbi-instance-balanced-v1
+model:
+  encoder: unet_small_efficient_anchor
+  expert_channels: 16
+  freeze_encoder: true
+  freeze_anchor_head: true
+  foreground_correction_limit: 0.0
+  expert_correction_limit: 0.5
+  enable_sdf: true
+data:
+  manifest_root: ${NANOLOOP_MSBI_MANIFEST_ROOT}
+  normalization: fixed
+  patch_size: 256
+  train_samples_per_epoch: 2048
+  validation_samples_per_epoch: 512
+  density_sampling_probability: 0.70
+  preload_records: true
+  morphology_balanced_sampling: true
+loss:
+  weights:
+    foreground: 0.0
+    foreground_edge: 0.0
+    foreground_tversky: 0.0
+    center: 1.00
+    boundary: 1.50
+    contour: 0.0
+    sdf: 0.20
+    gate: 0.20
+    distill: 0.30
+    teacher_foreground: 0.0
+    mentor_foreground: 0.0
+    mentor_center: 0.0
+    mentor_boundary: 0.0
+    mentor_sdf: 0.0
+    mentor_gate: 0.0
+    consistency: 0.0
+training:
+  seed: 2026
+  epochs: 24
+  batch_size: 32
+  gradient_accumulation_steps: 1
+  num_workers: 4
+  encoder_learning_rate: 0.0
+  head_learning_rate: 0.00010
+  weight_decay: 0.0001
+  gradient_clip_norm: 0.5
+  amp: false
+  amp_dtype: bfloat16
+  ema_decay: 0.995
+  warmup_epochs: 1
+  warmup_start_factor: 0.1
+  early_stopping_patience: 6
+  output_root: ${NANOLOOP_MSBI_OUTPUT_ROOT}/stage-i

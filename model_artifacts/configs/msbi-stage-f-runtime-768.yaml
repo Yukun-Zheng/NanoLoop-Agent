@@ -1,0 +1,47 @@
+schema_version: "1"
+loader: torchscript
+architecture: nanoloop-msbi-v1
+input_channels: 1
+input_size: [512, 512]
+patch_size: [768, 768]
+stride: [640, 640]
+tile_batch_size: 6
+inference_amp: true
+inference_amp_dtype: bfloat16
+fusion_accumulator_dtype: float32
+tiling_padding: reflect
+overlap_fusion: hann
+bottom_crop_px: 128
+normalization: percentile
+lower_percentile: 1.0
+upper_percentile: 99.0
+save_raw_heads: false
+save_auxiliary_previews: false
+compact_instance_artifact: true
+save_adapter_instance_json: false
+output_names:
+  - foreground_logits
+  - center_logits
+  - boundary_logits
+  - distance_field
+  - small_logits
+  - large_logits
+  - gate_logits
+decoder:
+  foreground_threshold: 0.85
+  center_threshold: 0.50
+  center_nms_radius: 13
+  boundary_threshold: 0.50
+  boundary_penalty: 2.0
+  min_area_px: 256
+  max_area_px: null
+  watershed_compactness: 0.0
+  exclude_border: false
+  connectivity: 2
+  fallback_peak_source: sdf
+scientific_status:
+  training_complete: true
+  runtime_verified: false
+  acceptance: pending_runtime_optimization_validation
+  independent_test: sealed_not_accessed
+  ready_recommendation: false
