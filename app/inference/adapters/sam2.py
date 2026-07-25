@@ -11,6 +11,7 @@ import numpy as np
 from app.contracts.enums import RoiMode
 from app.contracts.inference import InstancePrediction, SegmentationOutput, SegmentationRequest
 from app.inference.adapters._utils import (
+    analysis_crop,
     apply_box_roi,
     mask_bbox,
     open_rgb,
@@ -52,13 +53,12 @@ class SAM2Adapter(BaseSegmentationAdapter):
         started = time.perf_counter()
         image = open_rgb(request.image_bytes or request.image_path)
         height, width = image.shape[:2]
+        inference_crop = analysis_crop(image, request.inference_rect)
         masks: list[np.ndarray] = []
         scores: list[float | None] = []
         if request.roi_mode == RoiMode.BOXES:
-            self._predictor.set_image(image)
-            for box in request.boxes:
-                if not box.active:
-                    continue
+            self._predictor.set_image(inference_crop.image)
+            for box in inference_crop.local_boxes(request.boxes):
                 predicted, predicted_scores, _ = self._predictor.predict(
                     box=np.asarray([box.x1, box.y1, box.x2, box.y2], dtype=np.float32),
                     multimask_output=False,
@@ -67,13 +67,17 @@ class SAM2Adapter(BaseSegmentationAdapter):
                     mask = apply_box_roi(predicted[0], [box]).astype(bool)
                     mask = remove_small_components(mask, request.min_area_px)
                     if mask.any():
-                        masks.append(mask)
+                        masks.append(
+                            inference_crop.embed(mask, dtype=np.dtype(bool))
+                        )
                         scores.append(float(predicted_scores[0]))
         else:
-            for item in self._generator.generate(image):
+            for item in self._generator.generate(inference_crop.image):
                 mask = remove_small_components(item["segmentation"], request.min_area_px)
                 if mask.any():
-                    masks.append(mask)
+                    masks.append(
+                        inference_crop.embed(mask, dtype=np.dtype(bool))
+                    )
                     value = item.get("predicted_iou")
                     scores.append(float(value) if value is not None else None)
 

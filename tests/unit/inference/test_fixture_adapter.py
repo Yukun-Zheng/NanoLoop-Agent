@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from app.contracts.analyses import ROIBox
+from app.contracts.analyses import PixelRect, ROIBox
 from app.contracts.enums import (
     DevicePreference,
     ModelFamily,
@@ -85,6 +85,39 @@ def test_fixture_adapter_is_deterministic_and_honors_box_roi(tmp_path: Path) -> 
 
     adapter.unload()
     assert adapter.health().status == ModelStatus.READY
+
+
+def test_fixture_adapter_forces_instrument_footer_outside_inference_rect(
+    tmp_path: Path,
+) -> None:
+    adapter = DeterministicFixtureAdapter(
+        metadata=_metadata(),
+        weight_path=Path("fixture.weights"),
+        weight_bytes=b"NanoLoop deterministic fixture model v1\n",
+        config={
+            "fixture_schema_version": 1,
+            "objects": [
+                {"center": [0.5, 0.82], "radius": [0.2, 0.15], "score": 0.9},
+            ],
+        },
+    )
+    adapter.load("cpu")
+
+    output = adapter.predict(
+        SegmentationRequest(
+            image_id="image-footer",
+            image_path=tmp_path / "absent-pinned-image",
+            image_bytes=_image_bytes(),
+            run_dir=tmp_path / "footer-run",
+            roi_mode=RoiMode.FULL_IMAGE,
+            inference_rect=PixelRect(x1=0, y1=0, x2=80, y2=45),
+            threshold=0.5,
+            device=DevicePreference.CPU,
+        )
+    )
+
+    probability = np.load(output.probability_path, allow_pickle=False)
+    assert not probability[45:].any()
 
 
 def test_demo_registry_freezes_and_executes_through_real_gateway(tmp_path: Path) -> None:

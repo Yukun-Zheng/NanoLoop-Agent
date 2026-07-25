@@ -914,6 +914,13 @@ export interface components {
             sample_id: string;
             /** Scale Nm Per Pixel */
             scale_nm_per_pixel?: number | null;
+            /**
+             * Scale Source
+             * @default none
+             * @enum {string}
+             */
+            scale_source: "none" | "manual" | "sem_metadata";
+            sem_metadata?: components["schemas"]["SemInstrumentMetadata"] | null;
             /** Sha256 */
             sha256: string;
             /** Width */
@@ -1522,11 +1529,18 @@ export interface components {
             /** Scale Nm Per Pixel */
             scale_nm_per_pixel?: number | null;
             /**
+             * Scale Source
+             * @default none
+             * @enum {string}
+             */
+            scale_source: "none" | "manual" | "sem_metadata";
+            /**
              * Schema Version
              * @default 1
              * @enum {integer}
              */
             schema_version: 1 | 2 | 3;
+            sem_metadata?: components["schemas"]["SemInstrumentMetadata"] | null;
             /** Weight Sha256 */
             weight_sha256?: string | null;
         };
@@ -1601,6 +1615,55 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+        };
+        /**
+         * SemInstrumentMetadata
+         * @description Normalized, provenance-bearing metadata extracted from one SEM image.
+         */
+        SemInstrumentMetadata: {
+            /** Accelerating Voltage Kv */
+            accelerating_voltage_kv?: number | null;
+            /** Acquired At */
+            acquired_at?: string | null;
+            /** Aperture Size Um */
+            aperture_size_um?: number | null;
+            /**
+             * Confidence
+             * @enum {string}
+             */
+            confidence: "medium" | "high";
+            /** Detector */
+            detector?: string | null;
+            /**
+             * Footer Detected
+             * @default false
+             */
+            footer_detected: boolean;
+            footer_rect?: components["schemas"]["PixelRect"] | null;
+            /** Footer Style */
+            footer_style?: ("dark" | "light") | null;
+            /** Instrument Model */
+            instrument_model?: string | null;
+            /** Instrument Serial */
+            instrument_serial?: string | null;
+            /** Magnification X */
+            magnification_x?: number | null;
+            /** Pixel Size Nm */
+            pixel_size_nm?: number | null;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version: 1;
+            /** Source */
+            source: string;
+            /** Vendor */
+            vendor?: string | null;
+            /** Warnings */
+            warnings?: string[];
+            /** Working Distance Mm */
+            working_distance_mm?: number | null;
         };
         /** ToolCallLog */
         ToolCallLog: {

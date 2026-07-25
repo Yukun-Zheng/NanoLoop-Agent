@@ -61,23 +61,6 @@ class AnalysisJobDTO(ContractModel):
     error_code: str | None = None
 
 
-class ImageAssetDTO(ContractModel):
-    image_id: str
-    job_id: str
-    filename: str
-    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    width: int = Field(gt=0)
-    height: int = Field(gt=0)
-    bit_depth: int = Field(gt=0)
-    sample_id: str
-    material_name: str | None = None
-    material_formula: str | None = None
-    experiment_conditions: dict[str, Any] = Field(default_factory=dict)
-    scale_nm_per_pixel: float | None = Field(default=None, gt=0)
-    analysis_roi: "AnalysisROI"
-    original_download_url: str | None = None
-
-
 class PixelRect(ContractModel):
     """A half-open rectangle in original image pixels."""
 
@@ -93,6 +76,28 @@ class PixelRect(ContractModel):
         return self
 
 
+class SemInstrumentMetadata(ContractModel):
+    """Normalized, provenance-bearing metadata extracted from one SEM image."""
+
+    schema_version: Literal[1] = 1
+    source: str = Field(min_length=1, max_length=120)
+    confidence: Literal["medium", "high"]
+    vendor: str | None = Field(default=None, max_length=120)
+    instrument_model: str | None = Field(default=None, max_length=255)
+    instrument_serial: str | None = Field(default=None, max_length=255)
+    detector: str | None = Field(default=None, max_length=120)
+    accelerating_voltage_kv: float | None = Field(default=None, gt=0)
+    working_distance_mm: float | None = Field(default=None, gt=0)
+    magnification_x: float | None = Field(default=None, gt=0)
+    aperture_size_um: float | None = Field(default=None, gt=0)
+    pixel_size_nm: float | None = Field(default=None, gt=0)
+    acquired_at: str | None = Field(default=None, max_length=64)
+    footer_detected: bool = False
+    footer_style: Literal["dark", "light"] | None = None
+    footer_rect: PixelRect | None = None
+    warnings: list[str] = Field(default_factory=list, max_length=20)
+
+
 class InvalidPixelRegion(PixelRect):
     reason: str = Field(default="instrument_bar", max_length=120)
 
@@ -104,6 +109,39 @@ class AnalysisROI(ContractModel):
     invalid_rects: list[InvalidPixelRegion] = Field(default_factory=list)
     source: Literal["none", "manual", "detected"] = "none"
     revision: int = Field(default=1, ge=1)
+
+
+class ImageAssetDTO(ContractModel):
+    image_id: str
+    job_id: str
+    filename: str
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    width: int = Field(gt=0)
+    height: int = Field(gt=0)
+    bit_depth: int = Field(gt=0)
+    sample_id: str
+    material_name: str | None = None
+    material_formula: str | None = None
+    experiment_conditions: dict[str, Any] = Field(default_factory=dict)
+    scale_nm_per_pixel: float | None = Field(default=None, gt=0)
+    scale_source: Literal["none", "manual", "sem_metadata"] = "none"
+    sem_metadata: SemInstrumentMetadata | None = None
+    analysis_roi: AnalysisROI
+    original_download_url: str | None = None
+
+    @model_validator(mode="after")
+    def validate_scale_source(self) -> "ImageAssetDTO":
+        if self.scale_nm_per_pixel is None and self.scale_source != "none":
+            raise ValueError("scale_source must be none when physical scale is absent")
+        if self.scale_nm_per_pixel is not None and self.scale_source == "none":
+            # Records created before scale provenance existed could only receive a
+            # physical scale from the upload form.
+            self.scale_source = "manual"
+        if self.scale_source == "sem_metadata" and (
+            self.sem_metadata is None or self.sem_metadata.pixel_size_nm is None
+        ):
+            raise ValueError("sem_metadata scale_source requires detected pixel_size_nm")
+        return self
 
 
 class ROIBox(ContractModel):
@@ -172,6 +210,8 @@ class RunConfiguration(ContractModel):
     postprocess_profile: str
     image_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     scale_nm_per_pixel: float | None = Field(default=None, gt=0)
+    scale_source: Literal["none", "manual", "sem_metadata"] = "none"
+    sem_metadata: SemInstrumentMetadata | None = None
     resolved_postprocess: PostprocessProfile | None = None
     resolved_morphometry: MorphometryConfig | None = None
     resolved_quality_gate: QualityGateConfig | None = None

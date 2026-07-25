@@ -604,6 +604,9 @@ class ConversationService:
                     "material_name": image.material_name,
                     "material_formula": image.material_formula,
                     "has_physical_scale": image.scale_nm_per_pixel is not None,
+                    "scale_nm_per_pixel": image.scale_nm_per_pixel,
+                    "scale_source": image.scale_source,
+                    "sem_metadata": image.sem_metadata_json or None,
                 }
                 if image is not None
                 else None

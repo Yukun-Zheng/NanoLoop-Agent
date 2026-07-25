@@ -290,6 +290,12 @@ class ReportWriter:
                         ),
                         "image_sha256": run.configuration.image_sha256,
                         "scale_nm_per_pixel": run.configuration.scale_nm_per_pixel,
+                        "scale_source": run.configuration.scale_source,
+                        "sem_metadata": (
+                            run.configuration.sem_metadata.model_dump(mode="json")
+                            if run.configuration.sem_metadata is not None
+                            else None
+                        ),
                         "resolved_postprocess": (
                             run.configuration.resolved_postprocess.model_dump(mode="json")
                             if run.configuration.resolved_postprocess is not None

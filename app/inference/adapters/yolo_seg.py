@@ -12,6 +12,7 @@ from PIL import Image
 from app.contracts.enums import RoiMode
 from app.contracts.inference import InstancePrediction, SegmentationOutput, SegmentationRequest
 from app.inference.adapters._utils import (
+    analysis_crop,
     embed_box_mask,
     iter_box_crops,
     mask_bbox,
@@ -43,6 +44,8 @@ class YOLOSegAdapter(BaseSegmentationAdapter):
         started = time.perf_counter()
         image = open_rgb(request.image_bytes or request.image_path)
         height, width = image.shape[:2]
+        inference_crop = analysis_crop(image, request.inference_rect)
+        crop_height, crop_width = inference_crop.image.shape[:2]
         threshold = request.threshold
         if threshold is None:
             threshold = (
@@ -61,31 +64,50 @@ class YOLOSegAdapter(BaseSegmentationAdapter):
         masks: list[np.ndarray] = []
         confidences: list[float | None] = []
         if request.roi_mode == RoiMode.BOXES:
-            for crop in iter_box_crops(
-                image,
-                request.boxes,
+            for box_crop in iter_box_crops(
+                inference_crop.image,
+                inference_crop.local_boxes(request.boxes),
                 context_px=request.roi_context_px,
             ):
                 local_masks, local_scores = self._predict_masks(
-                    crop.image,
-                    target_shape=crop.image.shape[:2],
+                    box_crop.image,
+                    target_shape=box_crop.image.shape[:2],
                     kwargs=kwargs,
                 )
                 for local_mask, confidence in zip(
                     local_masks, local_scores, strict=True
                 ):
-                    instance = embed_box_mask(local_mask, crop, (height, width))
-                    instance = remove_small_components(instance, request.min_area_px)
-                    if instance.any():
-                        masks.append(instance)
+                    crop_instance = embed_box_mask(
+                        local_mask,
+                        box_crop,
+                        (crop_height, crop_width),
+                    )
+                    crop_instance = remove_small_components(
+                        crop_instance,
+                        request.min_area_px,
+                    )
+                    if crop_instance.any():
+                        masks.append(
+                            inference_crop.embed(
+                                crop_instance,
+                                dtype=np.dtype(bool),
+                            )
+                        )
                         confidences.append(confidence)
         else:
-            masks, confidences = self._predict_masks(
-                image,
-                target_shape=(height, width),
+            crop_masks, confidences = self._predict_masks(
+                inference_crop.image,
+                target_shape=(crop_height, crop_width),
                 kwargs=kwargs,
             )
-            masks = [remove_small_components(mask, request.min_area_px) for mask in masks]
+            crop_masks = [
+                remove_small_components(mask, request.min_area_px)
+                for mask in crop_masks
+            ]
+            masks = [
+                inference_crop.embed(mask, dtype=np.dtype(bool))
+                for mask in crop_masks
+            ]
             nonempty = [index for index, mask in enumerate(masks) if mask.any()]
             masks = [masks[index] for index in nonempty]
             confidences = [confidences[index] for index in nonempty]

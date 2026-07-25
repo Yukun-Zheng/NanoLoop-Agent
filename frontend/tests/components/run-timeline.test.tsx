@@ -52,6 +52,7 @@ describe("RunTimeline", () => {
         review_source: "model_inference",
         roi_context_px: 16,
         roi_mode: "full_image",
+        scale_source: "none",
         schema_version: 3
       },
       status_history: [

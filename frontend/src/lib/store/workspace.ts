@@ -1,7 +1,13 @@
 import { create } from "zustand";
 
 export type WorkspaceStage = "project" | "roi" | "models" | "runs" | "results" | "agent";
-export type InspectorTab = "system" | "model" | "quality" | "provenance" | "evidence";
+export type InspectorTab =
+  | "system"
+  | "image"
+  | "model"
+  | "quality"
+  | "provenance"
+  | "evidence";
 export type QueryMode = "auto" | "analysis_data" | "material_knowledge" | "mixed";
 
 type WorkspaceState = {

@@ -4,7 +4,7 @@ from pathlib import Path
 
 from pydantic import Field
 
-from app.contracts.analyses import ROIBox
+from app.contracts.analyses import PixelRect, ROIBox
 from app.contracts.common import ContractModel
 from app.contracts.enums import DevicePreference, RoiMode
 from app.contracts.execution import InferenceExecutionEvidence
@@ -17,6 +17,7 @@ class SegmentationRequest(ContractModel):
     run_dir: Path
     roi_mode: RoiMode
     boxes: list[ROIBox] = Field(default_factory=list, max_length=20)
+    inference_rect: PixelRect | None = None
     threshold: float | None = Field(default=None, ge=0, le=1)
     min_area_px: int = Field(default=0, ge=0)
     roi_context_px: int = Field(default=16, ge=0, le=4096)

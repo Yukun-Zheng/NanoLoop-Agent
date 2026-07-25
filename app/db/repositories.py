@@ -23,6 +23,7 @@ from app.contracts.analyses import (
     RunConfiguration,
     RunStatusEventDTO,
     SegmentationRunDTO,
+    SemInstrumentMetadata,
 )
 from app.contracts.common import utc_now
 from app.contracts.enums import JobStatus, QualityStatus, RoiMode
@@ -155,6 +156,12 @@ def _image_dto(record: ImageAsset) -> ImageAssetDTO:
         material_formula=record.material_formula,
         experiment_conditions=record.experiment_conditions_json,
         scale_nm_per_pixel=record.scale_nm_per_pixel,
+        scale_source=record.scale_source,
+        sem_metadata=(
+            SemInstrumentMetadata.model_validate(record.sem_metadata_json)
+            if record.sem_metadata_json
+            else None
+        ),
         analysis_roi=AnalysisROI.model_validate(record.analysis_roi_json),
     )
 
@@ -328,8 +335,14 @@ class SqlAlchemyImageRepository:
                 material_name=dto.material_name,
                 material_formula=dto.material_formula,
                 experiment_conditions_json=dto.experiment_conditions,
+                sem_metadata_json=(
+                    dto.sem_metadata.model_dump(mode="json")
+                    if dto.sem_metadata is not None
+                    else {}
+                ),
                 analysis_roi_json=dto.analysis_roi.model_dump(mode="json"),
                 scale_nm_per_pixel=dto.scale_nm_per_pixel,
+                scale_source=dto.scale_source,
                 box_revision=0,
             )
             records.append(record)
