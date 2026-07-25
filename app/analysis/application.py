@@ -258,6 +258,7 @@ class AnalysisCreationService:
                     item.scale.value if item.scale.mode.value == "nm_per_pixel" else None
                 )
                 sem_metadata = inspection.metadata
+                scale: float | None
                 if requested_scale is not None:
                     scale = requested_scale
                     scale_source = "manual"
