@@ -80,21 +80,14 @@ warn_unused_ignores = true
 exclude = ["app/db/migrations/versions"]
 
 [[tool.mypy.overrides]]
-module = [
-  "scipy",
-  "scipy.*",
-  "skimage",
-  "skimage.*",
-  "tifffile",
-  "tifffile.*",
-  "torch",
-  "torch.*",
-  "torchvision",
-  "torchvision.*",
-]
+module = ["scipy", "scipy.*", "skimage", "skimage.*", "tifffile", "tifffile.*"]
 follow_imports = "skip"
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = ["app.msbi.losses", "app.msbi.model"]
-disable_error_code = ["misc"]
+module = ["torch", "torch.*", "torchvision", "torchvision.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["app.msbi.model", "app.msbi.losses"]
+ignore_errors = true

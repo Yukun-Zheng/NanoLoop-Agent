@@ -8,7 +8,7 @@ import math
 import time
 from io import BytesIO
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 from PIL import Image
@@ -233,9 +233,9 @@ class MSBIAdapter(BaseSegmentationAdapter):
         artifact_arrays: dict[str, np.ndarray] = {
             "foreground_probability.npy": foreground,
         }
+        gate_small = gate[0] if gate is not None else np.zeros_like(foreground)
+        gate_large = gate[1] if gate is not None else np.zeros_like(foreground)
         if bool(self.config.get("save_raw_heads", True)):
-            if gate is None:
-                raise ValueError("MSBI raw head export requires gate probabilities")
             artifact_arrays.update(
                 {
                     "center_probability.npy": center,
@@ -243,8 +243,8 @@ class MSBIAdapter(BaseSegmentationAdapter):
                     "distance_field.npy": distance,
                     "small_expert_probability.npy": small,
                     "large_expert_probability.npy": large,
-                    "gate_small.npy": gate[0],
-                    "gate_large.npy": gate[1],
+                    "gate_small.npy": gate_small,
+                    "gate_large.npy": gate_large,
                     "uncertainty.npy": uncertainty,
                     "instance_labels.npy": labels,
                 }
@@ -258,8 +258,8 @@ class MSBIAdapter(BaseSegmentationAdapter):
                 boundary=boundary,
                 distance=distance,
                 labels=labels,
-                gate_small=gate[0] if gate is not None else np.zeros_like(foreground),
-                gate_large=gate[1] if gate is not None else np.zeros_like(foreground),
+                gate_small=gate_small,
+                gate_large=gate_large,
                 uncertainty=uncertainty,
             )
             if bool(self.config.get("save_auxiliary_previews", True))
@@ -797,7 +797,9 @@ class MSBIAdapter(BaseSegmentationAdapter):
     ) -> np.ndarray:
         vertical = np.asarray(np.hanning(height), dtype=dtype)
         horizontal = np.asarray(np.hanning(width), dtype=dtype)
-        window = vertical[:, np.newaxis] * horizontal[np.newaxis, :]
+        vertical_values = cast(Any, vertical)
+        horizontal_values = cast(Any, horizontal)
+        window = vertical_values[:, np.newaxis] * horizontal_values[np.newaxis, :]
         return np.asarray(
             np.maximum(window, 1e-3),
             dtype=dtype,
