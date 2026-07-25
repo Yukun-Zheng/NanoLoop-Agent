@@ -21,6 +21,7 @@ class JobStatus(StrEnum):
 
 class ModelFamily(StrEnum):
     UNET = "unet"
+    MSBI = "msbi"
     YOLO_SEG = "yolo_seg"
     SAM2 = "sam2"
 

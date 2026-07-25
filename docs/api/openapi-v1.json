@@ -2443,6 +2443,7 @@
       "ModelFamily": {
         "enum": [
           "unet",
+          "msbi",
           "yolo_seg",
           "sam2"
         ],
@@ -3276,6 +3277,39 @@
       "RunArtifacts": {
         "additionalProperties": false,
         "properties": {
+          "boundary_probability_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Boundary Probability Url"
+          },
+          "center_probability_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Center Probability Url"
+          },
+          "distance_field_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Distance Field Url"
+          },
           "execution_provenance_url": {
             "anyOf": [
               {
@@ -3286,6 +3320,39 @@
               }
             ],
             "title": "Execution Provenance Url"
+          },
+          "gate_large_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gate Large Url"
+          },
+          "gate_small_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gate Small Url"
+          },
+          "instance_labels_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instance Labels Url"
           },
           "instances_url": {
             "anyOf": [
@@ -3363,6 +3430,17 @@
               }
             ],
             "title": "Quality Report Url"
+          },
+          "uncertainty_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uncertainty Url"
           }
         },
         "title": "RunArtifacts",

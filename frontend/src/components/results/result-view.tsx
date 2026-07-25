@@ -35,7 +35,18 @@ import { runParameterError } from "@/lib/runs/configuration";
 
 import { ArtifactPreview } from "./artifact-preview";
 
-type LayerKey = "original" | "mask" | "overlay" | "probability" | "labeled";
+type LayerKey =
+  | "original"
+  | "mask"
+  | "overlay"
+  | "probability"
+  | "labeled"
+  | "center"
+  | "boundary"
+  | "instanceMap"
+  | "gateSmall"
+  | "gateLarge"
+  | "uncertainty";
 
 const terminal = new Set(["COMPLETED", "COMPLETED_WITH_WARNINGS"]);
 
@@ -92,7 +103,13 @@ export function ResultView({
             mask: run.artifacts?.mask_url,
             overlay: run.artifacts?.overlay_url,
             probability: run.artifacts?.probability_url,
-            labeled: run.artifacts?.labeled_particles_url
+            labeled: run.artifacts?.labeled_particles_url,
+            center: run.artifacts?.center_probability_url,
+            boundary: run.artifacts?.boundary_probability_url,
+            instanceMap: run.artifacts?.instance_labels_url,
+            gateSmall: run.artifacts?.gate_small_url,
+            gateLarge: run.artifacts?.gate_large_url,
+            uncertainty: run.artifacts?.uncertainty_url
           }
         : {},
     [image, run]
@@ -248,7 +265,13 @@ export function ResultView({
               ["mask", "分割掩码"],
               ["overlay", "识别叠加"],
               ["probability", "置信度"],
-              ["labeled", "实例编号"]
+              ["labeled", "实例编号"],
+              ["center", "中心热图"],
+              ["boundary", "边界概率"],
+              ["instanceMap", "实例标签"],
+              ["gateSmall", "小尺度 Gate"],
+              ["gateLarge", "大尺度 Gate"],
+              ["uncertainty", "不确定性"]
             ] as const
           ).map(([key, label]) => (
             <button
@@ -317,7 +340,14 @@ export function ResultView({
               : `${run.run_id}-${layer}`
           }
           mode={
-            layer === "probability"
+            [
+              "probability",
+              "center",
+              "boundary",
+              "gateSmall",
+              "gateLarge",
+              "uncertainty"
+            ].includes(layer)
               ? "probability"
               : layer === "labeled"
                 ? "instances"
@@ -628,6 +658,41 @@ function layerExplanation(
       warning: false
     };
   }
+  if (layer === "center") {
+    return {
+      title: "当前显示颗粒中心热图",
+      detail: "亮区是实例解码使用的中心候选；多个峰可帮助拆分相连前景。",
+      warning: false
+    };
+  }
+  if (layer === "boundary") {
+    return {
+      title: "当前显示学习式边界概率",
+      detail: "亮边界会提高 watershed 的分割代价，抑制相邻颗粒合并。",
+      warning: false
+    };
+  }
+  if (layer === "instanceMap") {
+    return {
+      title: "当前显示确定性实例标签图",
+      detail: "不同颜色代表不同实例 ID；黑色为背景或无效区域。",
+      warning: false
+    };
+  }
+  if (layer === "gateSmall" || layer === "gateLarge") {
+    return {
+      title: layer === "gateSmall" ? "当前显示小尺度专家权重" : "当前显示大尺度专家权重",
+      detail: "同一像素的小/大专家权重之和为 1，用于解释模型的尺度选择。",
+      warning: false
+    };
+  }
+  if (layer === "uncertainty") {
+    return {
+      title: "当前显示模型不确定性",
+      detail: "综合前景熵、双专家分歧和中心/前景冲突；亮区应优先人工复核。",
+      warning: true
+    };
+  }
   return {
     title: "当前显示交互式实例编号",
     detail: "悬浮编号可放大并查看该实例置信度；点击编号即可复制。",
@@ -644,5 +709,11 @@ function artifactForLayer(
   if (layer === "mask") return run.artifacts?.mask_url;
   if (layer === "overlay") return run.artifacts?.overlay_url;
   if (layer === "probability") return run.artifacts?.probability_url;
-  return run.artifacts?.labeled_particles_url;
+  if (layer === "labeled") return run.artifacts?.labeled_particles_url;
+  if (layer === "center") return run.artifacts?.center_probability_url;
+  if (layer === "boundary") return run.artifacts?.boundary_probability_url;
+  if (layer === "instanceMap") return run.artifacts?.instance_labels_url;
+  if (layer === "gateSmall") return run.artifacts?.gate_small_url;
+  if (layer === "gateLarge") return run.artifacts?.gate_large_url;
+  return run.artifacts?.uncertainty_url;
 }

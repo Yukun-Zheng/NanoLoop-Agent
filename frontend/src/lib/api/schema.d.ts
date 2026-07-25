@@ -1116,7 +1116,7 @@ export interface components {
          * ModelFamily
          * @enum {string}
          */
-        ModelFamily: "unet" | "yolo_seg" | "sam2";
+        ModelFamily: "unet" | "msbi" | "yolo_seg" | "sam2";
         /** ModelListData */
         ModelListData: {
             /** Models */
@@ -1444,8 +1444,20 @@ export interface components {
         RoiMode: "full_image" | "boxes";
         /** RunArtifacts */
         RunArtifacts: {
+            /** Boundary Probability Url */
+            boundary_probability_url?: string | null;
+            /** Center Probability Url */
+            center_probability_url?: string | null;
+            /** Distance Field Url */
+            distance_field_url?: string | null;
             /** Execution Provenance Url */
             execution_provenance_url?: string | null;
+            /** Gate Large Url */
+            gate_large_url?: string | null;
+            /** Gate Small Url */
+            gate_small_url?: string | null;
+            /** Instance Labels Url */
+            instance_labels_url?: string | null;
             /** Instances Url */
             instances_url?: string | null;
             /** Labeled Particles Url */
@@ -1460,6 +1472,8 @@ export interface components {
             probability_url?: string | null;
             /** Quality Report Url */
             quality_report_url?: string | null;
+            /** Uncertainty Url */
+            uncertainty_url?: string | null;
         };
         /** RunConfiguration */
         RunConfiguration: {

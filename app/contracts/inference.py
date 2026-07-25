@@ -39,6 +39,7 @@ class SegmentationOutput(ContractModel):
     binary_mask_path: Path
     instances_path: Path | None = None
     overlay_path: Path | None = None
+    auxiliary_paths: dict[str, Path] = Field(default_factory=dict)
     instances: list[InstancePrediction] = Field(default_factory=list)
     model_scores: dict[str, float] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)

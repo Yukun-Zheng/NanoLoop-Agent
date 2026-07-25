@@ -136,8 +136,8 @@ def test_model_compose_build_is_cpu_only_and_serial() -> None:
     assert "torchvision==0.28.0" in constraints
 
     project = (_REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert '"torch>=2.13,<3"' in project
-    assert '"torchvision>=0.28,<1"' in project
+    assert '"torch>=2.11,<3"' in project
+    assert '"torchvision>=0.26,<1"' in project
 
     compose = yaml.safe_load(
         (_REPOSITORY_ROOT / "docker-compose.yml").read_text(encoding="utf-8")

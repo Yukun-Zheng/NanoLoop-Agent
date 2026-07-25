@@ -1,0 +1,43 @@
+schema_version: "1"
+stage: C
+model_id: msbi-instance-balanced-v1
+model:
+  encoder: convnext_tiny
+  encoder_pretrained: true
+  freeze_encoder: true
+  fpn_channels: 64
+  fusion_mode: gate
+  enable_sdf: false
+data:
+  manifest_root: ${NANOLOOP_MSBI_MANIFEST_ROOT}
+  patch_size: 256
+  train_samples_per_epoch: 1024
+  validation_samples_per_epoch: 256
+  density_sampling_probability: 0.65
+  preload_records: true
+loss:
+  weights:
+    foreground: 1.0
+    center: 1.0
+    boundary: 1.0
+    sdf: 0.0
+    gate: 0.10
+    distill: 0.0
+    consistency: 0.0
+training:
+  seed: 2026
+  epochs: 24
+  batch_size: 8
+  gradient_accumulation_steps: 1
+  num_workers: 4
+  encoder_learning_rate: 0.00002
+  head_learning_rate: 0.0002
+  weight_decay: 0.0001
+  gradient_clip_norm: 1.0
+  amp: true
+  amp_dtype: bfloat16
+  ema_decay: 0.999
+  warmup_epochs: 2
+  warmup_start_factor: 0.1
+  early_stopping_patience: 8
+  output_root: ${NANOLOOP_MSBI_OUTPUT_ROOT}/stage-c

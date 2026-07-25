@@ -155,6 +155,71 @@ models:
       - torch
 
   - metadata:
+      model_id: msbi-instance-balanced-v1
+      family: msbi
+      variant: dense_particle
+      quality_tier: balanced
+      version: "1"
+      status: ready
+      supports_box_prompt: false
+      default_threshold: 0.350
+      default_min_area_px: 128
+      preprocess_profile: sem-gray-fixed-crop-bottom-130-v1
+      postprocess_profile: msbi-blend50-stride256-connected-components-v1
+      inference_invalid_bottom_px: 130
+      expected_input_width: 2048
+      expected_input_height: 1536
+      applicable_materials: []
+      metrics:
+        validation_pixel_dice: 0.7477957580124848
+        validation_boundary_f1: 0.5837477766620929
+        validation_pseudo_instance_f1_50: 0.7578667431952447
+        validation_panoptic_quality: 0.627714417538683
+        validation_count_mae: 4.555555555555555
+        validation_runtime_ms_mean: 267.1666666666667
+        validation_runtime_ms_p95: 379.29999999999956
+        previous_stage_i_validation_pixel_dice: 0.7512800242366261
+        previous_stage_i_validation_boundary_f1: 0.5910857709369968
+        previous_stage_i_validation_pseudo_instance_f1_50: 0.7607924962123822
+        previous_stage_i_validation_panoptic_quality: 0.631281520574583
+        previous_stage_i_validation_count_mae: 4.944444444444445
+        previous_stage_i_validation_runtime_ms_mean: 362.05555555555554
+        previous_stage_i_validation_runtime_ms_p95: 419.1999999999995
+        independent_test_pixel_dice: 0.6279172149241776
+        independent_test_boundary_f1: 0.3773523301506781
+        independent_test_pseudo_instance_f1_50: 0.5399045370536126
+        independent_test_panoptic_quality: 0.4036306898878569
+        independent_test_count_mae: 18.77777777777778
+        independent_test_runtime_ms_mean: 392.55555555555554
+        independent_test_runtime_ms_p95: 587.7999999999998
+      metric_context:
+        architecture: nanoloop-msbi-efficient-anchor-v1
+        experts: 2
+        training_complete: true
+        formal_training_device: cuda_rtx_4090
+        formal_training_seed: 2026
+        formal_stage: J_validation_successor
+        final_torchscript_sha256: 6a40e2d38982d8d5b648c0bf634d0155522686d44c2ec43f2ccc0389d870e30b
+        previous_stage_i_torchscript_sha256: 6d68ca191f668409fb0547c7551c7b913b42d8c2e0c05cf311f51932b61b907f
+        runtime_verified: true
+        scientific_acceptance_status: passed_strict_validation_superiority_gate
+        independent_test_status: not_accessed_for_stage_j_previous_stage_i_evaluated_not_strictly_superior_to_all_baselines
+        independent_test_metrics_apply_to_stage: I
+        runtime_selectable: true
+        blind_holdout_required_for_generalization_claim: true
+        gt_type: binary_semantic_with_connected_component_pseudo_instances
+        redistribution_permission_delivered: false
+        ready_recommendation: false
+      notes: Stage J validation successor is runtime-selectable and uses a 50/50 full-frame/tiled anchor blend with stride 256 and threshold 0.35; it passed all nine frozen validation superiority and guardrail checks while improving runtime versus Stage I. No new blind holdout has been evaluated for Stage J, so use it as the current best runtime candidate rather than a final generalization claim.
+    adapter_path: app.inference.adapters.msbi:MSBIAdapter
+    weight_path: weights/msbi-instance-balanced-v1.pt
+    weight_sha256: 6a40e2d38982d8d5b648c0bf634d0155522686d44c2ec43f2ccc0389d870e30b
+    config_path: configs/msbi-instance-balanced-v1.yaml
+    model_card_path: model_cards/msbi-instance-balanced-v1.md
+    required_modules:
+      - torch
+
+  - metadata:
       model_id: yolo-dense-fast-v1
       family: yolo_seg
       variant: dense_particle
