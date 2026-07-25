@@ -93,6 +93,7 @@ type ImageDraft = {
 };
 
 type LaunchMode = "auto" | "project";
+type FileSelectionMode = "append" | "replace";
 
 function makeDraft(file: File): ImageDraft {
   return {
@@ -126,6 +127,7 @@ function Formula({ value }: { value: string }) {
 export function Launchpad() {
   const router = useRouter();
   const fileInput = useRef<HTMLInputElement>(null);
+  const fileSelectionMode = useRef<FileSelectionMode>("replace");
   const copyResetTimer = useRef<number | null>(null);
   const [task, setTask] = useState("");
   const [openId, setOpenId] = useState("");
@@ -300,23 +302,45 @@ export function Launchpad() {
     }
   });
 
+  function openFilePicker(mode: FileSelectionMode) {
+    fileSelectionMode.current = mode;
+    if (fileInput.current) {
+      fileInput.current.value = "";
+      fileInput.current.click();
+    }
+  }
+
   function chooseFiles(files: FileList | null) {
     if (!files) return;
+    const mode = fileSelectionMode.current;
     const allowed = /\.(tif|tiff|png|jpe?g)$/i;
     const allFiles = [...files];
+    if (!allFiles.length) return;
     const supported = allFiles.filter((file) => allowed.test(file.name));
-    const selected = supported.slice(0, 20);
     const notices: string[] = [];
+    const maxImages = 20;
+    const shouldAppend = mode === "append" && drafts.length > 0;
+    const existingNames = new Set(drafts.map((draft) => draft.file.name));
+    const uniqueSupported = shouldAppend
+      ? supported.filter((file) => !existingNames.has(file.name))
+      : supported;
+    const duplicateCount = supported.length - uniqueSupported.length;
+    const availableSlots = shouldAppend ? Math.max(maxImages - drafts.length, 0) : maxImages;
+    const selected = uniqueSupported.slice(0, availableSlots);
     if (supported.length !== allFiles.length) {
       notices.push(`已忽略 ${allFiles.length - supported.length} 个不支持的文件`);
     }
-    if (supported.length > 20) notices.push("一次最多处理 20 张图像");
+    if (duplicateCount) notices.push(`已跳过 ${duplicateCount} 张重名图像`);
+    if (uniqueSupported.length > availableSlots) notices.push("一个任务最多处理 20 张图像");
+    if (shouldAppend && availableSlots === 0) notices.push("当前任务已达到 20 张图像上限");
     setFileNotice(
       selected.length
         ? notices.join("；") || null
-        : "没有找到可用图像，请选择 TIF、PNG 或 JPG 文件"
+        : notices.join("；") || "没有找到可用图像，请选择 TIF、PNG 或 JPG 文件"
     );
-    setDrafts(selected.map(makeDraft));
+    setDrafts((current) =>
+      shouldAppend ? [...current, ...selected.map(makeDraft)] : selected.map(makeDraft)
+    );
     setUploadProgress(null);
     setLaunchStep("");
   }
@@ -451,12 +475,24 @@ export function Launchpad() {
               type="file"
               accept=".tif,.tiff,.png,.jpg,.jpeg,image/tiff,image/png,image/jpeg"
               multiple
-              onChange={(event) => chooseFiles(event.target.files)}
+              onChange={(event) => {
+                chooseFiles(event.target.files);
+                event.currentTarget.value = "";
+              }}
             />
-            <Button tone="ghost" onClick={() => fileInput.current?.click()}>
+            <Button
+              tone="ghost"
+              onClick={() => openFilePicker(drafts.length ? "append" : "replace")}
+            >
               <ImagePlus size={17} />
-              {drafts.length ? "重新选择" : "添加图像"}
+              {drafts.length ? "继续添加" : "添加图像"}
             </Button>
+            {drafts.length ? (
+              <Button tone="ghost" onClick={() => openFilePicker("replace")}>
+                <FileImage size={17} />
+                重新选择
+              </Button>
+            ) : null}
             <span className="command-hint">1–20 张 · TIF / PNG / JPG</span>
             {drafts.length ? (
               <Button
@@ -478,7 +514,7 @@ export function Launchpad() {
               onClick={() =>
                 drafts.length
                   ? createAnalysis.mutate("auto")
-                  : fileInput.current?.click()
+                  : openFilePicker("replace")
               }
             >
               {createAnalysis.isPending
