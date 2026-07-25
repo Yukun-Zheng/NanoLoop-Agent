@@ -16,6 +16,7 @@ import numpy as np
 from app.contracts.enums import RoiMode
 from app.contracts.inference import SegmentationOutput, SegmentationRequest
 from app.inference.adapters._utils import (
+    analysis_crop,
     apply_box_roi,
     open_rgb,
     output_dir,
@@ -63,6 +64,13 @@ class DeterministicFixtureAdapter(BaseSegmentationAdapter):
             ellipse = ((xx - x) / rx) ** 2 + ((yy - y) / ry) ** 2 <= 1.0
             np.maximum(probability, ellipse.astype(np.float32) * score, out=probability)
 
+        inference_crop = analysis_crop(image, request.inference_rect)
+        allowed = np.zeros((height, width), dtype=bool)
+        allowed[
+            inference_crop.rect.y1 : inference_crop.rect.y2,
+            inference_crop.rect.x1 : inference_crop.rect.x2,
+        ] = True
+        probability = np.asarray(probability * allowed, dtype=np.float32)
         if request.roi_mode == RoiMode.BOXES:
             probability = np.asarray(
                 apply_box_roi(probability, request.boxes),

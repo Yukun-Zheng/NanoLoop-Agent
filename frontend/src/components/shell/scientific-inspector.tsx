@@ -1,11 +1,19 @@
 "use client";
 
 import * as Tabs from "@radix-ui/react-tabs";
-import { Activity, BookOpenCheck, FlaskConical, Microscope, ShieldCheck } from "lucide-react";
+import {
+  Activity,
+  BookOpenCheck,
+  FlaskConical,
+  Microscope,
+  Ruler,
+  ShieldCheck
+} from "lucide-react";
 
 import { StatusBadge } from "@/components/ui/status-badge";
 import type {
   HealthData,
+  ImageAsset,
   ModelMetadata,
   Run,
   UnifiedQueryResponse
@@ -18,6 +26,7 @@ import {
 
 const tabItems: Array<{ value: InspectorTab; label: string; icon: typeof Activity }> = [
   { value: "system", label: "系统", icon: Activity },
+  { value: "image", label: "图像", icon: Ruler },
   { value: "model", label: "模型", icon: Microscope },
   { value: "quality", label: "质量", icon: ShieldCheck },
   { value: "provenance", label: "溯源", icon: FlaskConical },
@@ -26,11 +35,13 @@ const tabItems: Array<{ value: InspectorTab; label: string; icon: typeof Activit
 
 export function ScientificInspector({
   health,
+  image,
   model,
   run,
   answer
 }: {
   health: HealthData | null;
+  image: ImageAsset | null;
   model: ModelMetadata | null;
   run: Run | null;
   answer: UnifiedQueryResponse | null;
@@ -59,6 +70,9 @@ export function ScientificInspector({
         <Tabs.Content value="system">
           <SystemInspector health={health} />
         </Tabs.Content>
+        <Tabs.Content value="image">
+          <ImageInspector image={image} />
+        </Tabs.Content>
         <Tabs.Content value="model">
           <ModelInspector model={model} />
         </Tabs.Content>
@@ -73,6 +87,78 @@ export function ScientificInspector({
         </Tabs.Content>
       </Tabs.Root>
     </aside>
+  );
+}
+
+function ImageInspector({ image }: { image: ImageAsset | null }) {
+  if (!image) return <InspectorEmpty text="选择图像后查看有效区域与仪器元数据。" />;
+  const sem = image.sem_metadata;
+  const footer = sem?.footer_rect;
+  return (
+    <div className="inspector-content">
+      <div className="inspector-callout">
+        <StatusBadge value={sem?.confidence === "high" ? "pass" : "warn"} />
+        <p>
+          {sem
+            ? "系统已读取原始 SEM 元数据，并将可信值用于分析。"
+            : "没有读取到可信仪器元数据；系统不会猜测物理尺度。"}
+        </p>
+      </div>
+      <InspectorRows
+        rows={[
+          [
+            "尺度",
+            image.scale_nm_per_pixel
+              ? `${formatNumber(image.scale_nm_per_pixel, 6)} nm/px`
+              : "仅像素"
+          ],
+          [
+            "尺度来源",
+            image.scale_source === "sem_metadata"
+              ? "SEM 仪器元数据"
+              : image.scale_source === "manual"
+                ? "手动填写"
+                : "无"
+          ],
+          ["探测器", sem?.detector || "—"],
+          [
+            "加速电压",
+            sem?.accelerating_voltage_kv
+              ? `${formatNumber(sem.accelerating_voltage_kv)} kV`
+              : "—"
+          ],
+          [
+            "工作距离",
+            sem?.working_distance_mm
+              ? `${formatNumber(sem.working_distance_mm)} mm`
+              : "—"
+          ],
+          [
+            "放大倍数",
+            sem?.magnification_x
+              ? `${formatNumber(sem.magnification_x, 0)}×`
+              : "—"
+          ],
+          [
+            "孔径",
+            sem?.aperture_size_um
+              ? `${formatNumber(sem.aperture_size_um)} µm`
+              : "—"
+          ],
+          ["采集时间", sem?.acquired_at ? formatDate(sem.acquired_at) : "—"],
+          [
+            "有效成像区",
+            `${image.analysis_roi.valid_rect.x1},${image.analysis_roi.valid_rect.y1} – ${image.analysis_roi.valid_rect.x2},${image.analysis_roi.valid_rect.y2} px`
+          ],
+          [
+            "底部信息栏",
+            footer
+              ? `${footer.y1}–${footer.y2} px（已排除）`
+              : "未检测到，保持全图"
+          ]
+        ]}
+      />
+    </div>
   );
 }
 

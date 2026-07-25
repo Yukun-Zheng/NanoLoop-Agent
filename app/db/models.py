@@ -20,6 +20,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     event,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -126,8 +127,20 @@ class ImageAsset(TimestampMixin, Base):
     experiment_conditions_json: Mapped[JsonObject] = mapped_column(
         JSON, default=dict, nullable=False
     )
+    sem_metadata_json: Mapped[JsonObject] = mapped_column(
+        JSON,
+        default=dict,
+        server_default=text("'{}'"),
+        nullable=False,
+    )
     analysis_roi_json: Mapped[JsonObject] = mapped_column(JSON, default=dict, nullable=False)
     scale_nm_per_pixel: Mapped[float | None] = mapped_column(Float)
+    scale_source: Mapped[str] = mapped_column(
+        String(32),
+        default="none",
+        server_default="none",
+        nullable=False,
+    )
     box_revision: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
     job: Mapped[AnalysisJob] = relationship(back_populates="images")

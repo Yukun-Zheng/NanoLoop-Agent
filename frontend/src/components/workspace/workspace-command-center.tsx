@@ -633,6 +633,7 @@ export function WorkspaceCommandCenter({
 
         <ScientificInspector
           health={health.data || null}
+          image={activeImage}
           model={activeModel}
           run={activeRun}
           answer={answer}
@@ -664,6 +665,7 @@ export function WorkspaceCommandCenter({
               </Dialog.Close>
               <ScientificInspector
                 health={health.data || null}
+                image={activeImage}
                 model={activeModel}
                 run={activeRun}
                 answer={answer}

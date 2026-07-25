@@ -509,7 +509,7 @@ export function Launchpad() {
               <SlidersHorizontal size={17} />
               <div>
                 <strong>补充样品信息（全部选填）</strong>
-                <p>不展开也能直接分割；材料、实验条件和物理尺度只用于结果解释。</p>
+                <p>系统会先读取原图自带的 SEM 参数和比例尺；识别不到时再按像素报告。</p>
               </div>
               <span>展开填写</span>
             </summary>
@@ -650,8 +650,8 @@ export function Launchpad() {
                   ) : null}
                   <label className="field">
                     <span>
-                      <strong>像素对应实际长度</strong>
-                      <small>不知道时保持默认，结果仍会给出像素统计</small>
+                      <strong>物理尺度（通常无需填写）</strong>
+                      <small>优先自动读取 TIFF 仪器元数据；手动值只用于覆盖</small>
                     </span>
                     <select
                       className="select"
@@ -660,8 +660,8 @@ export function Launchpad() {
                         updateDraft(index, { scaleMode: event.target.value as ScaleMode })
                       }
                     >
-                      <option value="pixel_only">不知道 / 仅使用像素</option>
-                      <option value="nm_per_pixel">我知道 nm / px</option>
+                      <option value="pixel_only">自动识别；识别不到则仅使用像素</option>
+                      <option value="nm_per_pixel">用手动 nm / px 覆盖</option>
                     </select>
                   </label>
                   {draft.scaleMode === "nm_per_pixel" ? (
@@ -741,7 +741,7 @@ export function Launchpad() {
             <Layers3 size={18} />
             <div>
               <strong>组织实验输入</strong>
-              <p>集中录入图像、样品身份、材料信息与物理尺度。</p>
+              <p>上传图像并自动读取 SEM 信息栏、物理尺度和有效成像区。</p>
             </div>
           </article>
           <article>

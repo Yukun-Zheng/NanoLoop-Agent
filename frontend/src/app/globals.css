@@ -1924,6 +1924,76 @@ body:has(.workspace-page) {
   font-size: 9px;
 }
 
+.sem-metadata-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.sem-metadata-card {
+  border: 1px solid rgba(96, 105, 255, 0.16);
+  border-radius: 14px;
+  padding: 15px;
+  background: rgba(248, 249, 255, 0.72);
+}
+
+.sem-metadata-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.sem-metadata-heading > div {
+  display: grid;
+  gap: 3px;
+}
+
+.sem-metadata-heading span {
+  color: var(--nl-accent);
+  font-size: 8px;
+  font-weight: 780;
+  letter-spacing: 0.14em;
+}
+
+.sem-metadata-heading strong {
+  font-size: 12px;
+}
+
+.sem-metadata-card dl {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(110px, 1fr));
+  gap: 12px 18px;
+  margin: 14px 0 0;
+}
+
+.sem-metadata-card dl > div {
+  display: grid;
+  gap: 3px;
+}
+
+.sem-metadata-card dt {
+  color: var(--nl-text-soft);
+  font-size: 9px;
+}
+
+.sem-metadata-card dd {
+  overflow: hidden;
+  margin: 0;
+  font-size: 11px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sem-metadata-card > p {
+  margin: 13px 0 0;
+  border-top: 1px solid var(--nl-border);
+  padding-top: 10px;
+  color: var(--nl-text-muted);
+  font-size: 10px;
+}
+
 .project-boundary {
   display: flex;
   gap: 12px;
@@ -3669,6 +3739,10 @@ body:has(.workspace-page) {
 
   .image-table > article > div:not(.image-table-name) {
     display: none;
+  }
+
+  .sem-metadata-card dl {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .model-grid,

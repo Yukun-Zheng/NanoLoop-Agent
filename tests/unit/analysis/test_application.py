@@ -8,7 +8,7 @@ from typing import Any
 import numpy as np
 import pytest
 from numpy.typing import NDArray
-from PIL import Image
+from PIL import Image, TiffImagePlugin
 from pydantic import ValidationError
 from sqlalchemy import update
 
@@ -1519,6 +1519,7 @@ def test_create_analysis_validates_and_persists_upload(
     image = detail.images[0]
     assert (image.width, image.height, image.bit_depth) == (17, 13, 16)
     assert image.scale_nm_per_pixel == 0.75
+    assert image.scale_source == "manual"
     assert image.analysis_roi.valid_rect == PixelRect(x1=0, y1=0, x2=17, y2=13)
     # The service persists storage facts only; the HTTP route decorates authorized
     # responses with a subject-bound v2 download URL.
@@ -1530,6 +1531,56 @@ def test_create_analysis_validates_and_persists_upload(
     with database.session() as session:
         persisted = SqlAlchemyRepositorySet(session).images.get(image.image_id)
     assert persisted.sha256 == image.sha256
+
+
+def test_create_analysis_uses_sem_metadata_scale_and_excludes_light_footer(
+    application_harness: ApplicationHarness,
+) -> None:
+    _database, file_store, factory = application_harness
+    service = AnalysisCreationService(uow_factory=factory, file_store=file_store)
+    pixels = np.full((240, 320), 92, dtype=np.uint8)
+    pixels[192:194, :] = 0
+    pixels[194:, :] = 255
+    pixels[206:211, 20:100] = 0
+    tags = TiffImagePlugin.ImageFileDirectory_v2()
+    tags[34118] = "\r\n".join(
+        (
+            "AP_IMAGE_PIXEL_SIZE",
+            "Image Pixel Size = 558.2 pm",
+            "AP_ACTUALKV",
+            "EHT = 3.00 kV",
+            "AP_WD",
+            "WD = 5.6 mm",
+            "DP_DETECTOR_CHANNEL",
+            "Signal A = InLens",
+        )
+    )
+    content = BytesIO()
+    Image.fromarray(pixels, mode="L").save(content, format="TIFF", tiffinfo=tags)
+    content.seek(0)
+
+    detail = service.create_analysis(
+        CreateAnalysisMetadata(
+            job_name="automatic SEM metadata",
+            images=[
+                ImageMetadataInput(
+                    filename="automatic-sem.tif",
+                    sample_id="sem_auto",
+                )
+            ],
+        ),
+        [AnalysisUpload(filename="automatic-sem.tif", stream=content)],
+        principal=legacy_principal_context(AuthMode.DISABLED),
+    )
+
+    image = detail.images[0]
+    assert image.scale_nm_per_pixel == 0.5582
+    assert image.scale_source == "sem_metadata"
+    assert image.sem_metadata is not None
+    assert image.sem_metadata.detector == "InLens"
+    assert image.sem_metadata.footer_detected is True
+    assert image.analysis_roi.source == "detected"
+    assert image.analysis_roi.valid_rect.y2 == 192
 
 
 def test_create_analysis_rejects_metadata_upload_mismatch(

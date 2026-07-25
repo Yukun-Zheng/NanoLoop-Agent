@@ -3,10 +3,10 @@
 from dataclasses import dataclass
 from pathlib import Path
 
-import numpy as np
 from PIL import Image, UnidentifiedImageError
 
-from app.contracts.analyses import AnalysisROI, InvalidPixelRegion, PixelRect
+from app.analysis.sem_metadata import inspect_sem_image
+from app.contracts.analyses import AnalysisROI
 from app.core.errors import InvalidImageError
 
 ALLOWED_IMAGE_FORMATS = frozenset({"TIFF", "PNG", "JPEG"})
@@ -110,79 +110,10 @@ def validate_image(path: Path) -> ValidatedImage:
 
 
 def infer_analysis_roi(image: ValidatedImage) -> AnalysisROI:
-    """Conservatively exclude a high-confidence dark SEM instrument footer.
+    """Conservatively exclude an optional light or dark SEM instrument footer."""
 
-    The detector intentionally returns the full image unless a broad, nearly black
-    bottom band has both a strong horizontal boundary and sparse bright content
-    consistent with instrument text. False negatives are safer than discarding
-    scientific pixels.
-    """
-
-    boundary = _instrument_footer_boundary(image.path)
-    if boundary is None or boundary <= 0 or boundary >= image.height:
-        return AnalysisROI(valid_rect=PixelRect(x1=0, y1=0, x2=image.width, y2=image.height))
-    return AnalysisROI(
-        valid_rect=PixelRect(x1=0, y1=0, x2=image.width, y2=boundary),
-        invalid_rects=[
-            InvalidPixelRegion(
-                x1=0,
-                y1=boundary,
-                x2=image.width,
-                y2=image.height,
-                reason="instrument_bar_detected",
-            )
-        ],
-        source="detected",
-    )
-
-
-def _instrument_footer_boundary(path: Path) -> int | None:
-    try:
-        with Image.open(path) as source:
-            gray = source.convert("L")
-            width, height = gray.size
-            target_width = min(width, 1024)
-            target_height = max(1, round(height * target_width / width))
-            if target_height > 2048:
-                target_height = 2048
-                target_width = max(1, round(width * target_height / height))
-            sampled = np.asarray(
-                gray.resize((target_width, target_height), Image.Resampling.BILINEAR),
-                dtype=np.float32,
-            )
-    except (OSError, UnidentifiedImageError):
-        return None
-
-    low, high = np.percentile(sampled, [1, 99])
-    if not np.isfinite(low) or not np.isfinite(high) or high - low < 20:
-        return None
-    normalized = np.clip((sampled - low) / (high - low), 0, 1)
-    sample_height = normalized.shape[0]
-    window = max(4, round(sample_height * 0.015))
-    first = max(window, round(sample_height * 0.65))
-    last = min(sample_height - window, round(sample_height * 0.92))
-    candidates: list[tuple[float, int]] = []
-    for y in range(first, last + 1):
-        above = normalized[y - window : y]
-        below = normalized[y : y + window]
-        footer = normalized[y:]
-        footer_dark = float(np.mean(footer <= 0.18))
-        below_dark = float(np.mean(below <= 0.18))
-        above_dark = float(np.mean(above <= 0.18))
-        contrast = float(np.median(above) - np.median(below))
-        bright_text = float(np.mean(footer >= 0.72))
-        if (
-            footer_dark >= 0.78
-            and below_dark >= 0.72
-            and above_dark <= 0.55
-            and contrast >= 0.24
-            and 0.002 <= bright_text <= 0.18
-        ):
-            score = contrast + footer_dark + (below_dark - above_dark)
-            candidates.append((score, y))
-    if not candidates:
-        return None
-    _score, sampled_boundary = max(candidates, key=lambda item: (item[0], -item[1]))
-    boundary = round(sampled_boundary * height / sample_height)
-    minimum_footer = max(16, round(height * 0.08))
-    return boundary if height - boundary >= minimum_footer else None
+    return inspect_sem_image(
+        image.path,
+        width=image.width,
+        height=image.height,
+    ).analysis_roi

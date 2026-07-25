@@ -31,7 +31,8 @@ from app.analysis.postprocessing import (
 from app.analysis.preprocessing import build_analysis_roi, create_transform
 from app.analysis.quality import QualityInputs, evaluate
 from app.analysis.reporting import ReportWriter
-from app.analysis.validation import infer_analysis_roi, validate_image
+from app.analysis.sem_metadata import inspect_sem_image
+from app.analysis.validation import validate_image
 from app.analysis.visualization import write_review_visualizations
 from app.contracts.analyses import (
     AnalysisJobDTO,
@@ -43,6 +44,7 @@ from app.contracts.analyses import (
     InferenceOptions,
     InvalidPixelRegion,
     JobDetailDTO,
+    PixelRect,
     ReviewRunRequest,
     RunConfiguration,
     SegmentationRunDTO,
@@ -247,8 +249,37 @@ class AnalysisCreationService:
                     )
                 seen_hashes[stored.sha256] = upload.filename
                 validated = validate_image(stored.path)
-                scale = item.scale.value if item.scale.mode.value == "nm_per_pixel" else None
-                analysis_roi = infer_analysis_roi(validated)
+                inspection = inspect_sem_image(
+                    validated.path,
+                    width=validated.width,
+                    height=validated.height,
+                )
+                requested_scale = (
+                    item.scale.value if item.scale.mode.value == "nm_per_pixel" else None
+                )
+                sem_metadata = inspection.metadata
+                if requested_scale is not None:
+                    scale = requested_scale
+                    scale_source = "manual"
+                    if (
+                        sem_metadata is not None
+                        and sem_metadata.pixel_size_nm is not None
+                        and abs(requested_scale - sem_metadata.pixel_size_nm)
+                        / sem_metadata.pixel_size_nm
+                        > 0.02
+                    ):
+                        sem_metadata = sem_metadata.model_copy(
+                            update={
+                                "warnings": [
+                                    *sem_metadata.warnings,
+                                    "manual_scale_differs_from_sem_metadata",
+                                ]
+                            }
+                        )
+                else:
+                    scale = inspection.detected_scale_nm_per_pixel
+                    scale_source = "sem_metadata" if scale is not None else "none"
+                analysis_roi = inspection.analysis_roi
                 asset = ImageAssetDTO(
                     image_id=image_id,
                     job_id=job_id,
@@ -262,6 +293,8 @@ class AnalysisCreationService:
                     material_formula=item.material_formula,
                     experiment_conditions=item.experiment_conditions,
                     scale_nm_per_pixel=scale,
+                    scale_source=scale_source,
+                    sem_metadata=sem_metadata,
                     analysis_roi=analysis_roi,
                     # The HTTP boundary decorates this persisted record only after
                     # tenant authorization, artifact registration, and v2 signing.
@@ -596,6 +629,8 @@ class AnalysisApplicationService:
                         postprocess_profile=model.postprocess_profile,
                         image_sha256=image.sha256,
                         scale_nm_per_pixel=image.scale_nm_per_pixel,
+                        scale_source=image.scale_source,
+                        sem_metadata=image.sem_metadata,
                         resolved_postprocess=self._resolved_postprocess(
                             profile_id=model.postprocess_profile,
                             inference=inference,
@@ -776,6 +811,12 @@ class AnalysisApplicationService:
                 image.scale_nm_per_pixel
                 if legacy_parent
                 else parent.configuration.scale_nm_per_pixel
+            ),
+            "scale_source": (
+                image.scale_source if legacy_parent else parent.configuration.scale_source
+            ),
+            "sem_metadata": (
+                image.sem_metadata if legacy_parent else parent.configuration.sem_metadata
             ),
             "resolved_postprocess": resolved_postprocess,
             "resolved_morphometry": parent_settings.morphometry.model_copy(deep=True),
@@ -1028,6 +1069,22 @@ class AnalysisApplicationService:
                 roi_mode=configuration.roi_mode,
                 boxes=configuration.boxes,
             )
+            inference_roi_mask = build_analysis_roi(
+                width=image.width,
+                height=image.height,
+                analysis_roi=configuration.analysis_roi,
+                roi_mode=RoiMode.FULL_IMAGE,
+                boxes=[],
+            )
+            inference_y, inference_x = np.nonzero(inference_roi_mask)
+            if not len(inference_y):
+                raise InvalidImageError(details={"reason": "empty_analysis_roi"})
+            inference_rect = PixelRect(
+                x1=int(inference_x.min()),
+                y1=int(inference_y.min()),
+                x2=int(inference_x.max()) + 1,
+                y2=int(inference_y.max()) + 1,
+            )
             transform = create_transform(image.width, image.height, configuration.analysis_roi)
             run_dir = self.file_store.create_run_dir(run.job_id, run.image_id, run.run_id)
             self.file_store.atomic_write_json(
@@ -1064,6 +1121,7 @@ class AnalysisApplicationService:
                     run_dir=run_dir,
                     roi_mode=configuration.roi_mode,
                     boxes=configuration.boxes,
+                    inference_rect=inference_rect,
                     threshold=configuration.inference.threshold,
                     min_area_px=configuration.inference.min_area_px,
                     roi_context_px=configuration.roi_context_px,

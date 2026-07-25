@@ -1886,6 +1886,26 @@
             ],
             "title": "Scale Nm Per Pixel"
           },
+          "scale_source": {
+            "default": "none",
+            "enum": [
+              "none",
+              "manual",
+              "sem_metadata"
+            ],
+            "title": "Scale Source",
+            "type": "string"
+          },
+          "sem_metadata": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SemInstrumentMetadata"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "sha256": {
             "pattern": "^[0-9a-f]{64}$",
             "title": "Sha256",
@@ -3586,6 +3606,16 @@
             ],
             "title": "Scale Nm Per Pixel"
           },
+          "scale_source": {
+            "default": "none",
+            "enum": [
+              "none",
+              "manual",
+              "sem_metadata"
+            ],
+            "title": "Scale Source",
+            "type": "string"
+          },
           "schema_version": {
             "default": 1,
             "enum": [
@@ -3595,6 +3625,16 @@
             ],
             "title": "Schema Version",
             "type": "integer"
+          },
+          "sem_metadata": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SemInstrumentMetadata"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "weight_sha256": {
             "anyOf": [
@@ -3881,6 +3921,196 @@
           "updated_at"
         ],
         "title": "SegmentationRunDTO",
+        "type": "object"
+      },
+      "SemInstrumentMetadata": {
+        "additionalProperties": false,
+        "description": "Normalized, provenance-bearing metadata extracted from one SEM image.",
+        "properties": {
+          "accelerating_voltage_kv": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Accelerating Voltage Kv"
+          },
+          "acquired_at": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Acquired At"
+          },
+          "aperture_size_um": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Aperture Size Um"
+          },
+          "confidence": {
+            "enum": [
+              "medium",
+              "high"
+            ],
+            "title": "Confidence",
+            "type": "string"
+          },
+          "detector": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detector"
+          },
+          "footer_detected": {
+            "default": false,
+            "title": "Footer Detected",
+            "type": "boolean"
+          },
+          "footer_rect": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PixelRect"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "footer_style": {
+            "anyOf": [
+              {
+                "enum": [
+                  "dark",
+                  "light"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Footer Style"
+          },
+          "instrument_model": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instrument Model"
+          },
+          "instrument_serial": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instrument Serial"
+          },
+          "magnification_x": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Magnification X"
+          },
+          "pixel_size_nm": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pixel Size Nm"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "source": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Source",
+            "type": "string"
+          },
+          "vendor": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vendor"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Warnings",
+            "type": "array"
+          },
+          "working_distance_mm": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Working Distance Mm"
+          }
+        },
+        "required": [
+          "source",
+          "confidence"
+        ],
+        "title": "SemInstrumentMetadata",
         "type": "object"
       },
       "ToolCallLog": {

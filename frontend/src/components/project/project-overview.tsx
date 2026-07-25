@@ -77,10 +77,94 @@ export function ProjectOverview({ detail }: { detail: JobDetail }) {
                 value={
                   (image.analysis_roi.invalid_rects ?? []).length ? "warn" : "pass"
                 }
-                label={(image.analysis_roi.invalid_rects ?? []).length ? "含无效区域" : "已校验"}
+                label={
+                  image.sem_metadata?.footer_detected
+                    ? "已排除仪器栏"
+                    : (image.analysis_roi.invalid_rects ?? []).length
+                      ? "含无效区域"
+                      : "全图分析"
+                }
               />
             </article>
           ))}
+        </div>
+        <div className="sem-metadata-list">
+          {images
+            .filter((image) => image.sem_metadata)
+            .map((image) => {
+              const sem = image.sem_metadata!;
+              return (
+                <article className="sem-metadata-card" key={image.image_id}>
+                  <div className="sem-metadata-heading">
+                    <div>
+                      <span>SEM METADATA</span>
+                      <strong>{image.filename} · 仪器信息已自动识别</strong>
+                    </div>
+                    <StatusBadge value={sem.confidence === "high" ? "pass" : "warn"} />
+                  </div>
+                  <dl>
+                    <MetadataItem
+                      label="物理尺度"
+                      value={
+                        image.scale_nm_per_pixel
+                          ? `${formatNumber(image.scale_nm_per_pixel, 6)} nm/px（${
+                              image.scale_source === "sem_metadata" ? "仪器元数据" : "手动"
+                            }）`
+                          : "未识别"
+                      }
+                    />
+                    <MetadataItem label="探测器" value={sem.detector} />
+                    <MetadataItem
+                      label="加速电压"
+                      value={
+                        sem.accelerating_voltage_kv
+                          ? `${formatNumber(sem.accelerating_voltage_kv)} kV`
+                          : null
+                      }
+                    />
+                    <MetadataItem
+                      label="工作距离"
+                      value={
+                        sem.working_distance_mm
+                          ? `${formatNumber(sem.working_distance_mm)} mm`
+                          : null
+                      }
+                    />
+                    <MetadataItem
+                      label="放大倍数"
+                      value={
+                        sem.magnification_x
+                          ? `${formatNumber(sem.magnification_x, 0)}×`
+                          : null
+                      }
+                    />
+                    <MetadataItem
+                      label="孔径"
+                      value={
+                        sem.aperture_size_um
+                          ? `${formatNumber(sem.aperture_size_um)} µm`
+                          : null
+                      }
+                    />
+                    <MetadataItem
+                      label="仪器"
+                      value={
+                        [sem.vendor, sem.instrument_model].filter(Boolean).join(" ") || null
+                      }
+                    />
+                    <MetadataItem
+                      label="采集时间"
+                      value={sem.acquired_at ? formatDate(sem.acquired_at) : null}
+                    />
+                  </dl>
+                  <p>
+                    {sem.footer_detected && sem.footer_rect
+                      ? `底部 ${sem.footer_rect.y1}–${sem.footer_rect.y2} px 已从推理和统计中排除。`
+                      : "未检测到底部仪器栏，分析区域保持原图。"}
+                  </p>
+                </article>
+              );
+            })}
         </div>
       </section>
 
@@ -89,11 +173,26 @@ export function ProjectOverview({ detail }: { detail: JobDetail }) {
         <div>
           <strong>科学计算边界</strong>
           <p>
-            前端只展示后端 summary、quality 与 provenance。物理尺度缺失时不会猜测 nm 或 µm，
-            也不会从 CSV 重新计算权威统计。
+            系统优先读取原始显微图的可信仪器元数据并冻结物理尺度；检测到的底部信息栏不会进入
+            模型推理或颗粒统计。没有信息栏或可信尺度时保持全图与像素单位，不做猜测。
           </p>
         </div>
       </section>
+    </div>
+  );
+}
+
+function MetadataItem({
+  label,
+  value
+}: {
+  label: string;
+  value: string | null | undefined;
+}) {
+  return (
+    <div>
+      <dt>{label}</dt>
+      <dd>{value || "—"}</dd>
     </div>
   );
 }

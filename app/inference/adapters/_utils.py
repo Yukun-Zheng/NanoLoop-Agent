@@ -7,12 +7,66 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import numpy as np
 from PIL import Image
 
-from app.contracts.analyses import ROIBox
+from app.contracts.analyses import PixelRect, ROIBox
+
+
+@dataclass(frozen=True, slots=True)
+class AnalysisCrop:
+    """A valid analysis crop with reversible original-pixel mappings."""
+
+    rect: PixelRect
+    image: np.ndarray
+    original_shape: tuple[int, int]
+
+    def local_boxes(self, boxes: Iterable[ROIBox]) -> list[ROIBox]:
+        localized: list[ROIBox] = []
+        for box in boxes:
+            if not box.active:
+                continue
+            x1 = max(box.x1, self.rect.x1)
+            y1 = max(box.y1, self.rect.y1)
+            x2 = min(box.x2, self.rect.x2)
+            y2 = min(box.y2, self.rect.y2)
+            if x1 >= x2 or y1 >= y2:
+                continue
+            localized.append(
+                box.model_copy(
+                    update={
+                        "x1": x1 - self.rect.x1,
+                        "y1": y1 - self.rect.y1,
+                        "x2": x2 - self.rect.x1,
+                        "y2": y2 - self.rect.y1,
+                    }
+                )
+            )
+        return localized
+
+    def embed(self, values: np.ndarray, *, dtype: np.dtype[Any] | None = None) -> np.ndarray:
+        if values.shape[:2] != self.image.shape[:2]:
+            raise ValueError("analysis crop output shape does not match crop image")
+        output_dtype = dtype if dtype is not None else values.dtype
+        output = np.zeros(self.original_shape, dtype=output_dtype)
+        output[self.rect.y1 : self.rect.y2, self.rect.x1 : self.rect.x2] = values
+        return output
+
+
+def analysis_crop(image: np.ndarray, rect: PixelRect | None) -> AnalysisCrop:
+    """Crop to a validated original-pixel rectangle, defaulting to the full image."""
+
+    height, width = image.shape[:2]
+    resolved = rect or PixelRect(x1=0, y1=0, x2=width, y2=height)
+    if resolved.x2 > width or resolved.y2 > height:
+        raise ValueError("inference_rect exceeds image bounds")
+    return AnalysisCrop(
+        rect=resolved,
+        image=np.asarray(image[resolved.y1 : resolved.y2, resolved.x1 : resolved.x2]),
+        original_shape=(height, width),
+    )
 
 
 @dataclass(frozen=True, slots=True)

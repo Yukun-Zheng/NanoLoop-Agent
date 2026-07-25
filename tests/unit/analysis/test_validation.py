@@ -125,3 +125,22 @@ def test_infer_analysis_roi_keeps_full_frame_without_confident_footer(tmp_path: 
     assert roi.source == "none"
     assert roi.valid_rect.model_dump() == {"x1": 0, "y1": 0, "x2": 240, "y2": 160}
     assert roi.invalid_rects == []
+
+
+def test_infer_analysis_roi_detects_high_confidence_light_instrument_footer(
+    tmp_path: Path,
+) -> None:
+    rng = np.random.default_rng(17)
+    pixels = rng.integers(45, 190, size=(240, 320), dtype=np.uint8)
+    pixels[192:194, :] = 0
+    pixels[194:, :] = 255
+    pixels[204:210, 20:100] = 0
+    pixels[222:228, 140:285] = 0
+    path = tmp_path / "sem-with-light-footer.tif"
+    Image.fromarray(pixels, mode="L").save(path)
+
+    roi = infer_analysis_roi(validate_image(path))
+
+    assert roi.source == "detected"
+    assert 191 <= roi.valid_rect.y2 <= 194
+    assert roi.invalid_rects[0].reason == "instrument_bar_detected"

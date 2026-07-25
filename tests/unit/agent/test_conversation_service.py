@@ -208,6 +208,9 @@ def test_open_ended_request_is_answered_as_safe_general_chat(tmp_path: Path) -> 
             "material_name": None,
             "material_formula": None,
             "has_physical_scale": False,
+            "scale_nm_per_pixel": None,
+            "scale_source": "none",
+            "sem_metadata": None,
         }
         assert provider.task_contexts[-1]["runs"]["job_total_count"] == 0
         assert provider.task_contexts[-1]["runs"]["selected"] == []
