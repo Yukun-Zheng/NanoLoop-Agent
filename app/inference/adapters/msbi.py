@@ -230,10 +230,12 @@ class MSBIAdapter(BaseSegmentationAdapter):
         decoded_at = time.perf_counter()
         labels = decoded.labels
         destination = output_dir(request.run_dir, self.metadata.model_id)
-        artifact_arrays = {
+        artifact_arrays: dict[str, np.ndarray] = {
             "foreground_probability.npy": foreground,
         }
         if bool(self.config.get("save_raw_heads", True)):
+            if gate is None:
+                raise ValueError("MSBI raw head export requires gate probabilities")
             artifact_arrays.update(
                 {
                     "center_probability.npy": center,
@@ -793,10 +795,11 @@ class MSBIAdapter(BaseSegmentationAdapter):
         *,
         dtype: type[np.float32] | type[np.float64] = np.float64,
     ) -> np.ndarray:
-        vertical = np.hanning(height).astype(dtype)
-        horizontal = np.hanning(width).astype(dtype)
+        vertical = np.asarray(np.hanning(height), dtype=dtype)
+        horizontal = np.asarray(np.hanning(width), dtype=dtype)
+        window = vertical[:, np.newaxis] * horizontal[np.newaxis, :]
         return np.asarray(
-            np.maximum(np.outer(vertical, horizontal), 1e-3),
+            np.maximum(window, 1e-3),
             dtype=dtype,
         )
 
