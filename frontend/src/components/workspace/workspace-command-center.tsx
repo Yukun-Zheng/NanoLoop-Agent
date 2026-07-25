@@ -376,7 +376,7 @@ export function WorkspaceCommandCenter({
             })}
           </nav>
 
-          <div className="rail-section">
+          <div className="rail-section rail-images">
             <div className="rail-section-title">
               <span>图像</span>
               <small>{images.length}</small>

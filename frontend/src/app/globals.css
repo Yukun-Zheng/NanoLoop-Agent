@@ -1187,7 +1187,10 @@ body:has(.workspace-page) {
 .project-rail {
   grid-column: 1;
   grid-row: 1 / 3;
+  display: flex;
+  flex-direction: column;
   min-width: 0;
+  min-height: 0;
   overflow: hidden;
   border-right: 1px solid var(--nl-border);
   background: rgba(248, 249, 252, 0.9);
@@ -1196,6 +1199,7 @@ body:has(.workspace-page) {
 
 .rail-heading {
   display: grid;
+  flex: 0 0 auto;
   height: 65px;
   align-content: center;
   gap: 3px;
@@ -1227,6 +1231,7 @@ body:has(.workspace-page) {
 
 .stage-navigation {
   display: grid;
+  flex: 0 0 auto;
   gap: 2px;
   padding: 10px 8px;
 }
@@ -1259,8 +1264,17 @@ body:has(.workspace-page) {
 }
 
 .rail-section {
+  flex: 0 0 auto;
   padding: 7px 8px;
   border-top: 1px solid var(--nl-border);
+}
+
+.rail-images {
+  display: grid;
+  min-height: 132px;
+  flex: 1 1 220px;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
 }
 
 .rail-section-title {
@@ -1288,6 +1302,15 @@ body:has(.workspace-page) {
 .rail-list {
   display: grid;
   gap: 3px;
+}
+
+.rail-images .rail-list,
+.rail-runs .rail-list {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 2px;
+  scrollbar-gutter: stable;
 }
 
 .rail-list > button,
@@ -1342,8 +1365,12 @@ body:has(.workspace-page) {
 }
 
 .rail-runs {
-  max-height: calc(100vh - 390px);
-  overflow-y: auto;
+  display: grid;
+  min-height: 86px;
+  max-height: min(34vh, 300px);
+  flex: 0 1 240px;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
   overscroll-behavior: contain;
 }
 
