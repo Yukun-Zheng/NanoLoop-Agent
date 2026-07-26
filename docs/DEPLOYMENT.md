@@ -9,13 +9,55 @@ Uvicorn worker，内部分析线程数由 `ANALYSIS_WORKER_COUNT` 控制。不�
 
 当前部署基线为最新全绿 `main`，发布等级是 **M1 工程 MVP / 内部 Alpha**。默认资产目录已包含 Large 与 Small-A U-Net TorchScript；安装 `models` extra 且 bundle 校验通过时两项均为 `ready`。Agglomerated-A 的精确私有 bundle 已通过 Gateway→Analysis 冒烟，但只允许由仓库外 private registry 标记为 `ready`；公开目录中的 Agglomerated U-Net、YOLO-Seg 和 SAM2 仍为 `unavailable`。示例 smoke fixture 仍需替换为许可明确的真实数据。Large 的历史独立集像素指标已从交付字节复核；Small-A 已分别通过 PyTorch 2.6.0 与 2.13.0 的运行验证，以及全图和 ROI 校验，但 Small-B 科学评测尚未交付。许可/custody、split、tolerance policy 和当前科学重跑仍不完整；正式 RAG 语料与固定 embedding 也尚未验收。基础设施和模型运行可用不等于科学闭环已经验收；当前真实资产门槛见 [需求追踪矩阵](requirements-traceability.md)、[Large A/B 接入审计](model-assets-large-a-b-acceptance-2026-07-23.md)、[Small-A 接入审计](model-assets-small-a-acceptance-2026-07-23.md)、[Agglomerated-A 接入审计](model-assets-agglomerated-a-acceptance-2026-07-24.md)和[生产就绪说明](PRODUCTION_READINESS.md)。
 
-Compose 的 `models` 构建固定从 PyTorch 官方 CPU wheel index 获取
-`torch 2.13.0`/`torchvision 0.28.0`，满足 Large TorchScript 序列化代码对
-`aten::_upsample_lanczos2d_aa` 的引用要求，避免 CPU 容器因 PyPI
-宽泛解析而下载 CUDA 运行时。`make compose-up-models` 会严格串行构建 API 和前端，再以
-`--no-build` 启动；不要同时在另一个终端重复执行 Compose 构建。
-普通 Python 依赖默认来自官方 PyPI；受限网络环境可在本次构建中通过 `PYPI_INDEX_URL` 指向组织
-审计并同步的可信镜像，该覆盖不改变 PyTorch CPU wheel 的独立官方来源。
+## 跨平台容器与自动加速
+
+镜像本身是多架构 Linux OCI 容器，可由 Linux Docker Engine、Windows/macOS Docker Desktop，
+以及能运行 Linux 容器和 Compose v2 的其他 Unix-like 主机启动。不要把“宿主平台兼容”理解为
+容器内运行 Windows 或 macOS 内核。
+
+完整模型栈使用跨平台启动器。它先用一个短暂容器验证 Docker 是否真的接受
+`--gpus all`，成功时自动叠加 `docker-compose.gpu.yml`、安装官方 CUDA wheel 并把全部 NVIDIA
+GPU 交给 API；否则构建官方 CPU wheel。两条路径中的 `MODEL_DEVICE` 均默认为 `auto`，应用运行时
+按 CUDA → MPS → CPU 解析并在执行证据中保存实际设备：
+
+```bash
+# Linux、macOS 和其他带 POSIX shell 的 Unix-like 主机
+./scripts/compose-up-auto.sh
+# 或：make compose-up-models
+```
+
+```powershell
+# Windows PowerShell
+.\scripts\compose-up-auto.ps1
+```
+
+自动选择也可以显式收紧。`cpu` 永不探测 GPU；`cuda` 在 Docker 无法访问 NVIDIA GPU 时直接报错，
+不会悄悄退回 CPU：
+
+```bash
+NANOLOOP_ACCELERATOR=cpu ./scripts/compose-up-auto.sh
+NANOLOOP_ACCELERATOR=cuda ./scripts/compose-up-auto.sh
+```
+
+```powershell
+$env:NANOLOOP_ACCELERATOR = "cuda"
+.\scripts\compose-up-auto.ps1
+```
+
+当前容器 GPU 路径是 NVIDIA CUDA。Linux 需要正确安装 NVIDIA 驱动与 Container Toolkit；
+Windows 需要 Docker Desktop 的 WSL2 后端和受支持的 NVIDIA GPU。macOS Docker Desktop 运行在
+Linux VM 中，不能把 Apple Metal/MPS 透传给该容器，因此会自动选择 CPU；若要使用 Apple GPU，
+应在 macOS 原生 Python 环境以 `MODEL_DEVICE=auto` 运行。Apple Silicon 不应强制
+`linux/amd64`，默认原生 `linux/arm64` CPU 镜像可以避免模拟开销。其他 Unix-like 主机只有在其
+Docker/Compose 实现真实支持 Linux 容器和 NVIDIA device request 时才会选择 CUDA。
+
+两种模型镜像都锁定 `torch 2.13.0`/`torchvision 0.28.0`，满足 Large TorchScript 序列化代码对
+`aten::_upsample_lanczos2d_aa` 的引用要求。CPU 与 CUDA wheel channel 分别由
+`PYTORCH_INDEX_URL` 和 `PYTORCH_GPU_INDEX_URL` 覆盖；默认均指向经验证的 PyTorch 官方 index。
+CUDA 默认使用同时提供 Python 3.12 `linux/amd64` 与 `linux/arm64` wheel 的 `cu126` channel；
+改用其他 channel 前必须确认目标驱动、CPU 架构以及 Torch/TorchVision 配对均有对应 wheel。
+普通 Python 依赖默认来自官方 PyPI；受限网络环境可通过 `PYPI_INDEX_URL` 指向组织审计并同步的
+可信镜像。启动器严格串行构建 API 与前端，再以 `--no-build` 启动；不要同时在另一个终端重复构建。
 
 默认端口只发布到 `127.0.0.1`。API 依据 `TRUSTED_HOSTS` 拒绝异常 Host，并依据
 `CORS_ALLOW_ORIGINS`/同站 fetch metadata 保护浏览器写请求。`AUTH_MODE` 支持
@@ -185,7 +227,7 @@ docker compose config --quiet
 
 ## 外部资产
 
-默认 CPU 镜像仍不安装重型模型依赖；仓库内的 Large 与 Small-A TorchScript 通过 Compose 的只读
+默认轻量镜像仍不安装重型模型依赖；仓库内的 Large 与 Small-A TorchScript 通过 Compose 的只读
 资产挂载提供，不会烘焙进镜像层。Agglomerated-A 的精确权重仅由已验证的外部私有 bundle 提供，
 公开目录不提交它；YOLO-Seg、SAM2 的权重以及生产语料、
 向量索引和本地 LLM 仍由外部资产提供。Compose 把

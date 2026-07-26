@@ -1,0 +1,4 @@
+# Runtime version pins shared by the portable CPU image and the optional CUDA image.
+# Dockerfile selects the official PyTorch wheel channel through PYTORCH_INDEX_URL.
+torch==2.13.0
+torchvision==0.28.0

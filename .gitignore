@@ -52,3 +52,6 @@ rag-acceptance-v1/run-record/*
 .streamlit/secrets.toml
 node_modules/
 data/.nanoloop-state.lock
+
+# Machine-local private models, datasets, and preserved runtime evidence
+/local_assets/

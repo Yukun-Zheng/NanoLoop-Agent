@@ -35,6 +35,15 @@ make compose-up-models
 docker compose ps
 ```
 
+Windows PowerShell 对应命令为：
+
+```powershell
+git switch main
+git pull --ff-only origin main
+.\scripts\compose-up-auto.ps1
+docker compose ps
+```
+
 需要验收本地 Qwen3 时，先用 `ollama list` 取得已经安装的精确 tag，然后改用：
 
 ```bash
@@ -43,7 +52,9 @@ make compose-up-local-llm-models
 docker compose -f docker-compose.yml -f docker-compose.ollama.yml ps
 ```
 
-第一次构建会下载 CPU 版 PyTorch，耗时取决于网络。不要同时在多个终端重复运行构建命令。
+第一次构建会下载 PyTorch，耗时取决于网络。启动器会先验证 Docker 是否能访问 NVIDIA GPU：
+能访问则构建 CUDA 运行时，否则构建 CPU 运行时；`cuda` 被显式要求但不可用时会直接失败。
+macOS Docker 无法使用 Apple MPS，容器会走 CPU。不要同时在多个终端重复运行构建命令。
 当 `api` 和 `frontend` 都显示 `healthy` 后，检查：
 
 ```bash
