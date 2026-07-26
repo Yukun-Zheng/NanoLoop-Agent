@@ -49,6 +49,20 @@ type LayerKey =
   | "gateLarge"
   | "uncertainty";
 
+const layerOptions: ReadonlyArray<readonly [LayerKey, string]> = [
+  ["original", "原图"],
+  ["mask", "分割掩码"],
+  ["overlay", "识别叠加"],
+  ["probability", "置信度"],
+  ["labeled", "实例编号"],
+  ["center", "中心热图"],
+  ["boundary", "边界概率"],
+  ["instanceMap", "实例标签"],
+  ["gateSmall", "小尺度 Gate"],
+  ["gateLarge", "大尺度 Gate"],
+  ["uncertainty", "不确定性"]
+];
+
 const terminal = new Set(["COMPLETED", "COMPLETED_WITH_WARNINGS"]);
 
 function initialLayer(run: Run | null): LayerKey {
@@ -114,6 +128,10 @@ export function ResultView({
           }
         : {},
     [image, run]
+  );
+  const availableLayerOptions = useMemo(
+    () => layerOptions.filter(([key]) => Boolean(layers[key])),
+    [layers]
   );
 
   const uploadMask = useMutation({
@@ -260,21 +278,7 @@ export function ResultView({
 
       <div className="result-toolbar">
         <div className="layer-tabs" role="tablist" aria-label="结果图层">
-          {(
-            [
-              ["original", "原图"],
-              ["mask", "分割掩码"],
-              ["overlay", "识别叠加"],
-              ["probability", "置信度"],
-              ["labeled", "实例编号"],
-              ["center", "中心热图"],
-              ["boundary", "边界概率"],
-              ["instanceMap", "实例标签"],
-              ["gateSmall", "小尺度 Gate"],
-              ["gateLarge", "大尺度 Gate"],
-              ["uncertainty", "不确定性"]
-            ] as const
-          ).map(([key, label]) => (
+          {availableLayerOptions.map(([key, label]) => (
             <button
               role="tab"
               aria-selected={layer === key}
@@ -283,7 +287,6 @@ export function ResultView({
               onClick={() => setLayer(key)}
             >
               {label}
-              {!layers[key] ? <i aria-label="未生成" /> : null}
             </button>
           ))}
         </div>

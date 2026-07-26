@@ -66,7 +66,7 @@ export function ModelSelector({
   onRunsCreated: (runIds: string[]) => void;
 }) {
   const queryClient = useQueryClient();
-  const catalogModels = catalog.models ?? [];
+  const catalogModels = (catalog.models ?? []).filter(isModelSelectable);
   const availableImages = images?.length ? images : image ? [image] : [];
   const batchAvailable = availableImages.length > 1;
   const activeRoiCount = (boxSet?.boxes ?? []).filter((box) => box.active).length;
@@ -243,9 +243,7 @@ export function ModelSelector({
     }
   }
 
-  const readyCount = catalogModels.filter(
-    (model) => model.status === "ready" && !model.health_error
-  ).length;
+  const readyCount = catalogModels.length;
   const parameterError = runParameterError(threshold, minArea);
   const roiError =
     roiMode === "boxes" && activeRoiCount === 0
@@ -440,7 +438,7 @@ export function ModelSelector({
         <EmptyState
           icon={ScanSearch}
           title="当前没有可运行的真实模型"
-          detail="模型目录仍会展示不可用原因；项目创建、ROI 和证据审查不受影响。"
+          detail="请检查模型权重和运行依赖；不可运行的模型不会出现在分析选择页。"
         />
       ) : null}
 

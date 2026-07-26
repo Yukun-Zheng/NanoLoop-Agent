@@ -1912,6 +1912,11 @@ export interface components {
          * @description Select the completed runs that define one report snapshot.
          */
         ScientificReportRequest: {
+            /**
+             * Require Qwen
+             * @default true
+             */
+            require_qwen: boolean;
             /** Run Ids */
             run_ids: string[];
         };

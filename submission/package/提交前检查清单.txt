@@ -1,0 +1,19 @@
+NanoLoop 提交前检查清单
+
+[ ] 邮件收件人为 maodan@szu.edu.cn。
+[ ] 邮件主题为“AI4S参赛作品+杨雨宁”。
+[ ] 主附件名为“杨雨宁+纳米颗粒图像识别工具开发小组+参赛作品.zip”。
+[ ] 智能体设计文档 PDF 和 DOCX 均可打开，队伍信息与报名表一致。
+[ ] Docker 部署手册 PDF 和 DOCX 均可打开，Windows、macOS、Ubuntu 均有逐步说明。
+[ ] Docker 源码包内没有 .env、local_assets、node_modules、.next、运行数据库或个人路径。
+[ ] 三个公开模型权重和 model_artifacts/registry.yaml 均在源码包内。
+[ ] Windows、macOS、Linux 的启动、停止、状态脚本均在 NanoLoop-Agent 根目录。
+[ ] 评委机默认采用证据摘录模式，ONLINE_RESEARCH_ENABLED=false，未要求安装 Ollama/Qwen。
+[ ] 示例输入可以正常读取。
+[ ] 若附 linux/amd64 离线镜像，已确认两个镜像 Architecture 均为 amd64。
+[ ] SHA256SUMS.txt 与最终文件重新计算的摘要一致。
+[ ] 演示视频小于 3:00，为 1920×1080、H.264 MP4，另一台电脑可播放。
+[ ] 视频片头含项目名，片尾含正式团队名，没有微信、邮箱、报名表或本地隐私。
+[ ] 报名表只在私有提交包中，不在公开 GitHub 仓库。
+[ ] 压缩包已在一个新的临时目录完整解压，中文文件名正常，无损坏。
+[ ] 提交前保留本地副本，并在 2026 年 7 月 26 日 24:00 前发送。

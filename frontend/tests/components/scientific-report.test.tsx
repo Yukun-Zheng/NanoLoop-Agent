@@ -192,7 +192,7 @@ describe("ScientificReport", () => {
     await waitFor(() =>
       expect(mockedApi).toHaveBeenCalledWith("analyses/job_1/report", {
         method: "POST",
-        body: { run_ids: ["run_1"] }
+        body: { run_ids: ["run_1"], require_qwen: true }
       })
     );
     expect(
@@ -251,7 +251,7 @@ describe("ScientificReport", () => {
     await waitFor(() =>
       expect(mockedApi).toHaveBeenCalledWith("analyses/job_1/report", {
         method: "POST",
-        body: { run_ids: ["run_1", "run_2"] }
+        body: { run_ids: ["run_1", "run_2"], require_qwen: true }
       })
     );
     expect(

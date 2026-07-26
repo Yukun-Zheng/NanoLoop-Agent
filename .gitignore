@@ -55,3 +55,7 @@ data/.nanoloop-state.lock
 
 # Machine-local private models, datasets, and preserved runtime evidence
 /local_assets/
+
+# Competition document review renders are local QA artifacts.  The final
+# DOCX/PDF files at submission/generated/ remain versioned.
+/submission/generated/*/

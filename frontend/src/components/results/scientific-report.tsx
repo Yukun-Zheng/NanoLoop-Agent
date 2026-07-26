@@ -82,7 +82,7 @@ export function ScientificReport({
         `analyses/${encodeURIComponent(jobId)}/report`,
         {
           method: "POST",
-          body: { run_ids: selectedRunIds }
+          body: { run_ids: selectedRunIds, require_qwen: true }
         }
       ),
     onSuccess(response) {
@@ -158,7 +158,7 @@ export function ScientificReport({
         <div className="report-pipeline" aria-label="报告生成流程">
           <span><b>1</b> 数据工具取证</span>
           <span><b>2</b> 尺度与质量解释</span>
-          <span><b>3</b> 本地模型综合</span>
+          <span><b>3</b> Qwen 整理结果解读</span>
           <span><b>4</b> DOCX / PDF</span>
         </div>
       ) : (
@@ -173,8 +173,8 @@ export function ScientificReport({
                   ? `${report.batch_summary?.image_count || selectedImageCount} 个视野 · `
                   : ""}
                 {report.synthesis_provider === "local_llm"
-                  ? `本地模型 ${report.synthesis_model || ""}`
-                  : "可信模板降级"}
+                  ? `Qwen ${report.synthesis_model || ""} 辅助整理`
+                  : "确定性模板"}
               </p>
             </div>
             <div className="report-preview-actions">
@@ -221,7 +221,7 @@ export function ScientificReport({
               <span>TECHNICAL SUMMARY</span>
               <StatusBadge
                 value={report.fallback_used ? "degraded" : "healthy"}
-                label={report.fallback_used ? "可信降级" : "本地模型综合"}
+                label={report.fallback_used ? "确定性模板" : "Qwen 已参与"}
               />
             </div>
             <p>{report.technical_summary}</p>

@@ -581,6 +581,22 @@ code {
   font-size: 9px;
 }
 
+.conversation-health-retry {
+  flex: 0 0 auto;
+  border: 0;
+  padding: 2px 5px;
+  color: var(--nl-accent);
+  background: transparent;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.conversation-health-retry:hover {
+  text-decoration: underline;
+}
+
 .conversation-messages {
   min-height: 0;
   overflow-y: auto;

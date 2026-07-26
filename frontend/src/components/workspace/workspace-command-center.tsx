@@ -597,7 +597,11 @@ export function WorkspaceCommandCenter({
 
             {stage === "results" ? (
               <ResultView
-                key={activeRun?.run_id ?? "no-run"}
+                key={
+                  activeRun
+                    ? `${activeRun.run_id}-${activeRun.status}`
+                    : "no-run"
+                }
                 jobId={jobId}
                 image={activeImage}
                 run={activeRun}

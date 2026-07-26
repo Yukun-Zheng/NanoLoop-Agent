@@ -122,6 +122,7 @@ async def generate_scientific_report(
         snapshot=snapshot,
         tenant_id=tenant_id,
         run_ids=selected_ids,
+        require_qwen=payload.require_qwen,
     )
     prefix = request.app.state.settings.api_prefix.rstrip("/")
     docx_token = file_access.issue_download_token(

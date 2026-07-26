@@ -14,6 +14,7 @@ class ScientificReportRequest(ContractModel):
     """Select the completed runs that define one report snapshot."""
 
     run_ids: list[str] = Field(min_length=1, max_length=20)
+    require_qwen: bool = True
 
     @model_validator(mode="after")
     def validate_unique_runs(self) -> "ScientificReportRequest":
