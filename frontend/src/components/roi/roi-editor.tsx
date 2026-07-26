@@ -1,13 +1,25 @@
 "use client";
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Clipboard, Plus, RefreshCcw, Save, Trash2 } from "lucide-react";
+import { Clipboard, MousePointer2, Plus, RefreshCcw, Save, Trash2 } from "lucide-react";
+import type Konva from "konva";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Image as KonvaImage, Layer, Rect, Stage, Text } from "react-konva";
+import {
+  Image as KonvaImage,
+  Layer,
+  Rect,
+  Stage,
+  Text,
+  Transformer
+} from "react-konva";
 
 import { Button } from "@/components/ui/button";
 import { RequestError } from "@/components/ui/request-error";
-import { apiRequest, toBffArtifactUrl } from "@/lib/api/client";
+import {
+  apiRequest,
+  artifactPreviewIdentity,
+  toBffArtifactUrl
+} from "@/lib/api/client";
 import { NanoLoopApiError } from "@/lib/api/errors";
 import { queryKeys } from "@/lib/api/query-keys";
 import type { BoxSet, ImageAsset, RoiBox } from "@/lib/api/types";
@@ -20,6 +32,27 @@ import {
 } from "@/lib/roi/geometry";
 
 const canvasHeight = 440;
+
+function artifactUrls(source: string | null | undefined) {
+  return {
+    identity: artifactPreviewIdentity(source),
+    previewUrl: toBffArtifactUrl(source, { preview: true }),
+    rawUrl: toBffArtifactUrl(source)
+  };
+}
+
+function useStableArtifactUrls(source: string | null | undefined) {
+  const identity = artifactPreviewIdentity(source);
+  const [urls, setUrls] = useState(() => artifactUrls(source));
+
+  useEffect(() => {
+    if (urls.identity === identity) return;
+    const frame = requestAnimationFrame(() => setUrls(artifactUrls(source)));
+    return () => cancelAnimationFrame(frame);
+  }, [identity, source, urls.identity]);
+
+  return urls;
+}
 
 function useHtmlImage(src: string | null) {
   const [state, setState] = useState<{
@@ -37,14 +70,18 @@ function useHtmlImage(src: string | null) {
       };
     }
     queueMicrotask(() => {
-      if (active) setState({ image: null, status: "loading" });
+      if (active) {
+        setState((current) => ({ image: current.image, status: "loading" }));
+      }
     });
     const next = new window.Image();
     next.onload = () => {
       if (active) setState({ image: next, status: "ready" });
     };
     next.onerror = () => {
-      if (active) setState({ image: null, status: "error" });
+      if (active) {
+        setState((current) => ({ image: current.image, status: "error" }));
+      }
     };
     next.src = src;
     return () => {
@@ -75,10 +112,12 @@ export function RoiEditor({
   const [dirty, setDirty] = useState(false);
   const [draft, setDraft] = useState<PixelRect | null>(null);
   const [drawingFrom, setDrawingFrom] = useState<{ x: number; y: number } | null>(null);
+  const [selectedBoxIndex, setSelectedBoxIndex] = useState<number | null>(null);
   const [conflict, setConflict] = useState(false);
   const loadedImageId = useRef(image.image_id);
-  const previewUrl = toBffArtifactUrl(image.original_download_url, { preview: true });
-  const rawUrl = toBffArtifactUrl(image.original_download_url);
+  const selectedRect = useRef<Konva.Rect>(null);
+  const transformer = useRef<Konva.Transformer>(null);
+  const { previewUrl, rawUrl } = useStableArtifactUrls(image.original_download_url);
   const imagePreview = useHtmlImage(previewUrl);
 
   useEffect(() => {
@@ -89,6 +128,7 @@ export function RoiEditor({
         setBaseRevision(serverBoxes.revision);
         setDirty(false);
         setConflict(false);
+        setSelectedBoxIndex(null);
         return;
       }
       if (serverBoxes.revision === baseRevision) return;
@@ -99,6 +139,11 @@ export function RoiEditor({
       setBoxes(serverBoxes.boxes || []);
       setBaseRevision(serverBoxes.revision);
       setConflict(false);
+      setSelectedBoxIndex((current) =>
+        current !== null && current < (serverBoxes.boxes ?? []).length
+          ? current
+          : null
+      );
     });
     return () => cancelAnimationFrame(frame);
   }, [baseRevision, dirty, image.image_id, serverBoxes]);
@@ -118,9 +163,21 @@ export function RoiEditor({
   );
   const validRect = image.analysis_roi.valid_rect;
   const invalidRects = image.analysis_roi.invalid_rects || [];
+  const displayValidRect = useMemo(
+    () => originalToDisplay(validRect, transform),
+    [transform, validRect]
+  );
   const errors = boxes.map((box) =>
     validateRoiRect(box, validRect, invalidRects, 32)
   );
+
+  useEffect(() => {
+    const selectedNode = selectedRect.current;
+    const transformerNode = transformer.current;
+    if (!selectedNode || !transformerNode || selectedBoxIndex === null) return;
+    transformerNode.nodes([selectedNode]);
+    transformerNode.getLayer()?.batchDraw();
+  }, [boxes.length, selectedBoxIndex, transform]);
 
   const save = useMutation({
     mutationFn: () =>
@@ -139,6 +196,11 @@ export function RoiEditor({
       setBaseRevision(response.data.revision);
       setDirty(false);
       setConflict(false);
+      setSelectedBoxIndex((current) =>
+        current !== null && current < (response.data.boxes ?? []).length
+          ? current
+          : null
+      );
       queryClient.setQueryData(queryKeys.boxes(jobId, image.image_id), response.data);
     },
     onError(error) {
@@ -156,19 +218,23 @@ export function RoiEditor({
       setBaseRevision(response.data.revision);
       setDirty(false);
       setConflict(false);
+      setSelectedBoxIndex(null);
       queryClient.setQueryData(queryKeys.boxes(jobId, image.image_id), response.data);
     }
   });
 
-  function startDrawing(event: { target: { getStage(): { getPointerPosition(): { x: number; y: number } | null } | null } }) {
+  function startDrawing(event: Konva.KonvaEventObject<MouseEvent | TouchEvent>) {
     if (boxes.length >= 20) return;
-    const position = event.target.getStage()?.getPointerPosition();
+    const stage = event.target.getStage();
+    if (!stage || event.target !== stage) return;
+    const position = stage.getPointerPosition();
     if (!position) return;
+    setSelectedBoxIndex(null);
     setDrawingFrom(position);
     setDraft({ x1: position.x, y1: position.y, x2: position.x, y2: position.y });
   }
 
-  function continueDrawing(event: { target: { getStage(): { getPointerPosition(): { x: number; y: number } | null } | null } }) {
+  function continueDrawing(event: Konva.KonvaEventObject<MouseEvent | TouchEvent>) {
     if (!drawingFrom) return;
     const position = event.target.getStage()?.getPointerPosition();
     if (!position) return;
@@ -184,6 +250,7 @@ export function RoiEditor({
     if (!draft) return;
     const original = displayToOriginal(draft, transform, image.width, image.height);
     if (!validateRoiRect(original, validRect, invalidRects, 32)) {
+      setSelectedBoxIndex(boxes.length);
       setBoxes((current) => [
         ...current,
         {
@@ -206,6 +273,37 @@ export function RoiEditor({
     );
   }
 
+  function clamp(value: number, minimum: number, maximum: number) {
+    return Math.min(Math.max(value, minimum), Math.max(minimum, maximum));
+  }
+
+  function commitSelectedTransform(index: number) {
+    const node = selectedRect.current;
+    if (!node) return;
+    const width = Math.max(1, node.width() * node.scaleX());
+    const height = Math.max(1, node.height() * node.scaleY());
+    const display: PixelRect = {
+      x1: node.x(),
+      y1: node.y(),
+      x2: node.x() + width,
+      y2: node.y() + height
+    };
+    node.scaleX(1);
+    node.scaleY(1);
+    node.width(width);
+    node.height(height);
+    updateBox(
+      index,
+      displayToOriginal(display, transform, image.width, image.height)
+    );
+  }
+
+  const selectedBox =
+    selectedBoxIndex === null ? null : boxes[selectedBoxIndex] ?? null;
+  const selectedDisplay = selectedBox
+    ? originalToDisplay(selectedBox, transform)
+    : null;
+
   return (
     <div className="roi-editor">
       <div className="roi-canvas" ref={container}>
@@ -220,7 +318,12 @@ export function RoiEditor({
           onTouchEnd={finishDrawing}
         >
           <Layer>
-            <Rect width={canvasWidth} height={canvasHeight} fill="#eef0f5" />
+            <Rect
+              width={canvasWidth}
+              height={canvasHeight}
+              fill="#eef0f5"
+              listening={false}
+            />
             {imagePreview.image ? (
               <KonvaImage
                 image={imagePreview.image}
@@ -228,6 +331,7 @@ export function RoiEditor({
                 y={transform.offsetY}
                 width={image.width * transform.scale}
                 height={image.height * transform.scale}
+                listening={false}
               />
             ) : (
               <Text
@@ -242,6 +346,7 @@ export function RoiEditor({
                 }
                 fontSize={12}
                 fill="#676d7a"
+                listening={false}
               />
             )}
             {invalidRects.map((rect, index) => {
@@ -254,6 +359,7 @@ export function RoiEditor({
                   width={display.x2 - display.x1}
                   height={display.y2 - display.y1}
                   fill="rgba(200,70,70,.18)"
+                  listening={false}
                 />
               );
             })}
@@ -268,10 +374,12 @@ export function RoiEditor({
                   stroke="#5f6ff5"
                   strokeWidth={1.5}
                   dash={[7, 5]}
+                  listening={false}
                 />
               );
             })()}
             {boxes.map((box, index) => {
+              if (index === selectedBoxIndex) return null;
               const display = originalToDisplay(box, transform);
               const hasError = Boolean(errors[index]);
               return (
@@ -284,10 +392,12 @@ export function RoiEditor({
                   fill={hasError ? "rgba(200,70,70,.12)" : "rgba(95,111,245,.12)"}
                   stroke={hasError ? "#c84646" : "#5f6ff5"}
                   strokeWidth={2}
+                  listening={false}
                 />
               );
             })}
             {boxes.map((box, index) => {
+              if (index === selectedBoxIndex) return null;
               const display = originalToDisplay(box, transform);
               return (
                 <Text
@@ -300,9 +410,97 @@ export function RoiEditor({
                   padding={4}
                   cornerRadius={4}
                   background="#4656db"
+                  listening={false}
                 />
               );
             })}
+            {selectedBox && selectedDisplay ? (
+              <>
+                <Rect
+                  ref={selectedRect}
+                  x={selectedDisplay.x1}
+                  y={selectedDisplay.y1}
+                  width={selectedDisplay.x2 - selectedDisplay.x1}
+                  height={selectedDisplay.y2 - selectedDisplay.y1}
+                  fill={
+                    errors[selectedBoxIndex ?? -1]
+                      ? "rgba(200,70,70,.16)"
+                      : "rgba(95,111,245,.18)"
+                  }
+                  stroke={
+                    errors[selectedBoxIndex ?? -1] ? "#c84646" : "#3143df"
+                  }
+                  strokeWidth={2.5}
+                  draggable
+                  dragBoundFunc={(position) => {
+                    const width = selectedDisplay.x2 - selectedDisplay.x1;
+                    const height = selectedDisplay.y2 - selectedDisplay.y1;
+                    return {
+                      x: clamp(
+                        position.x,
+                        displayValidRect.x1,
+                        displayValidRect.x2 - width
+                      ),
+                      y: clamp(
+                        position.y,
+                        displayValidRect.y1,
+                        displayValidRect.y2 - height
+                      )
+                    };
+                  }}
+                  onDragEnd={() => commitSelectedTransform(selectedBoxIndex!)}
+                  onTransformEnd={() => commitSelectedTransform(selectedBoxIndex!)}
+                />
+                <Transformer
+                  ref={transformer}
+                  rotateEnabled={false}
+                  flipEnabled={false}
+                  enabledAnchors={[
+                    "top-left",
+                    "top-center",
+                    "top-right",
+                    "middle-left",
+                    "middle-right",
+                    "bottom-left",
+                    "bottom-center",
+                    "bottom-right"
+                  ]}
+                  anchorSize={9}
+                  borderStroke="#3143df"
+                  anchorStroke="#3143df"
+                  anchorFill="#ffffff"
+                  boundBoxFunc={(oldBox, nextBox) => {
+                    const minimum = 32 * transform.scale;
+                    if (nextBox.width < minimum || nextBox.height < minimum) {
+                      return oldBox;
+                    }
+                    const width = Math.min(
+                      nextBox.width,
+                      displayValidRect.x2 - displayValidRect.x1
+                    );
+                    const height = Math.min(
+                      nextBox.height,
+                      displayValidRect.y2 - displayValidRect.y1
+                    );
+                    return {
+                      ...nextBox,
+                      x: clamp(
+                        nextBox.x,
+                        displayValidRect.x1,
+                        displayValidRect.x2 - width
+                      ),
+                      y: clamp(
+                        nextBox.y,
+                        displayValidRect.y1,
+                        displayValidRect.y2 - height
+                      ),
+                      width,
+                      height
+                    };
+                  }}
+                />
+              </>
+            ) : null}
             {draft ? (
               <Rect
                 x={draft.x1}
@@ -312,6 +510,7 @@ export function RoiEditor({
                 stroke="#5f6ff5"
                 strokeWidth={2}
                 dash={[5, 4]}
+                listening={false}
               />
             ) : null}
           </Layer>
@@ -331,13 +530,14 @@ export function RoiEditor({
       <div className="roi-side">
         <div className="roi-side-heading">
           <div>
-            <strong>数值精调</strong>
-            <span>original_px · 半开区间</span>
+            <strong>选择与精调</strong>
+            <span>先从右侧选中，再在画布拖动或缩放</span>
           </div>
           <Button
             size="sm"
             onClick={() => {
               setDirty(true);
+              setSelectedBoxIndex(boxes.length);
               setBoxes((current) => [
                 ...current,
                 {
@@ -359,7 +559,25 @@ export function RoiEditor({
 
         <div className="roi-box-list">
           {boxes.map((box, index) => (
-            <article className={errors[index] ? "roi-box invalid" : "roi-box"} key={index}>
+            <article
+              className={[
+                "roi-box",
+                errors[index] ? "invalid" : "",
+                selectedBoxIndex === index ? "selected" : ""
+              ].filter(Boolean).join(" ")}
+              key={index}
+            >
+              <button
+                type="button"
+                className="roi-adjust-select"
+                aria-pressed={selectedBoxIndex === index}
+                onClick={() =>
+                  setSelectedBoxIndex((current) => (current === index ? null : index))
+                }
+              >
+                <MousePointer2 size={14} />
+                {selectedBoxIndex === index ? "正在画布中调整" : "在画布中调整此 ROI"}
+              </button>
               <div className="roi-box-title">
                 <input
                   className="input"
@@ -383,7 +601,14 @@ export function RoiEditor({
                   aria-label={`删除 ROI ${index + 1}`}
                   onClick={() => {
                     setDirty(true);
-                    setBoxes((current) => current.filter((_, boxIndex) => boxIndex !== index))
+                    setBoxes((current) =>
+                      current.filter((_, boxIndex) => boxIndex !== index)
+                    );
+                    setSelectedBoxIndex((current) => {
+                      if (current === null) return null;
+                      if (current === index) return null;
+                      return current > index ? current - 1 : current;
+                    });
                   }}
                 >
                   <Trash2 size={15} />

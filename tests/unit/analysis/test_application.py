@@ -165,7 +165,7 @@ def test_model_bottom_information_bar_is_frozen_outside_scientific_roi() -> None
     assert not roi_mask[70:].any()
 
 
-def test_model_bottom_crop_rejects_image_outside_frozen_size_contract() -> None:
+def test_model_bottom_crop_uses_detected_roi_outside_reference_size() -> None:
     image = ImageAssetDTO(
         image_id="img_wrong_size",
         job_id="job_1",
@@ -185,12 +185,13 @@ def test_model_bottom_crop_rejects_image_outside_frozen_size_contract() -> None:
         }
     )
 
-    with pytest.raises(InvalidImageError) as exc_info:
-        AnalysisApplicationService._apply_model_invalid_bottom(image, model)
+    analysis_roi = AnalysisApplicationService._apply_model_invalid_bottom(image, model)
 
-    assert exc_info.value.details["reason"] == "model_input_dimensions_mismatch"
-    assert exc_info.value.details["expected"] == [20, 200]
-    assert exc_info.value.details["observed"] == [20, 201]
+    assert analysis_roi == image.analysis_roi
+    assert AnalysisApplicationService._input_adaptation_warnings(
+        image=image,
+        model=model,
+    ) == ["input_dimensions_adapted:reference=20x200:observed=20x201"]
 
 
 def test_model_bottom_crop_requires_frozen_size_contract() -> None:
@@ -1419,6 +1420,90 @@ def test_create_runs_persists_two_by_three_cartesian_product_without_duplicate_d
         assert run.inference.threshold == model.default_threshold
         assert run.configuration.inference == run.inference
         assert run.inference.model_copy(update={"threshold": None}) == requested_inference
+
+
+def test_create_runs_uses_exact_per_image_model_assignments(
+    application_harness: ApplicationHarness,
+) -> None:
+    database, file_store, factory = application_harness
+    gateway = CartesianGateway()
+    dispatcher = RecordingDispatcher()
+    second_image = BytesIO()
+    Image.new("L", (64, 64), color=24).save(second_image, format="PNG")
+    second_image.seek(0)
+    stored = file_store.save_upload(
+        "job_1",
+        second_image,
+        "second.png",
+        image_id="img_2",
+    )
+    with database.session() as session:
+        repositories = SqlAlchemyRepositorySet(session)
+        repositories.images.add_many(
+            [
+                StoredImageAsset(
+                    storage_path=stored.relative_path,
+                    asset=ImageAssetDTO(
+                        image_id="img_2",
+                        job_id="job_1",
+                        filename="second.png",
+                        sha256=stored.sha256,
+                        width=64,
+                        height=64,
+                        bit_depth=8,
+                        sample_id="sample_2",
+                        analysis_roi=AnalysisROI(
+                            valid_rect=PixelRect(x1=0, y1=0, x2=64, y2=64)
+                        ),
+                    ),
+                )
+            ]
+        )
+        session.add_all(
+            [
+                ModelRegistryRecord(
+                    model_id=model.model_id,
+                    family=model.family.value,
+                    variant=model.variant.value,
+                    quality_tier=model.quality_tier.value,
+                    version=model.version,
+                    adapter=model.adapter_path or "tests.fake:MissingAdapter",
+                    status=model.status.value,
+                )
+                for model in gateway.models[1:]
+            ]
+        )
+
+    model_assignments = {
+        "img_1": gateway.models[0].model_id,
+        "img_2": gateway.models[2].model_id,
+    }
+    service = AnalysisApplicationService(
+        uow_factory=factory,
+        file_store=file_store,
+        inference_gateway=gateway,
+        dispatcher=dispatcher,
+    )
+    run_ids = service.create_runs(
+        "job_1",
+        CreateRunsRequest(
+            image_ids=["img_1", "img_2"],
+            model_ids=list(model_assignments.values()),
+            model_assignments=model_assignments,
+            roi_mode=RoiMode.FULL_IMAGE,
+        ),
+        principal=LEGACY_ADMIN,
+    )
+
+    with database.session() as session:
+        repositories = SqlAlchemyRepositorySet(session)
+        persisted = [repositories.runs.get(run_id) for run_id in run_ids]
+
+    assert [(run.image_id, run.model_id) for run in persisted] == [
+        ("img_1", gateway.models[0].model_id),
+        ("img_2", gateway.models[2].model_id),
+    ]
+    assert dispatcher.submissions == run_ids
 
 
 def test_border_exclusion_preserves_prefilter_quality_diagnostics(

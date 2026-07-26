@@ -34,8 +34,7 @@ import { queryKeys } from "@/lib/api/query-keys";
 import type {
   CreateRunsData,
   JobDetail,
-  ModelList,
-  ModelRecommendation
+  ModelList
 } from "@/lib/api/types";
 import { analysisMetadataSchema } from "@/lib/contracts/metadata";
 import { formatDate } from "@/lib/format/value";
@@ -49,6 +48,10 @@ import {
   type RecentJob
 } from "@/lib/recent-jobs";
 import { defaultAnalysisName } from "@/lib/runs/configuration";
+import {
+  recommendModelsForImages,
+  runAssignmentPayload
+} from "@/lib/models/recommendation";
 
 type ScaleMode = "pixel_only" | "nm_per_pixel";
 type ConditionType = "" | "temperature" | "duration" | "pressure" | "atmosphere";
@@ -223,42 +226,28 @@ export function Launchpad() {
 
       try {
         const images = analysis.data.images ?? [];
-        const firstImage = images[0];
-        if (!firstImage) {
+        if (!images.length) {
           throw new Error("后端没有返回可运行图像");
         }
 
-        setLaunchStep("正在为图像选择合适模型…");
-        let modelId = readyModels[0]?.model_id;
-        try {
-          const recommendation = await apiRequest<ModelRecommendation>("models/recommend", {
-            method: "POST",
-            body: {
-              image_id: firstImage.image_id,
-              roi_mode: "full_image",
-              target_profile: "general",
-              prefer: "accuracy",
-              device: "auto"
-            }
-          });
-          const readyIds = new Set(readyModels.map((model) => model.model_id));
-          modelId =
-            (recommendation.data.candidates ?? []).find((candidate) =>
-              readyIds.has(candidate.model_id)
-            )?.model_id || modelId;
-        } catch {
-          // Recommendation is an optimization. A verified ready model is a safe fallback.
-        }
-        if (!modelId) throw new Error("没有可用于自动分割的模型");
+        setLaunchStep(`正在为 ${images.length} 张图逐张选择模型…`);
+        const assignments = await recommendModelsForImages({
+          images,
+          models: readyModels,
+          roiMode: "full_image",
+          prefer: "accuracy",
+          device: "auto"
+        });
+        const assignmentPayload = runAssignmentPayload(assignments);
 
-        setLaunchStep(`正在创建 ${images.length} 个分割运行…`);
+        setLaunchStep(`正在按逐图匹配创建 ${images.length} 个分割运行…`);
         const runs = await apiRequest<CreateRunsData>(
           `analyses/${encodeURIComponent(analysis.data.job.job_id)}/runs`,
           {
             method: "POST",
             body: {
               image_ids: images.map((image) => image.image_id),
-              model_ids: [modelId],
+              ...assignmentPayload,
               roi_mode: "full_image",
               inference: {
                 watershed_enabled: false,
@@ -525,6 +514,10 @@ export function Launchpad() {
               <ArrowRight size={17} />
             </Button>
           </div>
+          <p className="upload-scope-note">
+            支持常见尺寸的 TIF、PNG 和 JPG，系统会自动识别有效成像区并适配模型输入。当前自动分割模型主要在
+            SEM 颗粒与团聚体图像上训练或验证；其他 SEM 形貌也可上传，但结果需要结合叠加图人工复核。
+          </p>
         </section>
 
         {fileNotice ? (

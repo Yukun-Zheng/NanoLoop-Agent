@@ -84,12 +84,20 @@ class ModelListData(ContractModel):
 
 
 class ModelRecommendationRequest(ContractModel):
+    job_id: str | None = None
     image_id: str
     roi_mode: RoiMode
     target_profile: ModelVariant = ModelVariant.GENERAL
+    auto_profile: bool = False
     prefer: str = Field(default="accuracy", pattern=r"^(speed|balance|accuracy)$")
     device: DevicePreference = DevicePreference.AUTO
     max_gpu_memory_mb: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def auto_profile_requires_job_context(self) -> "ModelRecommendationRequest":
+        if self.auto_profile and not self.job_id:
+            raise ValueError("auto_profile requires job_id")
+        return self
 
 
 class ModelCandidate(ContractModel):

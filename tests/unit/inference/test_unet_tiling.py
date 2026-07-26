@@ -424,7 +424,7 @@ def test_unet_rejects_metadata_and_config_bottom_crop_drift(tmp_path: Path) -> N
         )
 
 
-def test_unet_rejects_input_dimensions_outside_frozen_crop_contract(
+def test_unet_adapts_input_dimensions_outside_reference_crop_geometry(
     tmp_path: Path,
 ) -> None:
     metadata = ModelMetadata(
@@ -452,16 +452,28 @@ def test_unet_rejects_input_dimensions_outside_frozen_crop_contract(
     image_bytes = BytesIO()
     Image.new("L", (20, 21), color=0).save(image_bytes, format="PNG")
 
-    with pytest.raises(ValueError, match="expected 20x20, observed 20x21"):
-        adapter.predict(
-            SegmentationRequest(
-                image_id="image-1",
-                image_path=tmp_path / "pinned-image-bytes",
-                image_bytes=image_bytes.getvalue(),
-                run_dir=tmp_path / "run",
-                roi_mode=RoiMode.FULL_IMAGE,
-            )
+    observed_shape: tuple[int, ...] | None = None
+
+    def predict_probability(image: np.ndarray) -> np.ndarray:
+        nonlocal observed_shape
+        observed_shape = image.shape
+        return np.zeros(image.shape[:2], dtype=np.float32)
+
+    adapter._predict_probability = predict_probability
+    output = adapter.predict(
+        SegmentationRequest(
+            image_id="image-1",
+            image_path=tmp_path / "pinned-image-bytes",
+            image_bytes=image_bytes.getvalue(),
+            run_dir=tmp_path / "run",
+            roi_mode=RoiMode.FULL_IMAGE,
         )
+    )
+
+    assert observed_shape == (21, 20, 3)
+    assert output.warnings == [
+        "input_dimensions_adapted:reference=20x20:observed=20x21"
+    ]
 
 
 def test_unet_requires_expected_image_size_before_fixed_bottom_crop(

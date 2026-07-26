@@ -38,6 +38,15 @@
     },
     "model_card_updated_after_review": true
   },
+  "post_delivery_runtime_evolution": {
+    "recorded_at": "2026-07-26",
+    "adapter_sha256_at_delivery_review": "6055db452f0a78a0352732d66ea3436f16a558cf19d1a6f022a78627136dfab6",
+    "current_repository_adapter_sha256": "9f6ebf03dfa7732607cb3472a565edb6755d8e5213857526f531d38b28d43bf2",
+    "change_scope": "adaptive_input_dimensions_and_detected_footer_roi",
+    "reference_geometry_remains_2048x1536": true,
+    "historical_delivery_and_smoke_identity_preserved": true,
+    "scientific_acceptance_status_unchanged": true
+  },
   "private_registry_manifest": {
     "filename": "private-registry-ready.yaml",
     "sha256": "22e7d86c0581449a54c09abd9eb57cabf40503a0f6982cbdd9c8c1426a5714c0",

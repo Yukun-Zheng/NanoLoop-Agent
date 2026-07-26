@@ -1756,11 +1756,18 @@
           "inference": {
             "$ref": "#/components/schemas/InferenceOptions"
           },
+          "model_assignments": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Model Assignments",
+            "type": "object"
+          },
           "model_ids": {
             "items": {
               "type": "string"
             },
-            "maxItems": 3,
+            "maxItems": 20,
             "minItems": 1,
             "title": "Model Ids",
             "type": "array"
@@ -2969,6 +2976,11 @@
       "ModelRecommendationRequest": {
         "additionalProperties": false,
         "properties": {
+          "auto_profile": {
+            "default": false,
+            "title": "Auto Profile",
+            "type": "boolean"
+          },
           "device": {
             "$ref": "#/components/schemas/DevicePreference",
             "default": "auto"
@@ -2976,6 +2988,17 @@
           "image_id": {
             "title": "Image Id",
             "type": "string"
+          },
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Id"
           },
           "max_gpu_memory_mb": {
             "anyOf": [

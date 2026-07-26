@@ -297,7 +297,8 @@ class RunConfiguration(ContractModel):
 
 class CreateRunsRequest(ContractModel):
     image_ids: list[str] = Field(min_length=1, max_length=20)
-    model_ids: list[str] = Field(min_length=1, max_length=3)
+    model_ids: list[str] = Field(min_length=1, max_length=20)
+    model_assignments: dict[str, str] = Field(default_factory=dict)
     roi_mode: RoiMode
     box_revisions: dict[str, int] = Field(default_factory=dict)
     inference: InferenceOptions = Field(default_factory=InferenceOptions)
@@ -325,6 +326,18 @@ class CreateRunsRequest(ContractModel):
             raise ValueError("image_ids must be unique")
         if len(set(self.model_ids)) != len(self.model_ids):
             raise ValueError("model_ids must be unique")
+        if self.model_assignments:
+            if set(self.model_assignments) != set(self.image_ids):
+                raise ValueError(
+                    "model_assignments requires exactly one model for every image_id"
+                )
+            assigned_models = set(self.model_assignments.values())
+            if assigned_models != set(self.model_ids):
+                raise ValueError(
+                    "model_ids must contain exactly the models used by model_assignments"
+                )
+        elif len(self.model_ids) > 3:
+            raise ValueError("at most 3 models can be compared without model_assignments")
         if self.roi_mode == RoiMode.BOXES:
             if set(self.box_revisions) != set(self.image_ids):
                 raise ValueError("boxes mode requires one saved revision for every image_id")

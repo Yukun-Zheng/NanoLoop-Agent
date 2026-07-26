@@ -55,8 +55,12 @@ class UNetAdapter(BaseSegmentationAdapter):
         started = time.perf_counter()
         image = open_rgb(request.image_bytes or request.image_path)
         height, width = image.shape[:2]
-        self._validate_expected_input_shape(height=height, width=width)
-        inference_height = self._inference_height(height)
+        reference_mismatch = self._validate_input_contract(height=height, width=width)
+        inference_height = self._inference_height(
+            image_height=height,
+            reference_mismatch=reference_mismatch,
+            requested_y2=request.inference_rect.y2 if request.inference_rect is not None else None,
+        )
         self._validate_reflect_padding_extent(height=inference_height, width=width)
         inference_image = self._prepare_inference_image(image[:inference_height])
         probability = np.zeros((height, width), dtype=np.float32)
@@ -102,7 +106,15 @@ class UNetAdapter(BaseSegmentationAdapter):
             probability_path=probability_path,
             binary_mask_path=binary_path,
             model_scores={"foreground_probability_mean": float(probability.mean())},
-            warnings=[],
+            warnings=(
+                [
+                    "input_dimensions_adapted:"
+                    f"reference={self.metadata.expected_input_width}x"
+                    f"{self.metadata.expected_input_height}:observed={width}x{height}"
+                ]
+                if reference_mismatch
+                else []
+            ),
             runtime_ms=elapsed_ms,
         )
 
@@ -206,7 +218,13 @@ class UNetAdapter(BaseSegmentationAdapter):
             raise ValueError("fusion_weight_floor must be a number in (0, 1]")
         return minimum
 
-    def _inference_height(self, image_height: int) -> int:
+    def _inference_height(
+        self,
+        *,
+        image_height: int,
+        reference_mismatch: bool,
+        requested_y2: int | None,
+    ) -> int:
         bottom_crop_px: object = self.config.get("bottom_crop_px", 0)
         if isinstance(bottom_crop_px, bool) or not isinstance(bottom_crop_px, int):
             raise ValueError("bottom_crop_px must be a non-negative integer")
@@ -216,12 +234,17 @@ class UNetAdapter(BaseSegmentationAdapter):
             raise ValueError(
                 "bottom_crop_px must match registry inference_invalid_bottom_px"
             )
-        inference_height = image_height - bottom_crop_px
+        if requested_y2 is not None:
+            inference_height = min(image_height, requested_y2)
+        elif reference_mismatch:
+            inference_height = image_height
+        else:
+            inference_height = image_height - bottom_crop_px
         if inference_height <= 0:
             raise ValueError("bottom_crop_px must leave at least one image row for inference")
         return inference_height
 
-    def _validate_expected_input_shape(self, *, height: int, width: int) -> None:
+    def _validate_input_contract(self, *, height: int, width: int) -> bool:
         expected = self.config.get("expected_image_size")
         bottom_crop_px = self.config.get("bottom_crop_px", 0)
         if expected is None:
@@ -229,7 +252,7 @@ class UNetAdapter(BaseSegmentationAdapter):
                 raise ValueError(
                     "expected_image_size is required when bottom_crop_px is non-zero"
                 )
-            return
+            return False
         if (
             not isinstance(expected, list | tuple)
             or len(expected) != 2
@@ -249,11 +272,7 @@ class UNetAdapter(BaseSegmentationAdapter):
             expected_width,
         ):
             raise ValueError("expected_image_size must match registry metadata")
-        if (height, width) != (expected_height, expected_width):
-            raise ValueError(
-                "input dimensions do not match frozen expected_image_size: "
-                f"expected {expected_width}x{expected_height}, observed {width}x{height}"
-            )
+        return (height, width) != (expected_height, expected_width)
 
     def _validate_reflect_padding_extent(self, *, height: int, width: int) -> None:
         if self.config.get("tiling_padding", "none") != "reflect":

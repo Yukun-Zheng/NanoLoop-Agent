@@ -374,6 +374,19 @@ def test_models_and_recommendation_use_the_gateway(api_harness: ApiHarness) -> N
     assert recommended.status_code == 200
     assert recommended.json()["data"]["candidates"][0]["score"] == 0.91
 
+    profiled = api_harness.client.post(
+        "/api/v1/models/recommend",
+        json={
+            "job_id": "job_1",
+            "image_id": "img_1",
+            "roi_mode": "full_image",
+            "auto_profile": True,
+            "prefer": "accuracy",
+        },
+    )
+    assert profiled.status_code == 200
+    assert profiled.json()["data"]["candidates"][0]["reasons"][0].startswith("图像预检")
+
 
 def test_validation_not_found_and_run_submission_share_contract_shape(
     api_harness: ApiHarness,

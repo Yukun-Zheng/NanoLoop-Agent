@@ -119,6 +119,65 @@ def test_msbi_adapter_fuses_all_heads_and_masks_invalid_bottom(tmp_path) -> None
     adapter.unload()
 
 
+def test_msbi_adapter_treats_registered_dimensions_as_reference(tmp_path) -> None:
+    image_path = tmp_path / "portrait.png"
+    Image.fromarray(np.full((48, 40), 120, dtype=np.uint8), mode="L").save(image_path)
+    adapter = MSBIAdapter(
+        metadata=ModelMetadata(
+            model_id="msbi-adaptive-test",
+            family=ModelFamily.MSBI,
+            variant=ModelVariant.DENSE_PARTICLE,
+            quality_tier=QualityTier.BALANCED,
+            version="1",
+            status=ModelStatus.READY,
+            supports_box_prompt=False,
+            default_threshold=0.5,
+            preprocess_profile="test",
+            postprocess_profile="test",
+            expected_input_width=64,
+            expected_input_height=64,
+            inference_invalid_bottom_px=8,
+        ),
+        weight_path=tmp_path / "model.pt",
+        weight_bytes=_script_bytes(),
+        config={
+            "loader": "torchscript",
+            "patch_size": [32, 32],
+            "stride": [16, 16],
+            "bottom_crop_px": 8,
+            "normalization": "percentile",
+            "lower_percentile": 1.0,
+            "upper_percentile": 99.0,
+            "output_names": list(_SyntheticMSBI().forward(torch.zeros(1, 1, 1, 1))),
+            "decoder": {
+                "foreground_threshold": 0.5,
+                "center_threshold": 0.5,
+                "center_nms_radius": 3,
+                "boundary_threshold": 0.5,
+                "min_area_px": 1,
+                "connectivity": 2,
+            },
+        },
+    )
+    adapter.load("cpu")
+
+    output = adapter.predict(
+        SegmentationRequest(
+            image_id="image",
+            image_path=image_path,
+            run_dir=tmp_path / "adaptive-run",
+            roi_mode=RoiMode.FULL_IMAGE,
+            device=DevicePreference.CPU,
+        )
+    )
+
+    assert (output.width, output.height) == (40, 48)
+    assert output.warnings == [
+        "input_dimensions_adapted:reference=64x64:observed=40x48"
+    ]
+    adapter.unload()
+
+
 def test_msbi_adapter_batches_tiles_and_writes_compact_instances(tmp_path) -> None:
     image_path = tmp_path / "image.png"
     Image.fromarray(np.full((64, 64), 120, dtype=np.uint8), mode="L").save(image_path)

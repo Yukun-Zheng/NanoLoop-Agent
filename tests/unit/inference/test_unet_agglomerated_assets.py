@@ -144,13 +144,24 @@ def test_delivery_audit_records_exact_private_runtime_smoke_and_public_boundary(
     )
     project_root = Path(__file__).parents[3]
     unchanged_paths = {
-        "adapter": project_root / "app" / "inference" / "adapters" / "unet.py",
         "config": _artifact_root() / "configs" / f"{MODEL_ID}.yaml",
     }
     base_sha256 = equivalence["repository_base_sha256"]
     assert {name: base_sha256[name] for name in unchanged_paths} == {
         name: hashlib.sha256(path.read_bytes()).hexdigest()
         for name, path in unchanged_paths.items()
+    }
+    evolution = audit["post_delivery_runtime_evolution"]
+    assert evolution == {
+        "recorded_at": "2026-07-26",
+        "adapter_sha256_at_delivery_review": base_sha256["adapter"],
+        "current_repository_adapter_sha256": hashlib.sha256(
+            (project_root / "app" / "inference" / "adapters" / "unet.py").read_bytes()
+        ).hexdigest(),
+        "change_scope": "adaptive_input_dimensions_and_detected_footer_roi",
+        "reference_geometry_remains_2048x1536": True,
+        "historical_delivery_and_smoke_identity_preserved": True,
+        "scientific_acceptance_status_unchanged": True,
     }
     assert equivalence["model_card_updated_after_review"] is True
     current_card_sha256 = hashlib.sha256(

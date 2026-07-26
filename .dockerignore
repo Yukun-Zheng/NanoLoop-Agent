@@ -20,6 +20,12 @@ build
 tests
 docs
 node_modules
+**/.next
+**/test-results
+frontend/node_modules
+frontend/.next
+frontend/test-results
+local_assets
 
 # Runtime state, private artifacts, and external scientific assets stay outside the image.
 data/*

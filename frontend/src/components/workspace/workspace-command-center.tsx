@@ -537,6 +537,7 @@ export function WorkspaceCommandCenter({
                 <>
                   {boxes.isRefetchError ? <RequestError error={boxes.error} /> : null}
                   <RoiEditor
+                    key={activeImage.image_id}
                     jobId={jobId}
                     image={activeImage}
                     serverBoxes={boxes.data}
