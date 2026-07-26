@@ -888,7 +888,9 @@ test("completes the mocked scientific workflow through verified export", async (
   await expect(
     page.getByRole("button", { name: `选择 ${unavailableModel.model_id}` })
   ).toBeDisabled();
-  await page.getByRole("button", { name: "已保存 ROI" }).click();
+  await expect(
+    page.getByRole("radio", { name: /只分析已保存 ROI/ })
+  ).toHaveAttribute("aria-checked", "true");
   await expect(
     page.getByRole("button", { name: `取消选择 ${model.model_id}` })
   ).toBeEnabled();
