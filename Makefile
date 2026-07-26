@@ -12,7 +12,7 @@ IDENTITY_ARGS ?=
 .PHONY: help install install-models lint typecheck test frontend-install frontend frontend-check frontend-build frontend-e2e \
 	openapi migration-check check mvp-smoke serve db-upgrade \
 	handoff-doc handoff-doc-v3 backup-create backup-verify backup-restore backup-drill docker-build compose-config compose-up \
-	compose-up-models compose-down compose-logs identity-manage rag-guide-doc \
+	compose-up-models compose-up-models-cpu compose-up-models-cuda compose-down compose-logs identity-manage rag-guide-doc \
 	compose-up-local-llm-models
 
 help:
@@ -36,9 +36,11 @@ help:
 	@echo "  make backup-restore   Restore BACKUP_ARCHIVE into fresh RESTORE_ROOT"
 	@echo "  make backup-drill     Create, verify, and restore with a limited BACKUP_REPORT"
 	@echo "  make identity-manage  Run the operator identity CLI with IDENTITY_ARGS"
-	@echo "  make docker-build     Build the CPU API image"
+	@echo "  make docker-build     Build the portable API image"
 	@echo "  make compose-up       Start the hardened local container stack"
-	@echo "  make compose-up-models Build and start the stack with model runtimes"
+	@echo "  make compose-up-models Auto-detect GPU, build, and start model runtimes"
+	@echo "  make compose-up-models-cpu Force the portable CPU model runtime"
+	@echo "  make compose-up-models-cuda Require an NVIDIA CUDA model runtime"
 	@echo "  make compose-up-local-llm-models Start models stack with host Ollama Qwen3"
 	@echo "  make compose-down     Stop the local container stack"
 
@@ -55,14 +57,14 @@ install-models: $(PYTHON_BIN)
 		$(PYTHON_BIN) -m pip install \
 			--index-url https://download.pytorch.org/whl/cpu \
 			--no-deps \
-			--requirement docker-models-cpu-constraints.txt; \
+			--requirement docker-models-constraints.txt; \
 	else \
 		$(PYTHON_BIN) -m pip install \
 			--no-deps \
-			--requirement docker-models-cpu-constraints.txt; \
+			--requirement docker-models-constraints.txt; \
 	fi
 	$(PYTHON_BIN) -m pip install \
-		--constraint docker-models-cpu-constraints.txt \
+		--constraint docker-models-constraints.txt \
 		-e '.[dev,analysis,docs,models]'
 
 lint:
@@ -149,17 +151,18 @@ compose-up:
 	docker compose up --build --detach
 
 compose-up-models:
-	COMPOSE_PARALLEL_LIMIT=1 NANOLOOP_API_EXTRAS=models docker compose build api
-	COMPOSE_PARALLEL_LIMIT=1 docker compose build frontend
-	NANOLOOP_API_EXTRAS=models docker compose up --detach --no-build
+	./scripts/compose-up-auto.sh
+
+compose-up-models-cpu:
+	NANOLOOP_ACCELERATOR=cpu ./scripts/compose-up-auto.sh
+
+compose-up-models-cuda:
+	NANOLOOP_ACCELERATOR=cuda ./scripts/compose-up-auto.sh
 
 compose-up-local-llm-models:
 	@test -n "$(LLM_MODEL)" || { echo "LLM_MODEL is required" >&2; exit 2; }
 	LLM_MODEL="$(LLM_MODEL)" $(PYTHON) scripts/check_local_llm.py
-	COMPOSE_PARALLEL_LIMIT=1 NANOLOOP_API_EXTRAS=models docker compose build api
-	COMPOSE_PARALLEL_LIMIT=1 docker compose build frontend
-	LLM_MODEL="$(LLM_MODEL)" NANOLOOP_API_EXTRAS=models docker compose \
-		-f docker-compose.yml -f docker-compose.ollama.yml up --detach --no-build
+	NANOLOOP_COMPOSE_LLM_MODEL="$(LLM_MODEL)" ./scripts/compose-up-auto.sh
 
 compose-down:
 	docker compose down

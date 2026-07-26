@@ -119,13 +119,26 @@ docker compose logs -f api frontend
 上面的轻量镜像不包含 PyTorch。完整启用仓库内 Large 与 Small-A U-Net 时使用：
 
 ```bash
+# Linux、macOS 或其他 POSIX/Unix-like shell
 make compose-up-models
 docker compose logs -f api frontend
 ```
 
-该目标会从 PyTorch 官方 CPU wheel index 使用已验证的
-`torch 2.13.0`/`torchvision 0.28.0`，并串行构建 API 与前端，避免 CPU 部署误拉 CUDA
-运行时或并发重型构建。构建期间不要在其他终端重复执行同一目标。
+Windows PowerShell 使用：
+
+```powershell
+.\scripts\compose-up-auto.ps1
+docker compose logs --follow api frontend
+```
+
+启动器会实际探测 Docker 的 NVIDIA GPU 访问能力：可用时叠加 CUDA Compose 配置并安装官方
+CUDA 版 `torch 2.13.0`/`torchvision 0.28.0`，否则使用对应 CPU wheel；应用内
+`MODEL_DEVICE=auto` 会优先 CUDA。可用
+`NANOLOOP_ACCELERATOR=cpu|cuda` 强制选择，其中 `cuda` 不可用时会报错而不是静默降级。
+Windows 的容器 GPU 依赖 Docker Desktop WSL2 与 NVIDIA GPU；macOS Docker 的 Linux VM
+无法访问 Apple MPS，因此容器会回退 CPU，macOS 原生 Python 运行仍可由 `auto` 使用 MPS。
+构建期间不要在其他终端重复执行同一目标。完整平台矩阵与覆盖方式见
+[部署与运维边界](docs/DEPLOYMENT.md#跨平台容器与自动加速)。
 
 基础 Compose 会默认连接宿主机 Ollama 中的
 `qwen3:4b-instruct-2507-q4_K_M`。因此在该模型已经安装并启动时，常用启动命令无需额外

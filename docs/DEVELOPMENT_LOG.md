@@ -669,3 +669,28 @@
   文件共 82 项测试和 Next.js production build 全部通过。
 - 发布状态：本条所在提交推送后仍必须由新的 GitHub Actions run 复验；旧 run 的失败结论保留，
   不通过隐藏或跳过审计来制造全绿。
+
+## 2026-07-24 — Docker 跨平台启动与自动 GPU 选择
+
+- 基线与范围：从 `main@3840569` 建立短期分支 `agent/cross-platform-gpu-docker`，只调整容器
+  构建、Compose 启动器、运维文档和对应回归，不改模型科学配置或运行结果合同。
+- 镜像构建：把原先只接受 CPU index 的 Dockerfile 改为参数化 `PYTORCH_INDEX_URL`，CPU 与
+  CUDA 共用锁定的 `torch 2.13.0`/`torchvision 0.28.0` 约束。基础 Compose 保持可移植 CPU
+  默认，新增 NVIDIA GPU overlay，默认使用同时存在 Python 3.12 `linux/amd64` 与
+  `linux/arm64` wheel 的官方 `cu126` channel。
+- 自动选择：POSIX 和 PowerShell 启动器会先让 Docker 实际执行 `--gpus all` 探针；成功才使用
+  CUDA overlay，否则回退 CPU。`NANOLOOP_ACCELERATOR=cpu|cuda` 可显式收紧，强制 CUDA 不可用
+  时在构建前失败，不静默降级。容器和 Compose 的 `MODEL_DEVICE` 均改为 `auto`，与应用既有
+  CUDA → MPS → CPU 解析和 actual-device 证据一致。
+- 平台边界：Linux 与 Windows Docker Desktop WSL2 的 NVIDIA 路径使用 CUDA；macOS Docker
+  的 Linux VM 无法透传 Apple MPS，容器按事实走 CPU，macOS 原生 Python 仍可使用 MPS。未固定
+  `linux/amd64`，Apple Silicon 默认使用原生 ARM64 CPU 镜像。
+- 本地证据：基础/GPU 两套 Compose 合并配置均通过，GPU 合并态显示 `cu126`、全部 GPU device
+  reservation 和 `MODEL_DEVICE=auto`；Shell 语法、Ruff、自动/强制分支回归及设备解析共
+  **13 passed**。PowerShell 文件已做合同级静态回归，但当前 macOS 没有 `pwsh`，尚未执行真实
+  Windows 解析器。
+- 冷构建边界：Apple Silicon Docker 已实际解析并下载官方 aarch64
+  `torch 2.13.0+cpu`/`torchvision 0.28.0+cpu`，并继续成功解析 SciPy、Ultralytics 等运行依赖；
+  外部下载仅约 50～90 KiB/s，进入 49.8 MB OpenCV wheel 时主动停止本次冷构建，因此不能把
+  这次本机运行记录成完整镜像构建成功。CI 继续保留 CPU 镜像实际构建，并新增 GPU overlay
+  静态配置门禁；真实 CUDA 推理仍需在具备 NVIDIA GPU 的 Linux/Windows 目标机复验。

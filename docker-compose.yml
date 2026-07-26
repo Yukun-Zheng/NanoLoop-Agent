@@ -9,6 +9,7 @@ services:
       args:
         PYTHON_VERSION: "3.12"
         API_EXTRAS: "${NANOLOOP_API_EXTRAS:-}"
+        PYTORCH_INDEX_URL: "${PYTORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}"
         PYPI_INDEX_URL: "${PYPI_INDEX_URL:-https://pypi.org/simple}"
     environment:
       APP_ENV: production
@@ -17,7 +18,7 @@ services:
       FILE_TOKEN_V2_KEYRING_PATH: /app/data/.file_token_v2_keyring.json
       MODEL_REGISTRY_PATH: /app/model_artifacts/registry.yaml
       MODEL_SNAPSHOT_ROOT: /app/data/model-snapshots
-      MODEL_DEVICE: cpu
+      MODEL_DEVICE: ${MODEL_DEVICE:-auto}
       KNOWLEDGE_SOURCE_DIR: /app/knowledge_base/sources
       FAISS_INDEX_PATH: /app/knowledge_base/index/faiss.index
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-BAAI/bge-small-zh-v1.5}

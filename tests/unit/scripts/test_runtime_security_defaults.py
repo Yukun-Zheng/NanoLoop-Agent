@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import stat
 import subprocess
 import sys
@@ -142,17 +143,19 @@ def test_api_image_includes_the_non_secret_keyring_operator_cli() -> None:
     assert "/app/scripts/manage_file_token_keyring.py" in dockerfile
 
 
-def test_model_compose_build_is_cpu_only_and_serial() -> None:
+def test_model_compose_build_supports_portable_cpu_and_optional_cuda() -> None:
     dockerfile = (_REPOSITORY_ROOT / "Dockerfile").read_text(encoding="utf-8")
-    constraints = (
-        _REPOSITORY_ROOT / "docker-models-cpu-constraints.txt"
-    ).read_text(encoding="utf-8")
+    constraints = (_REPOSITORY_ROOT / "docker-models-constraints.txt").read_text(
+        encoding="utf-8"
+    )
     makefile = (_REPOSITORY_ROOT / "Makefile").read_text(encoding="utf-8")
 
     assert "https://download.pytorch.org/whl/cpu" in dockerfile
+    assert 'ARG PYTORCH_INDEX_URL="https://download.pytorch.org/whl/cpu"' in dockerfile
     assert "--no-deps" in dockerfile
-    assert "--requirement docker-models-cpu-constraints.txt" in dockerfile
+    assert "--requirement docker-models-constraints.txt" in dockerfile
     assert '--index-url "${PYPI_INDEX_URL}"' in dockerfile
+    assert "MODEL_DEVICE=auto" in dockerfile
     assert "torch==2.13.0" in constraints
     assert "torchvision==0.28.0" in constraints
 
@@ -167,20 +170,141 @@ def test_model_compose_build_is_cpu_only_and_serial() -> None:
         compose["services"]["api"]["build"]["args"]["PYPI_INDEX_URL"]
         == "${PYPI_INDEX_URL:-https://pypi.org/simple}"
     )
+    assert compose["services"]["api"]["build"]["args"]["PYTORCH_INDEX_URL"] == (
+        "${PYTORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}"
+    )
+    assert compose["services"]["api"]["environment"]["MODEL_DEVICE"] == (
+        "${MODEL_DEVICE:-auto}"
+    )
     frontend_healthcheck = compose["services"]["frontend"]["healthcheck"]["test"]
     assert frontend_healthcheck[:3] == ["CMD", "node", "-e"]
+
+    gpu_compose = yaml.safe_load(
+        (_REPOSITORY_ROOT / "docker-compose.gpu.yml").read_text(encoding="utf-8")
+    )
+    gpu_api = gpu_compose["services"]["api"]
+    assert gpu_api["build"]["args"]["PYTORCH_INDEX_URL"] == (
+        "${PYTORCH_GPU_INDEX_URL:-https://download.pytorch.org/whl/cu126}"
+    )
+    gpu_device = gpu_api["deploy"]["resources"]["reservations"]["devices"][0]
+    assert gpu_device == {
+        "driver": "nvidia",
+        "count": "all",
+        "capabilities": ["gpu"],
+    }
 
     recipe = makefile.split("compose-up-models:\n", maxsplit=1)[1].split(
         "\n\n", maxsplit=1
     )[0]
-    assert "COMPOSE_PARALLEL_LIMIT=1" in recipe
-    assert "docker compose build api" in recipe
-    assert "docker compose build frontend" in recipe
-    assert "docker compose up --detach --no-build" in recipe
+    assert "./scripts/compose-up-auto.sh" in recipe
 
     install_recipe = makefile.split("install-models:", maxsplit=1)[1].split(
         "\n\n", maxsplit=1
     )[0]
     assert "https://download.pytorch.org/whl/cpu" in install_recipe
-    assert "--requirement docker-models-cpu-constraints.txt" in install_recipe
-    assert "--constraint docker-models-cpu-constraints.txt" in install_recipe
+    assert "--requirement docker-models-constraints.txt" in install_recipe
+    assert "--constraint docker-models-constraints.txt" in install_recipe
+
+
+def test_cross_platform_compose_launchers_auto_detect_or_force_cuda() -> None:
+    posix_launcher = _REPOSITORY_ROOT / "scripts" / "compose-up-auto.sh"
+    powershell_launcher = _REPOSITORY_ROOT / "scripts" / "compose-up-auto.ps1"
+    posix = posix_launcher.read_text(encoding="utf-8")
+    powershell = powershell_launcher.read_text(encoding="utf-8")
+
+    assert subprocess.run(
+        ["sh", "-n", str(posix_launcher)],
+        cwd=_REPOSITORY_ROOT,
+        check=False,
+    ).returncode == 0
+    assert stat.S_IMODE(posix_launcher.stat().st_mode) == 0o755
+    for launcher in (posix, powershell):
+        assert "NANOLOOP_ACCELERATOR" in launcher
+        assert "docker-compose.gpu.yml" in launcher
+        assert "--gpus" in launcher
+        assert "MODEL_DEVICE" in launcher
+        assert "docker compose" in launcher or '"compose"' in launcher
+
+
+def test_posix_compose_launcher_selects_gpu_overlay_only_after_probe(
+    tmp_path: Path,
+) -> None:
+    launcher = _REPOSITORY_ROOT / "scripts" / "compose-up-auto.sh"
+    docker = tmp_path / "docker"
+    call_log = tmp_path / "docker-calls.log"
+    docker.write_text(
+        """#!/bin/sh
+printf '%s\\n' "$*" >> "${NANOLOOP_DOCKER_CALL_LOG}"
+if [ "${1:-}" = "run" ]; then
+    exit "${NANOLOOP_TEST_GPU_PROBE_EXIT:-1}"
+fi
+exit 0
+""",
+        encoding="utf-8",
+    )
+    docker.chmod(0o755)
+
+    base_environment = os.environ.copy()
+    base_environment.update(
+        {
+            "PATH": f"{tmp_path}:{base_environment['PATH']}",
+            "NANOLOOP_DOCKER_CALL_LOG": str(call_log),
+            "NANOLOOP_GPU_PROBE_IMAGE": "nanoloop-test-probe",
+        }
+    )
+
+    cpu_environment = base_environment | {
+        "NANOLOOP_ACCELERATOR": "cpu",
+        "NANOLOOP_TEST_GPU_PROBE_EXIT": "0",
+    }
+    cpu_run = subprocess.run(
+        [str(launcher)],
+        cwd=_REPOSITORY_ROOT,
+        env=cpu_environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert cpu_run.returncode == 0
+    cpu_calls = call_log.read_text(encoding="utf-8")
+    assert "run --rm --gpus all" not in cpu_calls
+    assert "docker-compose.gpu.yml" not in cpu_calls
+    assert "NanoLoop accelerator: cpu" in cpu_run.stdout
+
+    call_log.unlink()
+    gpu_environment = base_environment | {
+        "NANOLOOP_ACCELERATOR": "auto",
+        "NANOLOOP_TEST_GPU_PROBE_EXIT": "0",
+    }
+    gpu_run = subprocess.run(
+        [str(launcher)],
+        cwd=_REPOSITORY_ROOT,
+        env=gpu_environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert gpu_run.returncode == 0
+    gpu_calls = call_log.read_text(encoding="utf-8")
+    assert "run --rm --gpus all nanoloop-test-probe" in gpu_calls
+    assert "-f docker-compose.gpu.yml" in gpu_calls
+    assert "NanoLoop accelerator: cuda" in gpu_run.stdout
+
+    call_log.unlink()
+    unavailable_environment = base_environment | {
+        "NANOLOOP_ACCELERATOR": "cuda",
+        "NANOLOOP_TEST_GPU_PROBE_EXIT": "1",
+    }
+    unavailable_run = subprocess.run(
+        [str(launcher)],
+        cwd=_REPOSITORY_ROOT,
+        env=unavailable_environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert unavailable_run.returncode == 1
+    unavailable_calls = call_log.read_text(encoding="utf-8")
+    assert "run --rm --gpus all nanoloop-test-probe" in unavailable_calls
+    assert "compose -f" not in unavailable_calls
+    assert "Docker cannot access an NVIDIA GPU" in unavailable_run.stderr

@@ -2,12 +2,12 @@
 
 ARG PYTHON_VERSION=3.12
 ARG API_EXTRAS=""
-ARG PYTORCH_CPU_INDEX_URL="https://download.pytorch.org/whl/cpu"
+ARG PYTORCH_INDEX_URL="https://download.pytorch.org/whl/cpu"
 ARG PYPI_INDEX_URL="https://pypi.org/simple"
 
 FROM python:${PYTHON_VERSION}-slim-bookworm AS builder
 ARG API_EXTRAS
-ARG PYTORCH_CPU_INDEX_URL
+ARG PYTORCH_INDEX_URL
 ARG PYPI_INDEX_URL
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
@@ -15,7 +15,7 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
 
 WORKDIR /build
 
-COPY pyproject.toml README.md LICENSES.md docker-models-cpu-constraints.txt ./
+COPY pyproject.toml README.md LICENSES.md docker-models-constraints.txt ./
 COPY app ./app
 
 # Build a complete wheelhouse so the runtime image never invokes a compiler or package index.
@@ -33,10 +33,10 @@ RUN set -eu; \
         *,models,*) \
             python -m pip wheel \
                 --wheel-dir /wheels \
-                --index-url "${PYTORCH_CPU_INDEX_URL}" \
+                --index-url "${PYTORCH_INDEX_URL}" \
                 --no-deps \
-                --requirement docker-models-cpu-constraints.txt; \
-            model_constraint_args="--constraint docker-models-cpu-constraints.txt"; \
+                --requirement docker-models-constraints.txt; \
+            model_constraint_args="--constraint docker-models-constraints.txt"; \
             ;; \
     esac; \
     python -m pip wheel \
@@ -54,7 +54,7 @@ ARG APP_GID=10001
 ARG API_EXTRAS
 
 LABEL org.opencontainers.image.title="NanoLoop Agent API" \
-      org.opencontainers.image.description="CPU API runtime without model weights or RAG corpus" \
+      org.opencontainers.image.description="Portable API runtime with automatic accelerator selection" \
       org.opencontainers.image.licenses="LicenseRef-Proprietary"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -67,7 +67,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     FILE_TOKEN_V2_KEYRING_PATH=/app/data/.file_token_v2_keyring.json \
     MODEL_REGISTRY_PATH=/app/model_artifacts/registry.yaml \
     MODEL_SNAPSHOT_ROOT=/app/data/model-snapshots \
-    MODEL_DEVICE=cpu \
+    MODEL_DEVICE=auto \
     KNOWLEDGE_SOURCE_DIR=/app/knowledge_base/sources \
     FAISS_INDEX_PATH=/app/knowledge_base/index/faiss.index \
     LLM_PROVIDER=extractive \
