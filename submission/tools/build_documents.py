@@ -5,17 +5,15 @@ from __future__ import annotations
 
 import re
 import sys
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 from docx import Document
-from docx.enum.section import WD_SECTION
 from docx.enum.table import WD_ALIGN_VERTICAL, WD_CELL_VERTICAL_ALIGNMENT
-from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK, WD_LINE_SPACING
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Cm, Inches, Mm, Pt, RGBColor
-
+from docx.shared import Cm, Mm, Pt, RGBColor
 
 ROOT = Path(__file__).resolve().parents[2]
 GENERATED = ROOT / "submission" / "generated"
@@ -53,7 +51,13 @@ def read_source(path: Path) -> tuple[dict[str, str], list[str]]:
     return metadata, lines
 
 
-def set_font(run, size: float | None = None, bold: bool | None = None, color: str | None = None, mono: bool = False) -> None:
+def set_font(
+    run,
+    size: float | None = None,
+    bold: bool | None = None,
+    color: str | None = None,
+    mono: bool = False,
+) -> None:
     if size is not None:
         run.font.size = Pt(size)
     if bold is not None:
@@ -131,7 +135,7 @@ def set_table_layout(table, widths: list[int]) -> None:
         col.set(qn("w:w"), str(width))
         grid.append(col)
     for row in table.rows:
-        for cell, width in zip(row.cells, widths):
+        for cell, width in zip(row.cells, widths, strict=True):
             tc_pr = cell._tc.get_or_add_tcPr()
             tc_w = tc_pr.find(qn("w:tcW"))
             if tc_w is None:
@@ -270,7 +274,9 @@ def add_cover(document: Document, metadata: dict[str, str], source: Path) -> Non
     cell.width = Cm(17.4)
     cell.height = Cm(0.12)
     cell.text = ""
-    set_cell_border(cell, top={"val": "nil"}, bottom={"val": "nil"}, left={"val": "nil"}, right={"val": "nil"})
+    set_cell_border(
+        cell, top={"val": "nil"}, bottom={"val": "nil"}, left={"val": "nil"}, right={"val": "nil"}
+    )
     document.add_paragraph().paragraph_format.space_after = Pt(0)
 
     p = document.add_paragraph()
@@ -324,8 +330,8 @@ def add_cover(document: Document, metadata: dict[str, str], source: Path) -> Non
         (metadata.get("team", ""), metadata.get("leader", "")),
         (metadata.get("date", ""), "提交版本 · 可复核源码生成"),
     ]
-    for row, values_row in zip(info.rows, values):
-        for cell, value in zip(row.cells, values_row):
+    for row, values_row in zip(info.rows, values, strict=True):
+        for cell, value in zip(row.cells, values_row, strict=True):
             set_cell_shading(cell, LIGHT)
             set_cell_border(
                 cell,
@@ -337,7 +343,7 @@ def add_cover(document: Document, metadata: dict[str, str], source: Path) -> Non
             p = cell.paragraphs[0]
             p.paragraph_format.space_after = Pt(0)
             run = p.add_run(value)
-            set_font(run, size=9.2, bold=True if row is info.rows[0] else False, color=INK)
+            set_font(run, size=9.2, bold=row is info.rows[0], color=INK)
 
     promise = document.add_table(rows=1, cols=1)
     promise.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -443,7 +449,9 @@ def add_contents_overview(document: Document, headings: list[str]) -> None:
 INLINE_PATTERN = re.compile(r"(\*\*.+?\*\*|`[^`]+`)")
 
 
-def add_inline(paragraph, text: str, *, size: float | None = None, color: str | None = None) -> None:
+def add_inline(
+    paragraph, text: str, *, size: float | None = None, color: str | None = None
+) -> None:
     for chunk in INLINE_PATTERN.split(text):
         if not chunk:
             continue
@@ -504,7 +512,7 @@ def add_markdown_table(document: Document, lines: list[str]) -> None:
     widths = [total_width // column_count] * column_count
     widths[-1] += total_width - sum(widths)
     set_table_layout(table, widths)
-    for row_idx, (row, source_row) in enumerate(zip(table.rows, rows)):
+    for row_idx, (row, source_row) in enumerate(zip(table.rows, rows, strict=True)):
         prevent_row_split(row)
         if row_idx == 0:
             set_repeat_table_header(row)

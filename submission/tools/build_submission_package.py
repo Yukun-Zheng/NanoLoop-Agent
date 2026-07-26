@@ -17,7 +17,6 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[2]
 SUBMISSION = ROOT / "submission"
 GENERATED = SUBMISSION / "generated"
@@ -215,9 +214,7 @@ def main() -> int:
     final_zip, offline = build(
         registration_form=args.registration_form.expanduser().resolve(),
         video=args.video.expanduser().resolve() if args.video else None,
-        offline_image=args.offline_image.expanduser().resolve()
-        if args.offline_image
-        else None,
+        offline_image=args.offline_image.expanduser().resolve() if args.offline_image else None,
     )
     print(f"主提交包：{final_zip} ({final_zip.stat().st_size:,} bytes)")
     if offline is not None:

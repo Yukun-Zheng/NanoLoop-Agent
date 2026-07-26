@@ -4,10 +4,10 @@
 from __future__ import annotations
 
 import math
+from itertools import pairwise
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
-
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "submission" / "assets" / "diagrams"
@@ -61,12 +61,14 @@ def gradient(size: tuple[int, int], left: str, right: str) -> Image.Image:
     rrgb = tuple(int(right[i : i + 2], 16) for i in (1, 3, 5))
     for x in range(size[0]):
         ratio = x / max(1, size[0] - 1)
-        color = tuple(round(a + (b - a) * ratio) for a, b in zip(lrgb, rrgb))
+        color = tuple(round(a + (b - a) * ratio) for a, b in zip(lrgb, rrgb, strict=True))
         draw.line((x, 0, x, size[1]), fill=color)
     return canvas
 
 
-def wrap(draw: ImageDraw.ImageDraw, text: str, text_font: ImageFont.FreeTypeFont, width: int) -> list[str]:
+def wrap(
+    draw: ImageDraw.ImageDraw, text: str, text_font: ImageFont.FreeTypeFont, width: int
+) -> list[str]:
     lines: list[str] = []
     current = ""
     for char in text:
@@ -179,35 +181,76 @@ def make_workflow() -> None:
         (725, 635, 1085, 895),
         (1155, 635, 1515, 895),
     ]
-    for (number, title, detail, pale), box in zip(cards, positions):
+    for (number, title, detail, pale), box in zip(cards, positions, strict=True):
         card_draw = shadow_card(canvas, box, fill=WHITE)
         x1, y1, x2, _ = box
         card_draw.rounded_rectangle((x1 + 24, y1 + 24, x1 + 96, y1 + 62), radius=19, fill=pale)
         card_draw.text((x1 + 60, y1 + 43), number, font=font(19), fill=BLUE_DARK, anchor="mm")
-        card_draw.text((x1 + 28, y1 + 92), title, font=font(31), fill=INK, stroke_width=1, stroke_fill=INK)
+        card_draw.text(
+            (x1 + 28, y1 + 92), title, font=font(31), fill=INK, stroke_width=1, stroke_fill=INK
+        )
         line_y = y1 + 145
         for line in detail.split("\n"):
             card_draw.text((x1 + 28, line_y), line, font=font(22), fill=MUTED)
             line_y += 39
         card_draw.rounded_rectangle((x1 + 28, y1 + 218, x2 - 28, y1 + 224), radius=3, fill=pale)
-    for left, right in zip(positions[:3], positions[1:4]):
-        arrow(draw, (left[2] + 12, (left[1] + left[3]) // 2), (right[0] - 12, (right[1] + right[3]) // 2))
-    arrow(draw, (positions[3][2] - 80, positions[3][3] + 20), (positions[4][0] + 110, positions[4][1] - 18))
-    arrow(draw, (positions[4][2] + 12, (positions[4][1] + positions[4][3]) // 2), (positions[5][0] - 12, (positions[5][1] + positions[5][3]) // 2))
-    arrow(draw, (positions[5][2] + 12, (positions[5][1] + positions[5][3]) // 2), (positions[6][0] - 12, (positions[6][1] + positions[6][3]) // 2))
+    for left, right in pairwise(positions[:4]):
+        arrow(
+            draw,
+            (left[2] + 12, (left[1] + left[3]) // 2),
+            (right[0] - 12, (right[1] + right[3]) // 2),
+        )
+    arrow(
+        draw,
+        (positions[3][2] - 80, positions[3][3] + 20),
+        (positions[4][0] + 110, positions[4][1] - 18),
+    )
+    arrow(
+        draw,
+        (positions[4][2] + 12, (positions[4][1] + positions[4][3]) // 2),
+        (positions[5][0] - 12, (positions[5][1] + positions[5][3]) // 2),
+    )
+    arrow(
+        draw,
+        (positions[5][2] + 12, (positions[5][1] + positions[5][3]) // 2),
+        (positions[6][0] - 12, (positions[6][1] + positions[6][3]) // 2),
+    )
     canvas.save(OUT / "workflow.png", quality=95)
 
 
 def make_architecture() -> None:
     canvas = gradient((1800, 1080), "#FBFCFF", "#F1F4FF")
     draw = ImageDraw.Draw(canvas)
-    heading(draw, "NanoLoop 科学工作台架构", "前端不重算科学结果；模型、统计与助手通过清晰边界协作", width=1800)
+    heading(
+        draw,
+        "NanoLoop 科学工作台架构",
+        "前端不重算科学结果；模型、统计与助手通过清晰边界协作",
+        width=1800,
+    )
 
     layers = [
-        ("交互层", "Next.js Command Center", "上传 · ROI · 模型选择 · 结果复核 · 报告", BLUE_PALE, BLUE),
+        (
+            "交互层",
+            "Next.js Command Center",
+            "上传 · ROI · 模型选择 · 结果复核 · 报告",
+            BLUE_PALE,
+            BLUE,
+        ),
         ("服务层", "FastAPI 与契约", "任务编排 · 鉴权边界 · 队列 · 导出 · 审计", GREEN_PALE, GREEN),
-        ("计算层", "模型网关 + 确定性分析", "内容寻址 bundle · Adapter · canonical 实例 · 形貌统计 · Gate", AMBER_PALE, AMBER),
-        ("事实层", "SQLite WAL + 制品存储", "任务 · ROI revision · 不可变运行 · 状态事件 · SHA-256", "#F1EDFF", "#7153C8"),
+        (
+            "计算层",
+            "模型网关 + 确定性分析",
+            "内容寻址 bundle · Adapter · canonical 实例 · 形貌统计 · Gate",
+            AMBER_PALE,
+            AMBER,
+        ),
+        (
+            "事实层",
+            "SQLite WAL + 制品存储",
+            "任务 · ROI revision · 不可变运行 · 状态事件 · SHA-256",
+            "#F1EDFF",
+            "#7153C8",
+        ),
     ]
     top = 245
     for index, (label, title, detail, pale, accent) in enumerate(layers):
@@ -217,7 +260,9 @@ def make_architecture() -> None:
         card_draw.rounded_rectangle((80, y1, 105, y2), radius=13, fill=accent)
         card_draw.rounded_rectangle((130, y1 + 28, 300, y1 + 66), radius=19, fill=pale)
         card_draw.text((215, y1 + 47), label, font=font(20), fill=accent, anchor="mm")
-        card_draw.text((330, y1 + 35), title, font=font(31), fill=INK, stroke_width=1, stroke_fill=INK)
+        card_draw.text(
+            (330, y1 + 35), title, font=font(31), fill=INK, stroke_width=1, stroke_fill=INK
+        )
         card_draw.text((330, y1 + 83), detail, font=font(21), fill=MUTED)
         if index < len(layers) - 1:
             arrow(draw, (655, y2 + 6), (655, y2 + 44), color=BLUE_DARK, width=5)
@@ -242,14 +287,24 @@ def make_architecture() -> None:
     side_draw.text((1522, 813), "大模型不计算实验数字", font=font(19), fill=GREEN, anchor="mm")
     arrow(draw, (1238, 492), (1305, 492), color=CYAN)
     arrow(draw, (1305, 675), (1238, 675), color=CYAN)
-    draw.text((90, 1015), "默认本地回环网络 · 非 root 容器 · 只读根文件系统 · 健康检查 · Docker Compose", font=font(21), fill=MUTED)
+    draw.text(
+        (90, 1015),
+        "默认本地回环网络 · 非 root 容器 · 只读根文件系统 · 健康检查 · Docker Compose",
+        font=font(21),
+        fill=MUTED,
+    )
     canvas.save(OUT / "architecture.png", quality=95)
 
 
 def make_provenance() -> None:
     canvas = gradient((1800, 880), "#FAFBFF", "#F2F5FF")
     draw = ImageDraw.Draw(canvas)
-    heading(draw, "一次运行，保存一条不可改写的证据链", "调整 ROI、模型或阈值会创建新运行，旧结果继续可审查", width=1800)
+    heading(
+        draw,
+        "一次运行，保存一条不可改写的证据链",
+        "调整 ROI、模型或阈值会创建新运行，旧结果继续可审查",
+        width=1800,
+    )
     nodes = [
         ("原始输入", "图像 SHA-256\n尺寸 · 元数据 · 有效区", BLUE_PALE, BLUE_DARK),
         ("科学配置", "ROI revision\n模型 bundle · 阈值 · 后处理", GREEN_PALE, GREEN),
@@ -262,7 +317,7 @@ def make_provenance() -> None:
         (930, 280, 1280, 555),
         (1360, 280, 1710, 555),
     ]
-    for (title, detail, pale, accent), box in zip(nodes, boxes):
+    for (title, detail, pale, accent), box in zip(nodes, boxes, strict=True):
         card_draw = shadow_card(canvas, box, fill=WHITE)
         x1, y1, x2, _ = box
         card_draw.rounded_rectangle((x1 + 26, y1 + 28, x2 - 26, y1 + 84), radius=27, fill=pale)
@@ -271,12 +326,22 @@ def make_provenance() -> None:
         for line in detail.split("\n"):
             card_draw.text(((x1 + x2) // 2, line_y), line, font=font(21), fill=MUTED, anchor="ma")
             line_y += 47
-        card_draw.text(((x1 + x2) // 2, y1 + 238), "✓ 已冻结", font=font(18), fill=GREEN, anchor="mm")
-    for left, right in zip(boxes[:-1], boxes[1:]):
+        card_draw.text(
+            ((x1 + x2) // 2, y1 + 238), "✓ 已冻结", font=font(18), fill=GREEN, anchor="mm"
+        )
+    for left, right in pairwise(boxes):
         arrow(draw, (left[2] + 12, 417), (right[0] - 12, 417))
     draw.rounded_rectangle((250, 675, 1550, 795), radius=36, fill=INK)
-    draw.text((900, 712), "相同快照 → 相同内容地址；科学输入变化 → 新运行、新导出", font=font(27), fill=WHITE, anchor="ma")
-    draw.text((900, 757), "截图只是显示，运行记录才是事实", font=font(20), fill="#C8D0FF", anchor="ma")
+    draw.text(
+        (900, 712),
+        "相同快照 → 相同内容地址；科学输入变化 → 新运行、新导出",
+        font=font(27),
+        fill=WHITE,
+        anchor="ma",
+    )
+    draw.text(
+        (900, 757), "截图只是显示，运行记录才是事实", font=font(20), fill="#C8D0FF", anchor="ma"
+    )
     canvas.save(OUT / "provenance.png", quality=95)
 
 
@@ -301,13 +366,23 @@ def make_video_cards() -> None:
             (1580, 940, 160, "#DDF6F2"),
         ]:
             draw.ellipse((cx - radius, cy - radius, cx + radius, cy + radius), fill=color)
-        draw.rounded_rectangle((170, 160, 1750, 920), radius=52, fill=WHITE, outline="#D9DFF2", width=3)
+        draw.rounded_rectangle(
+            (170, 160, 1750, 920), radius=52, fill=WHITE, outline="#D9DFF2", width=3
+        )
         draw.rounded_rectangle((230, 230, 590, 286), radius=28, fill=BLUE_PALE)
         draw.text((410, 258), "NANOLOOP · AI4S", font=font(24), fill=BLUE_DARK, anchor="mm")
-        draw.text((960, 430), title, font=font(70), fill=INK, anchor="mm", stroke_width=1, stroke_fill=INK)
+        draw.text(
+            (960, 430), title, font=font(70), fill=INK, anchor="mm", stroke_width=1, stroke_fill=INK
+        )
         draw.text((960, 540), subtitle, font=font(34), fill=MUTED, anchor="mm")
         draw.rounded_rectangle((590, 665, 1330, 671), radius=3, fill=BLUE)
-        draw.text((960, 780), "C 赛道 · AI4S 湿闭环（Wet Lab）", font=font(27), fill=BLUE_DARK, anchor="mm")
+        draw.text(
+            (960, 780),
+            "C 赛道 · AI4S 湿闭环（Wet Lab）",
+            font=font(27),
+            fill=BLUE_DARK,
+            anchor="mm",
+        )
         canvas.save(OUT / name, quality=95)
 
 
