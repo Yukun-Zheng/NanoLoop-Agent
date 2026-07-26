@@ -22,16 +22,37 @@ from app.analysis.postprocessing import (
     NormalizedInstance,
     normalize_semantic_mask_detailed,
 )
+from scripts.models.evaluate_unet_large_independent_test import (
+    _TOLERANCE_FIELDS,
+    _require_finite_number,
+    _scientific_metric_values,
+)
+from scripts.models.evaluate_unet_large_independent_test import (
+    _load_tolerance_policy as _load_large_tolerance_policy,
+)
+from scripts.models.evaluate_unet_large_independent_test import (
+    _match_instances as _large_match_instances,
+)
+from scripts.models.evaluate_unet_large_independent_test import (
+    compute_scientific_metrics as _large_compute_scientific_metrics,
+)
+from scripts.models.small_b_contracts import (
+    ManifestSplit,
+    SplitManifestRecord,
+    load_split_manifest,
+)
+
+_match_instances = _large_match_instances
+compute_scientific_metrics = _large_compute_scientific_metrics
 
 MODEL_ID = "unet-agglomerated-specialized-v1"
 MODEL_VERSION = "1"
 ADAPTER_PATH = "app.inference.adapters.unet:UNetAdapter"
 TORCHSCRIPT_SHA256 = "d36cf627dc6d1eea83b769743b657e6bb3d9a1af39ddc6a00ae95acc3b20ffc9"
+CHECKPOINT_SHA256 = "e2be19c6fe1e843856fb339d13de8baed8d748f88558ba7bd3eaaa20b90ede21"
 CONFIG_SHA256 = "54f5113d0de4b5d2a26e48e8c231b5223c43b373ba8a496934f2b4bbd1bfc524"
 MODEL_CARD_SHA256 = "6a56b5b29cb2f8c1b8d1893ca072a2dab0ad309708d9f682f9374f6ea279fef1"
 ADAPTER_SHA256 = "6055db452f0a78a0352732d66ea3436f16a558cf19d1a6f022a78627136dfab6"
-TEST_FILENAMES = ("YCu-1.tif", "YCu-2.tif", "YCu-3.tif")
-GROUND_TRUTH_FILENAMES = tuple(f"{Path(filename).stem}_mask.tif" for filename in TEST_FILENAMES)
 IMAGE_WIDTH = 2048
 IMAGE_HEIGHT = 1536
 BOTTOM_CROP_PX = 130
@@ -50,6 +71,32 @@ STATISTIC_FIELDS = (
     "perimeter_density_um",
     "coverage_ratio",
 )
+_AGGLOMERATED_TOLERANCE_FIELDS = (
+    *_TOLERANCE_FIELDS,
+    ("coverage_relative_error", "maximum_coverage_relative_error", "lte"),
+)
+_ZERO_DENOMINATOR_RULES = {
+    "instance_precision": "value_is_one_when_no_prediction_instances",
+    "instance_recall": "value_is_one_when_no_ground_truth_instances",
+    "instance_f1": "value_is_one_when_prediction_and_ground_truth_are_both_empty",
+    "count_absolute_error": "not_applicable_metric_has_no_denominator",
+    "count_relative_error": "denominator_is_maximum_of_ground_truth_count_and_one",
+    "mean_area_relative_error": (
+        "not_evaluable_when_ground_truth_value_is_zero_or_either_instance_set_is_empty"
+    ),
+    "mean_equivalent_diameter_relative_error": (
+        "not_evaluable_when_ground_truth_value_is_zero_or_either_instance_set_is_empty"
+    ),
+    "number_density_relative_error": (
+        "not_evaluable_when_ground_truth_value_is_zero_or_either_instance_set_is_empty"
+    ),
+    "perimeter_density_relative_error": (
+        "not_evaluable_when_ground_truth_value_is_zero_or_either_instance_set_is_empty"
+    ),
+    "coverage_relative_error": (
+        "not_evaluable_when_ground_truth_value_is_zero_or_either_instance_set_is_empty"
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -57,6 +104,10 @@ class EvaluationParameters:
     analysis_output_root: Path
     mask_dir: Path
     output_root: Path
+    independent_test_manifest_path: Path
+    checkpoint_sha256: str
+    tolerance_policy_path: Path | None = None
+    instance_iou_threshold: float | None = None
 
 
 @dataclass(frozen=True)
@@ -69,6 +120,18 @@ class ConfusionMetrics:
     iou: float
     precision: float
     recall: float
+    f1: float
+
+
+@dataclass(frozen=True)
+class AgglomeratedTolerancePolicy:
+    content: Mapping[str, Any]
+    source_path: Path
+    filename: str
+    sha256: str
+    instance_iou_threshold: float
+    approved: bool
+    metric_contracts: tuple[Mapping[str, Any], ...]
 
 
 @dataclass(frozen=True)
@@ -80,17 +143,23 @@ class SampleInputs:
     run_config_path: Path
     execution_provenance_path: Path
     metadata_path: Path
+    image_path: Path
+    manifest_record: SplitManifestRecord
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Evaluate frozen Agglomerated U-Net Analysis masks on three held-out fields of view."
+            "Evaluate frozen Agglomerated U-Net Analysis masks selected by an approved manifest."
         )
     )
     parser.add_argument("--analysis-output-root", required=True, type=Path)
     parser.add_argument("--mask-dir", required=True, type=Path)
+    parser.add_argument("--independent-test-manifest", required=True, type=Path)
+    parser.add_argument("--checkpoint-sha256", required=True)
     parser.add_argument("--output-root", required=True, type=Path)
+    parser.add_argument("--tolerance-policy", type=Path)
+    parser.add_argument("--instance-iou-threshold", type=float)
     return parser
 
 
@@ -123,10 +192,17 @@ def _validated_parameters(namespace: argparse.Namespace) -> EvaluationParameters
         raise ValueError("analysis-output-root must be an existing directory")
     if not mask_dir.is_dir():
         raise ValueError("mask-dir must be an existing directory")
+    instance_iou_threshold = namespace.instance_iou_threshold
+    if instance_iou_threshold is not None and not 0.0 < instance_iou_threshold <= 1.0:
+        raise ValueError("instance-iou-threshold must be in (0, 1]")
     return EvaluationParameters(
         analysis_output_root=analysis_output_root,
         mask_dir=mask_dir,
         output_root=_validate_output_root(namespace.output_root),
+        independent_test_manifest_path=namespace.independent_test_manifest,
+        checkpoint_sha256=namespace.checkpoint_sha256,
+        tolerance_policy_path=namespace.tolerance_policy,
+        instance_iou_threshold=instance_iou_threshold,
     )
 
 
@@ -138,6 +214,49 @@ def _load_json(path: Path) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError(f"JSON document must be an object: {path}")
     return payload
+
+
+def _file_identity(path: Path, *, relative_path: str) -> dict[str, Any]:
+    return {
+        "path": relative_path,
+        "size_bytes": path.stat().st_size,
+        "sha256": _sha256(path),
+    }
+
+
+def _load_independent_test_manifest(
+    path: Path,
+) -> tuple[Path, dict[str, SplitManifestRecord]]:
+    resolved = path.expanduser().resolve(strict=True)
+    manifest = load_split_manifest(resolved, require_calibration=False)
+    selected = tuple(
+        record
+        for record in manifest.records
+        if record.included and record.split is ManifestSplit.INDEPENDENT_TEST
+    )
+    if not selected:
+        raise ValueError("independent-test manifest contains no included samples")
+    return resolved, {record.sample_id: record for record in selected}
+
+
+def _validate_manifest_files(
+    manifest_path: Path,
+    records: Mapping[str, SplitManifestRecord],
+) -> None:
+    root = manifest_path.parent
+    for record in records.values():
+        if record.mask_path is None or record.mask_sha256 is None:
+            raise ValueError(f"manifest GT identity is missing for sample {record.sample_id}")
+        image_path = (root / record.image_path).resolve(strict=False)
+        truth_path = (root / record.mask_path).resolve(strict=False)
+        if not image_path.is_file():
+            raise ValueError(f"manifest image is missing for sample {record.sample_id}")
+        if not truth_path.is_file():
+            raise ValueError(f"manifest GT is missing for sample {record.sample_id}")
+        if _sha256(image_path) != record.image_sha256:
+            raise ValueError(f"manifest image_sha256 mismatch for sample {record.sample_id}")
+        if _sha256(truth_path) != record.mask_sha256:
+            raise ValueError(f"manifest gt_sha256 mismatch for sample {record.sample_id}")
 
 
 def _mapping(value: Any, *, field: str, path: Path) -> Mapping[str, Any]:
@@ -154,23 +273,28 @@ def _metadata_for_prediction(prediction_path: Path) -> Path:
     return metadata_path
 
 
-def _match_sample(metadata: Mapping[str, Any], metadata_path: Path) -> str | None:
+def _match_sample(
+    metadata: Mapping[str, Any],
+    metadata_path: Path,
+    manifest_records: Mapping[str, SplitManifestRecord],
+) -> str:
     filename = metadata.get("filename")
     sample_id = metadata.get("sample_id")
     if not isinstance(filename, str) or not isinstance(sample_id, str):
         raise ValueError(f"image metadata is missing filename/sample_id: {metadata_path}")
-    filename_stem = Path(filename).stem
-    matches = {
-        Path(expected).stem
-        for expected in TEST_FILENAMES
-        if Path(expected).stem in {filename_stem, sample_id}
-    }
-    if len(matches) > 1:
-        raise ValueError(f"image metadata maps to multiple fixed samples: {metadata_path}")
-    return next(iter(matches), None)
+    record = manifest_records.get(sample_id)
+    if record is None:
+        raise ValueError(f"image metadata sample_id is absent from the manifest: {metadata_path}")
+    if filename != Path(record.image_path).name:
+        raise ValueError(f"image metadata filename differs from the manifest: {sample_id}")
+    return sample_id
 
 
-def locate_sample_inputs(parameters: EvaluationParameters) -> dict[str, SampleInputs]:
+def locate_sample_inputs(
+    parameters: EvaluationParameters,
+    manifest_path: Path,
+    manifest_records: Mapping[str, SplitManifestRecord],
+) -> dict[str, SampleInputs]:
     located: dict[str, SampleInputs] = {}
     all_predictions = {
         path.resolve() for path in parameters.analysis_output_root.rglob("pred_mask.png")
@@ -188,10 +312,8 @@ def locate_sample_inputs(parameters: EvaluationParameters) -> dict[str, SampleIn
     for prediction_path in predictions:
         metadata_path = _metadata_for_prediction(prediction_path)
         metadata = _load_json(metadata_path)
-        sample_id = _match_sample(metadata, metadata_path)
-        if sample_id is None:
-            raise ValueError(f"analysis-output-root contains a non-YCu prediction: {metadata_path}")
-        expected_filename = f"{sample_id}.tif"
+        sample_id = _match_sample(metadata, metadata_path, manifest_records)
+        expected_filename = Path(manifest_records[sample_id].image_path).name
         if metadata.get("filename") != expected_filename or metadata.get("sample_id") != sample_id:
             raise ValueError(f"metadata does not exactly identify {expected_filename}")
         if metadata.get("width") != IMAGE_WIDTH or metadata.get("height") != IMAGE_HEIGHT:
@@ -218,6 +340,14 @@ def locate_sample_inputs(parameters: EvaluationParameters) -> dict[str, SampleIn
         truth_path = parameters.mask_dir / truth_filename
         if not truth_path.is_file():
             raise ValueError(f"human mask is missing for sample {sample_id}: {truth_filename}")
+        manifest_record = manifest_records[sample_id]
+        manifest_image_path = (manifest_path.parent / manifest_record.image_path).resolve()
+        assert manifest_record.mask_path is not None
+        manifest_truth_path = (manifest_path.parent / manifest_record.mask_path).resolve()
+        if manifest_truth_path != truth_path.resolve():
+            raise ValueError(f"manifest GT path differs from mask-dir for sample {sample_id}")
+        if image_sha256 != manifest_record.image_sha256:
+            raise ValueError(f"image metadata SHA differs from manifest for sample {sample_id}")
         located[sample_id] = SampleInputs(
             sample_id=sample_id,
             filename=expected_filename,
@@ -226,11 +356,13 @@ def locate_sample_inputs(parameters: EvaluationParameters) -> dict[str, SampleIn
             run_config_path=run_config_path.resolve(),
             execution_provenance_path=execution_provenance_path.resolve(),
             metadata_path=metadata_path.resolve(),
+            image_path=manifest_image_path,
+            manifest_record=manifest_record,
         )
-    expected = {Path(filename).stem for filename in TEST_FILENAMES}
+    expected = set(manifest_records)
     missing = sorted(expected - set(located))
     if missing:
-        raise ValueError(f"pred_mask.png is missing for fixed samples: {missing}")
+        raise ValueError(f"pred_mask.png is missing for manifest samples: {missing}")
     return located
 
 
@@ -351,6 +483,8 @@ def validate_run_config(path: Path, *, image_sha256: str) -> dict[str, Any]:
     _validate_execution_build(payload.get("execution_build"), field="execution_build", path=path)
     inference = _mapping(payload.get("inference"), field="inference", path=path)
     _require_number(inference.get("threshold"), THRESHOLD, field="threshold", path=path)
+    if inference.get("threshold_comparison") != "gte":
+        raise ValueError(f"threshold_comparison is not frozen at gte in {path}")
     if inference.get("min_area_px") != MIN_AREA_PX:
         raise ValueError(f"min_area_px is not frozen at {MIN_AREA_PX} in {path}")
     if inference.get("watershed_enabled") is not False:
@@ -499,13 +633,14 @@ def compute_metrics(prediction: np.ndarray, truth: np.ndarray) -> ConfusionMetri
         iou=_ratio(tp, tp + fp + fn),
         precision=_ratio(tp, tp + fp),
         recall=_ratio(tp, tp + fn),
+        f1=_ratio(2 * tp, 2 * tp + fp + fn),
     )
 
 
 def _macro(metrics: Sequence[ConfusionMetrics]) -> dict[str, float]:
     return {
         name: float(sum(getattr(item, name) for item in metrics) / len(metrics))
-        for name in ("dice", "iou", "precision", "recall")
+        for name in ("dice", "iou", "precision", "recall", "f1")
     }
 
 
@@ -523,6 +658,7 @@ def _micro(metrics: Sequence[ConfusionMetrics]) -> ConfusionMetrics:
         iou=_ratio(tp, tp + fp + fn),
         precision=_ratio(tp, tp + fp),
         recall=_ratio(tp, tp + fn),
+        f1=_ratio(2 * tp, 2 * tp + fp + fn),
     )
 
 
@@ -532,6 +668,298 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _load_agglomerated_tolerance_policy(
+    path: Path | None,
+    *,
+    manifest_sha256: str,
+    checkpoint_sha256: str,
+) -> AgglomeratedTolerancePolicy | None:
+    if path is None:
+        return None
+    payload, resolved, digest = _load_large_tolerance_policy(path)
+    if payload.get("model_id") != MODEL_ID:
+        raise ValueError(f"tolerance-policy model_id must be {MODEL_ID}")
+    for field, expected in (
+        ("checkpoint_sha256", checkpoint_sha256),
+        ("torchscript_sha256", TORCHSCRIPT_SHA256),
+        ("config_sha256", CONFIG_SHA256),
+        ("model_card_sha256", MODEL_CARD_SHA256),
+        ("adapter_sha256", ADAPTER_SHA256),
+        ("independent_test_manifest_sha256", manifest_sha256),
+    ):
+        _require_sha256(
+            payload.get(field),
+            field=f"tolerance-policy {field}",
+            path=resolved,
+            expected=expected,
+        )
+    frozen = _mapping(
+        payload.get("frozen_scientific_parameters"),
+        field="frozen_scientific_parameters",
+        path=resolved,
+    )
+    expected_frozen = {
+        "threshold": THRESHOLD,
+        "threshold_comparison": "gte",
+        "min_area_px": MIN_AREA_PX,
+        "bottom_crop_px": BOTTOM_CROP_PX,
+    }
+    for field, frozen_expected in expected_frozen.items():
+        observed = frozen.get(field)
+        if isinstance(frozen_expected, float):
+            _require_number(
+                observed,
+                frozen_expected,
+                field=f"tolerance-policy frozen_scientific_parameters.{field}",
+                path=resolved,
+            )
+        elif observed != frozen_expected:
+            raise ValueError(
+                f"tolerance-policy frozen_scientific_parameters.{field} must be {frozen_expected}"
+            )
+    approval = _mapping(payload.get("approval"), field="approval", path=resolved)
+    approval_status = approval.get("status")
+    if approval_status not in {"APPROVED", "DRAFT", "REJECTED"}:
+        raise ValueError("tolerance-policy approval.status must be APPROVED, DRAFT, or REJECTED")
+    frozen_before_test = approval.get("frozen_before_independent_test")
+    if not isinstance(frozen_before_test, bool):
+        raise ValueError("tolerance-policy approval.frozen_before_independent_test must be boolean")
+    if approval_status == "APPROVED" and frozen_before_test is not True:
+        raise ValueError("approved tolerance-policy must be frozen before the independent test")
+    for field in ("approved_by", "approved_at", "rationale"):
+        value = approval.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"tolerance-policy approval.{field} must be non-empty")
+    approved_at = str(approval["approved_at"])
+    try:
+        approved_timestamp = datetime.fromisoformat(approved_at.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ValueError("tolerance-policy approval.approved_at must be ISO-8601") from error
+    if approved_timestamp.tzinfo is None or approved_timestamp.utcoffset() is None:
+        raise ValueError("tolerance-policy approval.approved_at must include a timezone")
+    matching = _mapping(
+        payload.get("instance_matching"),
+        field="instance_matching",
+        path=resolved,
+    )
+    tolerances = _mapping(
+        payload.get("per_image_tolerances"),
+        field="per_image_tolerances",
+        path=resolved,
+    )
+    raw_contracts = payload.get("metric_contracts")
+    if not isinstance(raw_contracts, list):
+        raise ValueError("tolerance-policy metric_contracts must be a list")
+    expected_rules = {
+        metric: (tolerance_field, comparison)
+        for metric, tolerance_field, comparison in _AGGLOMERATED_TOLERANCE_FIELDS
+    }
+    metric_contracts: list[Mapping[str, Any]] = []
+    seen_metrics: set[str] = set()
+    for index, raw_contract in enumerate(raw_contracts):
+        contract = _mapping(
+            raw_contract,
+            field=f"metric_contracts[{index}]",
+            path=resolved,
+        )
+        metric = contract.get("metric_name")
+        if not isinstance(metric, str) or metric not in expected_rules:
+            raise ValueError(f"metric_contracts[{index}].metric_name is unsupported")
+        if metric in seen_metrics:
+            raise ValueError(f"metric_contracts contains duplicate metric: {metric}")
+        seen_metrics.add(metric)
+        tolerance_field, comparison = expected_rules[metric]
+        if contract.get("aggregation_scope") != "per-sample":
+            raise ValueError(f"metric_contracts[{index}].aggregation_scope must be per-sample")
+        if contract.get("operator") != comparison:
+            raise ValueError(f"metric_contracts[{index}].operator must be {comparison}")
+        if contract.get("tolerance_field") != tolerance_field:
+            raise ValueError(f"metric_contracts[{index}].tolerance_field must be {tolerance_field}")
+        tolerance = _require_finite_number(
+            contract.get("tolerance"),
+            field=f"metric_contracts[{index}].tolerance",
+            minimum=0.0,
+        )
+        if not math.isclose(
+            tolerance,
+            float(tolerances[tolerance_field]),
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        ):
+            raise ValueError(
+                f"metric_contracts[{index}].tolerance differs from per_image_tolerances"
+            )
+        if contract.get("requirement") not in {"required", "informational"}:
+            raise ValueError(
+                f"metric_contracts[{index}].requirement must be required or informational"
+            )
+        expected_applicability = (
+            "always"
+            if metric.startswith("instance_") or metric.startswith("count_")
+            else "ground_truth_and_prediction_instances_present"
+        )
+        if contract.get("applicability") != expected_applicability:
+            raise ValueError(
+                f"metric_contracts[{index}].applicability must be {expected_applicability}"
+            )
+        if contract.get("undefined_rule") != "fail_if_required_otherwise_not_evaluated":
+            raise ValueError(
+                "metric contract undefined_rule must be fail_if_required_otherwise_not_evaluated"
+            )
+        if contract.get("zero_denominator_rule") != _ZERO_DENOMINATOR_RULES[metric]:
+            raise ValueError(
+                f"metric_contracts[{index}].zero_denominator_rule differs from metric semantics"
+            )
+        reason_codes = _mapping(
+            contract.get("reason_codes"),
+            field=f"metric_contracts[{index}].reason_codes",
+            path=resolved,
+        )
+        expected_reason_codes = {
+            "tolerance_met": "TOLERANCE_MET",
+            "tolerance_not_met": "TOLERANCE_NOT_MET",
+            "not_evaluable": "METRIC_NOT_EVALUABLE",
+            "not_applicable": "METRIC_NOT_APPLICABLE",
+        }
+        if dict(reason_codes) != expected_reason_codes:
+            raise ValueError(
+                f"metric_contracts[{index}].reason_codes differs from the public contract"
+            )
+        metric_contracts.append(dict(contract))
+    if seen_metrics != set(expected_rules):
+        raise ValueError("metric_contracts must define every public tolerance metric exactly once")
+    return AgglomeratedTolerancePolicy(
+        content=payload,
+        source_path=resolved,
+        filename=resolved.name,
+        sha256=digest,
+        instance_iou_threshold=float(matching["mask_iou_threshold"]),
+        approved=approval_status == "APPROVED" and frozen_before_test,
+        metric_contracts=tuple(metric_contracts),
+    )
+
+
+def _resolved_instance_iou_threshold(
+    *,
+    policy: AgglomeratedTolerancePolicy | None,
+    explicit_threshold: float | None,
+) -> float | None:
+    if explicit_threshold is not None and not 0.0 < explicit_threshold <= 1.0:
+        raise ValueError("instance_iou_threshold must be in (0, 1]")
+    if policy is None:
+        return explicit_threshold
+    if explicit_threshold is not None and not math.isclose(
+        explicit_threshold,
+        policy.instance_iou_threshold,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    ):
+        raise ValueError("explicit instance IoU threshold differs from tolerance policy")
+    return policy.instance_iou_threshold
+
+
+def _metric_assessments(
+    scientific_metrics: Mapping[str, Any],
+    statistical_errors: Mapping[str, Mapping[str, Any]],
+    policy: AgglomeratedTolerancePolicy | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    values = _scientific_metric_values(scientific_metrics)
+    coverage_relative_error = statistical_errors["coverage_ratio"]["relative_error"]
+    values["coverage_relative_error"] = (
+        abs(float(coverage_relative_error)) if coverage_relative_error is not None else None
+    )
+    assessments: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    matching = _mapping(
+        scientific_metrics.get("instance_matching"),
+        field="instance_matching",
+        path=Path("scientific_metrics"),
+    )
+    contracts = (
+        policy.metric_contracts
+        if policy is not None
+        else tuple(
+            {
+                "metric_name": metric,
+                "aggregation_scope": "per-sample",
+                "operator": comparison,
+                "tolerance_field": tolerance_field,
+                "tolerance": None,
+                "requirement": "required",
+                "applicability": (
+                    "always"
+                    if metric.startswith("instance_") or metric.startswith("count_")
+                    else "ground_truth_and_prediction_instances_present"
+                ),
+                "undefined_rule": "fail_if_required_otherwise_not_evaluated",
+                "zero_denominator_rule": "not_bound_without_policy",
+            }
+            for metric, tolerance_field, comparison in _AGGLOMERATED_TOLERANCE_FIELDS
+        )
+    )
+    for contract in contracts:
+        metric = str(contract["metric_name"])
+        comparison = str(contract["operator"])
+        observed = values[metric]
+        operator = ">=" if comparison == "gte" else "<="
+        requirement = str(contract["requirement"])
+        assessment_base = {
+            "metric": metric,
+            "aggregation_scope": contract["aggregation_scope"],
+            "operator": operator,
+            "observed": observed,
+            "tolerance": contract["tolerance"],
+            "requirement": requirement,
+            "applicability": contract["applicability"],
+            "undefined_rule": contract["undefined_rule"],
+            "zero_denominator_rule": contract["zero_denominator_rule"],
+        }
+        if policy is None or not policy.approved:
+            assessments.append(
+                {
+                    **assessment_base,
+                    "status": "NOT_EVALUATED",
+                    "reason_code": (
+                        "TOLERANCE_POLICY_NOT_PROVIDED"
+                        if policy is None
+                        else "TOLERANCE_POLICY_NOT_APPROVED"
+                    ),
+                }
+            )
+            continue
+        tolerance = _require_finite_number(
+            contract["tolerance"],
+            field=f"metric_contracts.{metric}.tolerance",
+            minimum=0.0,
+        )
+        applicable = contract["applicability"] == "always" or (
+            int(matching["ground_truth_count"]) > 0 and int(matching["prediction_count"]) > 0
+        )
+        if not applicable or observed is None:
+            assessment = {
+                **assessment_base,
+                "status": "FAIL" if requirement == "required" else "NOT_EVALUATED",
+                "reason_code": (
+                    "METRIC_NOT_EVALUABLE"
+                    if requirement == "required" or applicable
+                    else "METRIC_NOT_APPLICABLE"
+                ),
+            }
+        else:
+            passed = observed >= tolerance if comparison == "gte" else observed <= tolerance
+            assessment = {
+                **assessment_base,
+                "status": (
+                    "PASS" if passed else ("FAIL" if requirement == "required" else "INFORMATIONAL")
+                ),
+                "reason_code": "TOLERANCE_MET" if passed else "TOLERANCE_NOT_MET",
+            }
+        assessments.append(assessment)
+        if assessment["status"] == "FAIL":
+            failures.append(assessment)
+    return assessments, failures
 
 
 def _union(instances: Sequence[NormalizedInstance], shape: tuple[int, ...]) -> np.ndarray:
@@ -651,12 +1079,35 @@ def _write_csv(
     macro: Mapping[str, float],
     micro: ConfusionMetrics,
 ) -> None:
-    columns = ("scope", "tp", "fp", "fn", "tn", "dice", "iou", "precision", "recall")
+    columns = (
+        "scope",
+        "tp",
+        "fp",
+        "fn",
+        "tn",
+        "dice",
+        "iou",
+        "precision",
+        "recall",
+        "f1",
+        "instance_precision",
+        "instance_recall",
+        "instance_f1",
+    )
     with path.open("w", encoding="utf-8", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=columns)
         writer.writeheader()
         for item in per_image:
-            writer.writerow({"scope": item["sample_id"], **item["metrics"]})
+            instance_matching = item.get("scientific_metrics", {}).get("instance_matching", {})
+            writer.writerow(
+                {
+                    "scope": item["sample_id"],
+                    **item["metrics"],
+                    "instance_precision": instance_matching.get("precision"),
+                    "instance_recall": instance_matching.get("recall"),
+                    "instance_f1": instance_matching.get("f1"),
+                }
+            )
         writer.writerow({"scope": "macro_average", **macro})
         writer.writerow({"scope": "micro_average", **asdict(micro)})
 
@@ -683,18 +1134,219 @@ def _write_statistics_csv(path: Path, per_image: Sequence[Mapping[str, Any]]) ->
                 )
 
 
+def _write_failure_cases_csv(path: Path, failures: Sequence[Mapping[str, Any]]) -> None:
+    columns = (
+        "sample_id",
+        "metric",
+        "operator",
+        "observed",
+        "tolerance",
+        "status",
+        "reason_code",
+        "aggregation_scope",
+        "requirement",
+        "applicability",
+        "undefined_rule",
+        "zero_denominator_rule",
+    )
+    with path.open("w", encoding="utf-8", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=columns)
+        writer.writeheader()
+        writer.writerows(failures)
+
+
+def _analysis_reference(path: Path, analysis_root: Path) -> str:
+    return path.relative_to(analysis_root).as_posix()
+
+
+def _evaluator_identity(run_configs: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    git_commits = {
+        str(
+            _mapping(item["execution_build"], field="execution_build", path=Path("run_config"))[
+                "git_commit"
+            ]
+        )
+        for item in run_configs
+    }
+    if len(git_commits) != 1 or not next(iter(git_commits)).strip():
+        raise ValueError("run configurations do not bind one evaluator git commit")
+    return {
+        "source_path": "scripts/models/evaluate_unet_agglomerated_independent_test.py",
+        "source_sha256": _sha256(Path(__file__).resolve()),
+        "git_commit": next(iter(git_commits)),
+    }
+
+
+def _write_evidence_manifest(
+    path: Path,
+    *,
+    result: Mapping[str, Any],
+    manifest_path: Path,
+    manifest_records: Mapping[str, SplitManifestRecord],
+    located: Mapping[str, SampleInputs],
+    analysis_root: Path,
+    policy: AgglomeratedTolerancePolicy | None,
+    evaluator_identity: Mapping[str, Any],
+) -> dict[str, Any]:
+    inputs: list[dict[str, Any]] = [
+        {
+            "role": "independent_test_manifest",
+            **_file_identity(manifest_path, relative_path=manifest_path.name),
+        }
+    ]
+    for sample_id in sorted(located):
+        sample = located[sample_id]
+        record = manifest_records[sample_id]
+        assert record.mask_path is not None
+        entries = (
+            ("image", sample.image_path, record.image_path),
+            ("ground_truth", sample.truth_path, record.mask_path),
+            (
+                "prediction",
+                sample.prediction_path,
+                _analysis_reference(sample.prediction_path, analysis_root),
+            ),
+            (
+                "run_config",
+                sample.run_config_path,
+                _analysis_reference(sample.run_config_path, analysis_root),
+            ),
+            (
+                "execution_provenance",
+                sample.execution_provenance_path,
+                _analysis_reference(
+                    sample.execution_provenance_path,
+                    analysis_root,
+                ),
+            ),
+            (
+                "image_metadata",
+                sample.metadata_path,
+                _analysis_reference(sample.metadata_path, analysis_root),
+            ),
+        )
+        for role, input_path, relative_path in entries:
+            inputs.append(
+                {
+                    "role": role,
+                    "sample_id": sample_id,
+                    **_file_identity(input_path, relative_path=relative_path),
+                }
+            )
+    if policy is not None:
+        inputs.append(
+            {
+                "role": "tolerance_policy",
+                **_file_identity(policy.source_path, relative_path=policy.filename),
+            }
+        )
+    output_root = path.parent
+    output_paths = [
+        output_root / "metrics.json",
+        output_root / "metrics.csv",
+        output_root / "statistics.csv",
+        output_root / "failure-cases.csv",
+        *sorted(output_root.glob("*_gt_pred_error.png"), key=lambda item: item.name),
+    ]
+    outputs = [
+        {
+            "role": "review_image" if item.suffix == ".png" else item.name,
+            **_file_identity(item, relative_path=item.name),
+        }
+        for item in output_paths
+    ]
+    payload = {
+        "schema_version": "1",
+        "evaluation": "agglomerated-independent-test",
+        "input_manifest": {
+            "filename": manifest_path.name,
+            "sha256": _sha256(manifest_path),
+            "size_bytes": manifest_path.stat().st_size,
+            "split": "independent-test",
+            "sample_count": len(manifest_records),
+            "sample_ids": sorted(manifest_records),
+        },
+        "evaluation_identity": {
+            "model_id": MODEL_ID,
+            "checkpoint_sha256": CHECKPOINT_SHA256,
+            "checkpoint_evidence_semantics": (
+                "declared SHA validated against the frozen identity and policy when provided; "
+                "the checkpoint file is not accessible to or re-hashed by this evaluator"
+            ),
+            "torchscript_sha256": TORCHSCRIPT_SHA256,
+            "config_sha256": CONFIG_SHA256,
+            "model_card_sha256": MODEL_CARD_SHA256,
+            "adapter_sha256": ADAPTER_SHA256,
+            **evaluator_identity,
+            "threshold": THRESHOLD,
+            "threshold_comparison": "gte",
+            "min_area_px": MIN_AREA_PX,
+            "bottom_crop_px": BOTTOM_CROP_PX,
+            "instance_iou_threshold": result["tolerance_policy"]["instance_iou_threshold"],
+            "instance_iou_threshold_source": (
+                "tolerance_policy"
+                if policy is not None
+                else (
+                    "explicit_cli"
+                    if result["tolerance_policy"]["instance_iou_threshold"] is not None
+                    else None
+                )
+            ),
+            "tolerance_policy_sha256": policy.sha256 if policy is not None else None,
+        },
+        "inputs": sorted(
+            inputs,
+            key=lambda item: (
+                str(item["role"]),
+                str(item.get("sample_id", "")),
+                str(item["path"]),
+            ),
+        ),
+        "outputs": sorted(outputs, key=lambda item: str(item["path"])),
+        "overall_status": result["overall_status"],
+    }
+    path.write_bytes(
+        (json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    )
+    return payload
+
+
 def run_evaluation(parameters: EvaluationParameters) -> dict[str, Any]:
     parameters = EvaluationParameters(
         parameters.analysis_output_root.expanduser().resolve(),
         parameters.mask_dir.expanduser().resolve(),
         _validate_output_root(parameters.output_root),
+        parameters.independent_test_manifest_path,
+        parameters.checkpoint_sha256,
+        parameters.tolerance_policy_path,
+        parameters.instance_iou_threshold,
+    )
+    _require_sha256(
+        parameters.checkpoint_sha256,
+        field="checkpoint_sha256",
+        path=parameters.independent_test_manifest_path,
+        expected=CHECKPOINT_SHA256,
     )
     if not parameters.analysis_output_root.is_dir() or not parameters.mask_dir.is_dir():
         raise ValueError("analysis-output-root and mask-dir must be existing directories")
-    located = locate_sample_inputs(parameters)
+    manifest_path, manifest_records = _load_independent_test_manifest(
+        parameters.independent_test_manifest_path
+    )
+    manifest_sha256 = _sha256(manifest_path)
+    policy = _load_agglomerated_tolerance_policy(
+        parameters.tolerance_policy_path,
+        manifest_sha256=manifest_sha256,
+        checkpoint_sha256=parameters.checkpoint_sha256,
+    )
+    _validate_manifest_files(manifest_path, manifest_records)
+    instance_iou_threshold = _resolved_instance_iou_threshold(
+        policy=policy,
+        explicit_threshold=parameters.instance_iou_threshold,
+    )
+    located = locate_sample_inputs(parameters, manifest_path, manifest_records)
     prepared: list[dict[str, Any]] = []
-    for filename in TEST_FILENAMES:
-        sample_id = Path(filename).stem
+    validated: list[dict[str, Any]] = []
+    for sample_id in sorted(manifest_records):
         inputs = located[sample_id]
         metadata = _load_json(inputs.metadata_path)
         image_sha256 = _require_sha256(
@@ -708,66 +1360,143 @@ def run_evaluation(parameters: EvaluationParameters) -> dict[str, Any]:
             inputs.execution_provenance_path,
             run_config=run_config,
         )
+        validated.append({"inputs": inputs, "run_config": run_config, "execution": execution})
+    evaluator_identity = _evaluator_identity([item["run_config"] for item in validated])
+    for validated_sample in validated:
+        inputs = validated_sample["inputs"]
+        run_config = validated_sample["run_config"]
+        execution = validated_sample["execution"]
         prediction = _load_foreground(
             inputs.prediction_path,
-            sample_id=sample_id,
+            sample_id=inputs.sample_id,
             kind="prediction",
             require_zero_bottom=True,
         )
-        truth = _load_foreground(inputs.truth_path, sample_id=sample_id, kind="truth")
-        metrics = compute_metrics(prediction, truth)
+        truth = _load_foreground(inputs.truth_path, sample_id=inputs.sample_id, kind="truth")
+        pixel_metrics = compute_metrics(prediction, truth)
         prediction_statistics = _scientific_statistics(
-            prediction, sample_id=sample_id, kind="prediction"
+            prediction, sample_id=inputs.sample_id, kind="prediction"
         )
-        truth_statistics = _scientific_statistics(truth, sample_id=sample_id, kind="ground-truth")
+        truth_statistics = _scientific_statistics(
+            truth, sample_id=inputs.sample_id, kind="ground-truth"
+        )
+        postprocess = PostprocessProfile.model_validate(run_config["resolved_postprocess"])
+        morphometry = MorphometryConfig.model_validate(run_config["resolved_morphometry"])
         prepared.append(
             {
                 "inputs": inputs,
                 "prediction": prediction,
                 "truth": truth,
-                "metrics": metrics,
+                "metrics": pixel_metrics,
                 "run_config": run_config,
                 "execution": execution,
                 "prediction_statistics": prediction_statistics,
                 "ground_truth_statistics": truth_statistics,
                 "statistical_errors": _statistical_errors(prediction_statistics, truth_statistics),
+                "postprocess": postprocess,
+                "morphometry": morphometry,
             }
         )
 
     parameters.output_root.mkdir(parents=True, exist_ok=False)
     per_image: list[dict[str, Any]] = []
+    all_failures: list[dict[str, Any]] = []
     for prepared_sample in prepared:
         inputs = prepared_sample["inputs"]
         prediction = prepared_sample["prediction"]
         truth = prepared_sample["truth"]
-        metrics = prepared_sample["metrics"]
+        pixel_metrics = prepared_sample["metrics"]
         run_config = prepared_sample["run_config"]
         execution = prepared_sample["execution"]
         review_path = parameters.output_root / f"{inputs.sample_id}_gt_pred_error.png"
         _write_review(review_path, truth=truth, prediction=prediction)
+        if instance_iou_threshold is None:
+            scientific_metrics: dict[str, Any] = {
+                "status": "NOT_EVALUATED",
+                "reason_code": "INSTANCE_IOU_THRESHOLD_NOT_PROVIDED",
+                "instance_matching": {
+                    "rule": "one_to_one_maximum_cardinality_mask_iou",
+                    "iou_threshold": None,
+                    "prediction_min_area_px": MIN_AREA_PX,
+                    "ground_truth_min_area_px": 0,
+                    "precision": None,
+                    "recall": None,
+                    "f1": None,
+                    "matches": [],
+                },
+            }
+            assessments = [
+                {
+                    "metric": "instance_metrics",
+                    "operator": None,
+                    "observed": None,
+                    "tolerance": None,
+                    "status": "NOT_EVALUATED",
+                    "reason_code": "INSTANCE_IOU_THRESHOLD_NOT_PROVIDED",
+                }
+            ]
+            failures: list[dict[str, Any]] = []
+        else:
+            scientific_metrics = compute_scientific_metrics(
+                prediction,
+                truth,
+                profile=prepared_sample["postprocess"],
+                morphometry=prepared_sample["morphometry"],
+                scale_nm_per_pixel=SCALE_NM_PER_PIXEL,
+                iou_threshold=instance_iou_threshold,
+                sample_id=inputs.sample_id,
+            )
+            assessments, failures = _metric_assessments(
+                scientific_metrics,
+                prepared_sample["statistical_errors"],
+                policy,
+            )
+        annotated_failures = [{"sample_id": inputs.sample_id, **failure} for failure in failures]
+        all_failures.extend(annotated_failures)
+        assessment_status = (
+            "NOT_EVALUATED"
+            if policy is None or not policy.approved
+            else ("FAIL" if failures else "PASS")
+        )
         per_image.append(
             {
                 "sample_id": inputs.sample_id,
                 "filename": inputs.filename,
-                "metrics": asdict(metrics),
+                "metrics": asdict(pixel_metrics),
                 "prediction_statistics": prepared_sample["prediction_statistics"],
                 "ground_truth_statistics": prepared_sample["ground_truth_statistics"],
                 "statistical_errors": prepared_sample["statistical_errors"],
+                "scientific_metrics": scientific_metrics,
+                "tolerance_assessment": {
+                    "status": assessment_status,
+                    "assessments": assessments,
+                    "failures": failures,
+                },
                 "input_provenance": {
-                    "prediction_path": str(inputs.prediction_path),
+                    "prediction_path": _analysis_reference(
+                        inputs.prediction_path, parameters.analysis_output_root
+                    ),
                     "prediction_sha256": _sha256(inputs.prediction_path),
-                    "truth_path": str(inputs.truth_path),
+                    "truth_path": inputs.truth_path.name,
                     "truth_sha256": _sha256(inputs.truth_path),
-                    "run_config_path": str(inputs.run_config_path),
+                    "run_config_path": _analysis_reference(
+                        inputs.run_config_path, parameters.analysis_output_root
+                    ),
                     "run_config_sha256": _sha256(inputs.run_config_path),
-                    "execution_provenance_path": str(inputs.execution_provenance_path),
+                    "execution_provenance_path": _analysis_reference(
+                        inputs.execution_provenance_path,
+                        parameters.analysis_output_root,
+                    ),
                     "execution_provenance_sha256": _sha256(inputs.execution_provenance_path),
-                    "image_metadata_path": str(inputs.metadata_path),
+                    "image_metadata_path": _analysis_reference(
+                        inputs.metadata_path, parameters.analysis_output_root
+                    ),
                     "image_metadata_sha256": _sha256(inputs.metadata_path),
                 },
                 "verified_frozen_configuration": {
                     "model_id": run_config["model_id"],
                     "model_version": run_config["model_version"],
+                    "checkpoint_sha256": parameters.checkpoint_sha256,
                     "weight_sha256": run_config["weight_sha256"],
                     "config_sha256": run_config["config_sha256"],
                     "model_card_sha256": run_config["model_card_sha256"],
@@ -783,24 +1512,38 @@ def run_evaluation(parameters: EvaluationParameters) -> dict[str, Any]:
                         "y2": IMAGE_HEIGHT,
                     },
                 },
-                "review_image": str(review_path),
+                "review_image": review_path.name,
             }
         )
-    metrics = [item["metrics"] for item in prepared]
-    macro = _macro(metrics)
-    micro = _micro(metrics)
+    all_pixel_metrics = [item["metrics"] for item in prepared]
+    macro = _macro(all_pixel_metrics)
+    micro = _micro(all_pixel_metrics)
     result = {
         "schema_version": "1",
         "created_at": datetime.now(UTC).isoformat(),
         "evaluation": "Agglomerated U-Net frozen independent test-set ground-truth evaluation",
+        "input_manifest": {
+            "filename": manifest_path.name,
+            "sha256": _sha256(manifest_path),
+            "split": "independent-test",
+            "sample_count": len(manifest_records),
+        },
         "model": {
             "model_id": MODEL_ID,
             "model_version": MODEL_VERSION,
+            "checkpoint_sha256": CHECKPOINT_SHA256,
+            "checkpoint_evidence_semantics": (
+                "declared SHA validated against the frozen identity and policy when provided; "
+                "checkpoint bytes were not accessed or re-hashed"
+            ),
             "weight_sha256": TORCHSCRIPT_SHA256,
             "config_sha256": CONFIG_SHA256,
             "model_card_sha256": MODEL_CARD_SHA256,
             "adapter_sha256": ADAPTER_SHA256,
+            "evaluator": evaluator_identity,
             "threshold_rule": "probability >= 0.25 (verified from prior run config)",
+            "threshold": THRESHOLD,
+            "threshold_comparison": "gte",
             "min_area_px": MIN_AREA_PX,
             "scale_nm_per_pixel": SCALE_NM_PER_PIXEL,
             "watershed_enabled": False,
@@ -826,9 +1569,45 @@ def run_evaluation(parameters: EvaluationParameters) -> dict[str, Any]:
             },
             "zero_denominator_convention": "metric equals 1.0 when its denominator is zero",
         },
+        "metric_definitions": {
+            "pixel_f1": "2 * TP / (2 * TP + FP + FN)",
+            "pixel_dice": "2 * TP / (2 * TP + FP + FN)",
+            "pixel_f1_equals_dice": True,
+            "instance_matching": "one-to-one maximum-cardinality mask-IoU matching",
+            "ground_truth_instance_min_area_px": 0,
+        },
+        "tolerance_policy": (
+            {
+                "status": "APPROVED" if policy.approved else "NOT_APPROVED",
+                "filename": policy.filename,
+                "sha256": policy.sha256,
+                "policy_id": policy.content["policy_id"],
+                "policy_version": policy.content["policy_version"],
+                "instance_iou_threshold": policy.instance_iou_threshold,
+                "approval_status": policy.content["approval"]["status"],
+                "approved_by": policy.content["approval"]["approved_by"],
+                "approved_at": policy.content["approval"]["approved_at"],
+                "metric_contracts": list(policy.metric_contracts),
+            }
+            if policy is not None
+            else {
+                "status": "NOT_PROVIDED",
+                "filename": None,
+                "sha256": None,
+                "policy_id": None,
+                "policy_version": None,
+                "instance_iou_threshold": instance_iou_threshold,
+            }
+        ),
         "per_image": per_image,
         "macro_average": macro,
         "micro_average": asdict(micro),
+        "overall_status": (
+            "NOT_EVALUATED"
+            if policy is None or not policy.approved
+            else ("FAIL" if all_failures else "PASS")
+        ),
+        "failures": all_failures,
         "macro_statistical_errors": _macro_statistical_errors(per_image),
         "statistical_evaluation": {
             "object_definition": "whole agglomerate",
@@ -856,7 +1635,10 @@ def run_evaluation(parameters: EvaluationParameters) -> dict[str, Any]:
                 "to tune threshold, min_area_px, or any other parameter."
             ),
             "No training or validation images or masks were read, and no inference was performed.",
-            ("YCu-1/2/3 are independent fields of view, not sample-level independent materials."),
+            (
+                "The evaluated sample set is selected exclusively by the SHA-bound "
+                "independent-test manifest."
+            ),
             "The scientific object is each whole agglomerate, not internal primary particles.",
         ],
     }
@@ -867,17 +1649,59 @@ def run_evaluation(parameters: EvaluationParameters) -> dict[str, Any]:
     )
     _write_csv(parameters.output_root / "metrics.csv", per_image, macro, micro)
     _write_statistics_csv(parameters.output_root / "statistics.csv", per_image)
+    _write_failure_cases_csv(
+        parameters.output_root / "failure-cases.csv",
+        all_failures,
+    )
+    _write_evidence_manifest(
+        parameters.output_root / "evidence-manifest.json",
+        result=result,
+        manifest_path=manifest_path,
+        manifest_records=manifest_records,
+        located=located,
+        analysis_root=parameters.analysis_output_root,
+        policy=policy,
+        evaluator_identity=evaluator_identity,
+    )
     return result
 
 
+def _redact_cli_paths(message: str, namespace: argparse.Namespace | None) -> str:
+    if namespace is None:
+        return message
+    redacted = message
+    for field, placeholder in (
+        ("analysis_output_root", "<analysis-output-root>"),
+        ("mask_dir", "<mask-dir>"),
+        ("independent_test_manifest", "<independent-test-manifest>"),
+        ("output_root", "<output-root>"),
+        ("tolerance_policy", "<tolerance-policy>"),
+    ):
+        value = getattr(namespace, field, None)
+        if not isinstance(value, Path):
+            continue
+        for representation in {
+            str(value),
+            str(value.expanduser().resolve(strict=False)),
+        }:
+            redacted = redacted.replace(representation, placeholder)
+    return redacted
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    namespace: argparse.Namespace | None = None
     try:
-        parameters = _validated_parameters(build_parser().parse_args(argv))
+        namespace = build_parser().parse_args(argv)
+        parameters = _validated_parameters(namespace)
         result = run_evaluation(parameters)
     except Exception as error:
         print(
             json.dumps(
-                {"status": "error", "error_type": type(error).__name__, "message": str(error)},
+                {
+                    "status": "error",
+                    "error_type": type(error).__name__,
+                    "message": _redact_cli_paths(str(error), namespace),
+                },
                 ensure_ascii=False,
                 indent=2,
             ),

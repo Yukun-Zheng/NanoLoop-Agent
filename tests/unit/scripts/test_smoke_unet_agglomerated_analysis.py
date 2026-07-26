@@ -4,10 +4,12 @@ import argparse
 import hashlib
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
 import pytest
+import yaml
 from PIL import Image
 
 from app.contracts.enums import (
@@ -381,3 +383,68 @@ def test_preflight_private_registry_must_not_claim_ready(tmp_path: Path) -> None
 
     with pytest.raises(ValueError, match="remain unavailable before the smoke"):
         _ready_smoke_registry_entry(registry)
+
+
+def test_ready_registry_exports_computed_adapter_source_digest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository_root = tmp_path / "repository"
+    config_path = repository_root / "model_artifacts/configs/unet-agglomerated-specialized-v1.yaml"
+    model_card_path = (
+        repository_root / "model_artifacts/model_cards/unet-agglomerated-specialized-v1.md"
+    )
+    adapter_path = repository_root / "app/inference/adapters/unet.py"
+    for path, content in (
+        (config_path, b"config"),
+        (model_card_path, b"model card"),
+        (adapter_path, b"adapter source"),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    weight_path = tmp_path / "weights.pt"
+    weight_path.write_bytes(b"torchscript")
+    adapter_sha256 = hashlib.sha256(adapter_path.read_bytes()).hexdigest()
+    registration = SimpleNamespace(
+        metadata=SimpleNamespace(status=ModelStatus.UNAVAILABLE),
+        weight_path=weight_path,
+        weight_sha256=hashlib.sha256(weight_path.read_bytes()).hexdigest(),
+        config_path=config_path,
+        config={"calibrated_analysis": {}},
+        config_sha256=hashlib.sha256(config_path.read_bytes()).hexdigest(),
+        model_card_path=model_card_path,
+        model_card_sha256=hashlib.sha256(model_card_path.read_bytes()).hexdigest(),
+        adapter_source_path=adapter_path,
+        adapter_sha256=adapter_sha256,
+    )
+
+    class FakeRegistry:
+        registry_error = None
+
+        @staticmethod
+        def get_registration(_model_id: str) -> Any:
+            return registration
+
+    registry_path = tmp_path / "private-preflight.yaml"
+    registry_path.write_text(
+        yaml.safe_dump(
+            {
+                "models": [
+                    {
+                        "metadata": {"model_id": MODEL_ID, "status": "unavailable"},
+                        "adapter_path": "app.inference.adapters.unet:UNetAdapter",
+                    }
+                ]
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(smoke, "ModelRegistryService", lambda _path: FakeRegistry())
+    monkeypatch.setattr(smoke, "_repository_root", lambda: repository_root)
+    monkeypatch.setattr(smoke, "TORCHSCRIPT_SHA256", registration.weight_sha256)
+    monkeypatch.setattr(smoke, "load_calibrated_analysis", lambda *_args: None)
+
+    ready_entry = _ready_smoke_registry_entry(registry_path)
+
+    assert ready_entry["adapter_sha256"] == adapter_sha256

@@ -746,6 +746,16 @@ class ModelRegistryService:
                     errors.append(
                         f"adapter implementation cannot be frozen: {type(exc).__name__}: {exc}"
                     )
+        declared_adapter_sha_raw = entry.get("adapter_sha256")
+        if declared_adapter_sha_raw is not None:
+            declared_adapter_sha = str(declared_adapter_sha_raw).lower()
+            if not _SHA256_RE.fullmatch(declared_adapter_sha):
+                errors.append("adapter_sha256 must be 64 lowercase hexadecimal characters")
+            elif adapter_sha256 != declared_adapter_sha:
+                errors.append(
+                    "adapter sha256 mismatch: "
+                    f"expected {declared_adapter_sha}, observed {adapter_sha256}"
+                )
 
         weight_path = self._resolve_path(
             self._read_string(entry, "weight_path", "weights", "weights_path") or ""

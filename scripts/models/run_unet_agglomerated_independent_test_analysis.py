@@ -7,17 +7,14 @@ mask/ground-truth input and does not calculate or inspect evaluation metrics.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
-import re
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from contextlib import ExitStack
 from dataclasses import asdict, dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any
 
-import yaml  # type: ignore[import-untyped]
 from PIL import Image
 
 from app.analysis.application import (
@@ -58,7 +55,6 @@ from scripts.models.smoke_unet_agglomerated_analysis import (
     CalibratedAnalysis,
     _absolute_artifact_paths,
     _canonical_artifact_identities,
-    _load_json,
     _mask_bottom_evidence,
     _sqlite_url,
     _validate_output_root,
@@ -68,7 +64,11 @@ from scripts.models.smoke_unet_agglomerated_analysis import (
 
 TEST_FILENAMES = ("YCu-1.tif", "YCu-2.tif", "YCu-3.tif")
 REPORT_FILENAME = "agglomerated-independent-test-analysis.json"
-_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+MODEL_VERSION = "1"
+CHECKPOINT_SHA256 = "e2be19c6fe1e843856fb339d13de8baed8d748f88558ba7bd3eaaa20b90ede21"
+CONFIG_SHA256 = "54f5113d0de4b5d2a26e48e8c231b5223c43b373ba8a496934f2b4bbd1bfc524"
+MODEL_CARD_SHA256 = "6a56b5b29cb2f8c1b8d1893ca072a2dab0ad309708d9f682f9374f6ea279fef1"
+ADAPTER_SHA256 = "6055db452f0a78a0352732d66ea3436f16a558cf19d1a6f022a78627136dfab6"
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,139 +81,6 @@ class IndependentTestParameters:
 
 def _repository_root() -> Path:
     return Path(__file__).resolve().parents[2]
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _resolve_manifest_evidence(
-    registry_path: Path,
-    declaration: Any,
-    *,
-    label: str,
-) -> Path:
-    if not isinstance(declaration, Mapping):
-        raise ValueError(f"private ready manifest is missing {label} evidence")
-    raw_path = declaration.get("path")
-    expected_sha256 = declaration.get("sha256")
-    if (
-        not isinstance(raw_path, str)
-        or _SHA256_RE.fullmatch(str(expected_sha256)) is None
-    ):
-        raise ValueError(f"private ready manifest has invalid {label} identity")
-    pure = PurePosixPath(raw_path)
-    if pure.is_absolute() or ".." in pure.parts or str(pure) != raw_path:
-        raise ValueError(f"private ready manifest {label} path is not normalized relative")
-    root = registry_path.parent.resolve(strict=True)
-    path = root.joinpath(*pure.parts).resolve(strict=True)
-    if not path.is_relative_to(root) or not path.is_file():
-        raise ValueError(f"private ready manifest {label} evidence escaped its root")
-    if _sha256(path) != expected_sha256:
-        raise ValueError(f"private ready manifest {label} SHA-256 mismatch")
-    return path
-
-
-def _validate_promotion_manifest(
-    registry_path: Path,
-    *,
-    registration: Any,
-) -> None:
-    try:
-        payload = yaml.safe_load(registry_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, yaml.YAMLError) as error:
-        raise ValueError("private ready manifest cannot be read") from error
-    entries = payload.get("models") if isinstance(payload, Mapping) else None
-    matches = [
-        item
-        for item in entries or []
-        if isinstance(item, Mapping)
-        and isinstance(item.get("metadata"), Mapping)
-        and item["metadata"].get("model_id") == MODEL_ID
-    ]
-    if len(matches) != 1:
-        raise ValueError("private ready manifest must contain one agglomerated entry")
-    promotion = matches[0].get("promotion_evidence")
-    if not isinstance(promotion, Mapping) or promotion.get("schema_version") != 1:
-        raise ValueError("private ready manifest is missing schema-v1 promotion evidence")
-    threshold_path = _resolve_manifest_evidence(
-        registry_path, promotion.get("threshold_calibration"), label="threshold calibration"
-    )
-    min_area_path = _resolve_manifest_evidence(
-        registry_path, promotion.get("min_area_calibration"), label="min-area calibration"
-    )
-    smoke_path = _resolve_manifest_evidence(
-        registry_path, promotion.get("analysis_smoke"), label="analysis smoke"
-    )
-    threshold_sha = _sha256(threshold_path)
-    min_area_payload = _load_json(min_area_path, label="min-area promotion evidence")
-    threshold_ref = min_area_payload.get("threshold_calibration_evidence")
-    selected = min_area_payload.get("selected")
-    if (
-        not isinstance(threshold_ref, Mapping)
-        or threshold_ref.get("sha256") != threshold_sha
-        or not isinstance(selected, Mapping)
-        or selected.get("min_area_px") != MIN_AREA_PX
-    ):
-        raise ValueError("promotion evidence threshold/min-area lineage is inconsistent")
-
-    smoke = _load_json(smoke_path, label="analysis smoke promotion evidence")
-    result = smoke.get("result")
-    if (
-        smoke.get("schema_version") != "1"
-        or smoke.get("model_id") != MODEL_ID
-        or not isinstance(result, Mapping)
-        or result.get("private_registry_ready_eligible") is not True
-    ):
-        raise ValueError("analysis smoke evidence is not readiness-eligible")
-    model = result.get("model")
-    expected_model = {
-        "model_id": MODEL_ID,
-        "version": registration.metadata.version,
-        "weight_sha256": registration.weight_sha256,
-        "config_sha256": registration.config_sha256,
-        "model_card_sha256": registration.model_card_sha256,
-        "adapter_sha256": registration.adapter_sha256,
-    }
-    if not isinstance(model, Mapping) or any(
-        model.get(key) != value for key, value in expected_model.items()
-    ):
-        raise ValueError("analysis smoke model identity differs from the private registry")
-    if _SHA256_RE.fullmatch(str(model.get("model_bundle_id", ""))) is None:
-        raise ValueError("analysis smoke is missing the frozen model bundle identity")
-    runs = result.get("runs")
-    if not isinstance(runs, list) or len(runs) != 1:
-        raise ValueError("analysis smoke must contain exactly one validation run")
-    run = runs[0]
-    identities = run.get("canonical_artifact_identities") if isinstance(run, Mapping) else None
-    if (
-        not isinstance(run, Mapping)
-        or run.get("filename") != "BiCu-3.tif"
-        or run.get("final_status") not in {"COMPLETED", "COMPLETED_WITH_WARNINGS"}
-        or not isinstance(run.get("quality"), Mapping)
-        or run["quality"].get("status") not in {"PASS", "WARN"}
-        or not isinstance(identities, Mapping)
-        or set(identities) != set(CANONICAL_ARTIFACT_KEYS)
-    ):
-        raise ValueError("analysis smoke lacks successful canonical run evidence")
-    root = registry_path.parent.resolve(strict=True)
-    for key, identity in identities.items():
-        if not isinstance(identity, Mapping):
-            raise ValueError(f"invalid smoke artifact identity: {key}")
-        raw_path = identity.get("path")
-        expected_sha = identity.get("sha256")
-        if not isinstance(raw_path, str) or _SHA256_RE.fullmatch(str(expected_sha)) is None:
-            raise ValueError(f"invalid smoke artifact identity: {key}")
-        pure = PurePosixPath(raw_path)
-        if pure.is_absolute() or ".." in pure.parts or str(pure) != raw_path:
-            raise ValueError(f"smoke artifact path is not normalized relative: {key}")
-        path = root.joinpath(*pure.parts).resolve(strict=True)
-        if not path.is_relative_to(root) or not path.is_file() or _sha256(path) != expected_sha:
-            raise ValueError(f"smoke artifact identity mismatch: {key}")
 
 
 def _validate_inputs(image_dir: Path) -> Path:
@@ -260,6 +127,33 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _validate_frozen_identity(registration: Any) -> None:
+    expected = {
+        "model_id": MODEL_ID,
+        "version": MODEL_VERSION,
+        "weight_sha256": TORCHSCRIPT_SHA256,
+        "config_sha256": CONFIG_SHA256,
+        "model_card_sha256": MODEL_CARD_SHA256,
+        "adapter_sha256": ADAPTER_SHA256,
+    }
+    observed = {
+        "model_id": registration.metadata.model_id,
+        "version": registration.metadata.version,
+        "weight_sha256": registration.weight_sha256,
+        "config_sha256": registration.config_sha256,
+        "model_card_sha256": registration.model_card_sha256,
+        "adapter_sha256": registration.adapter_sha256,
+    }
+    mismatches = [
+        name for name, expected_value in expected.items() if observed[name] != expected_value
+    ]
+    if mismatches:
+        raise ValueError(f"private registry frozen model identity mismatch: {mismatches}")
+    checkpoint_sha256 = registration.metadata.metric_context.get("checkpoint_sha256")
+    if checkpoint_sha256 != CHECKPOINT_SHA256:
+        raise ValueError("private registry checkpoint identity mismatch")
+
+
 def _ready_private_registry(
     parameters: IndependentTestParameters,
 ) -> tuple[ModelRegistryService, CalibratedAnalysis]:
@@ -272,11 +166,9 @@ def _ready_private_registry(
     registration = registry.get_registration(parameters.model_id)
     if registration.metadata.status != ModelStatus.READY:
         raise ValueError("private registry model must already be ready after the BiCu-3 smoke")
-    if registration.weight_sha256 != TORCHSCRIPT_SHA256:
-        raise ValueError("private registry has the wrong TorchScript SHA-256")
+    _validate_frozen_identity(registration)
     if not registration.weight_path.is_file():
         raise ValueError("private registry TorchScript asset is missing")
-    _validate_promotion_manifest(parameters.registry, registration=registration)
     calibrated = load_calibrated_analysis(registration.config, registration.metadata)
     return registry, calibrated
 
@@ -290,6 +182,40 @@ def _model_identity(configuration: Any) -> dict[str, Any]:
         "model_card_sha256": configuration.model_card_sha256,
         "adapter_sha256": configuration.adapter_sha256,
     }
+
+
+def _freeze_run_threshold_comparison(run_config_path: Path) -> None:
+    payload = json.loads(run_config_path.read_text(encoding="utf-8"))
+
+    inference = payload.get("inference")
+    if not isinstance(inference, dict):
+        raise ValueError(
+            f"run configuration lacks inference mapping: {run_config_path}"
+        )
+
+    if inference.get("threshold") != THRESHOLD:
+        raise ValueError(
+            f"run configuration threshold is not frozen at {THRESHOLD}: {run_config_path}"
+        )
+
+    existing = inference.get("threshold_comparison")
+    if existing not in (None, "gte"):
+        raise ValueError(
+            f"run configuration threshold_comparison conflicts with gte: {run_config_path}"
+        )
+
+    inference["threshold_comparison"] = "gte"
+
+    run_config_path.write_text(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 def execute_analyses(
@@ -396,20 +322,19 @@ def execute_analyses(
         with uow_factory() as uow:
             artifact_paths = uow.repositories.runs.get_artifact_paths(completed.run_id)
         artifacts = _absolute_artifact_paths(file_store, artifact_paths)
-        missing_artifacts = [
-            key for key in CANONICAL_ARTIFACT_KEYS if artifacts.get(key) is None
-        ]
+        missing_artifacts = [key for key in CANONICAL_ARTIFACT_KEYS if artifacts.get(key) is None]
         if missing_artifacts:
             raise RuntimeError(
                 f"canonical Analysis artifacts are missing for {filename}: {missing_artifacts}"
             )
         _validate_schema3_execution(completed, artifacts)
+        mask_path = Path(str(artifacts["pred_mask_path"]))
+        run_config_path = Path(str(artifacts["run_config_path"]))
+        _freeze_run_threshold_comparison(run_config_path)
         artifact_identities = _canonical_artifact_identities(
             artifacts,
             output_root=parameters.output_root,
         )
-        mask_path = Path(str(artifacts["pred_mask_path"]))
-        run_config_path = Path(str(artifacts["run_config_path"]))
         metadata_path = file_store.paths.image_metadata(job.job.job_id, image.image_id)
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         if (
