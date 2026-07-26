@@ -231,3 +231,12 @@ class StoragePaths:
         if Path(safe_name).suffix.lower() != ".zip":
             raise StoragePathError("export filename must use the .zip suffix")
         return self.export_dir(job_id) / safe_name
+
+    def report_dir(self, job_id: str) -> Path:
+        return self.job_dir(job_id) / "reports"
+
+    def report_file(self, job_id: str, filename: str) -> Path:
+        safe_name = _validate_filename(filename)
+        if Path(safe_name).suffix.lower() not in {".docx", ".pdf"}:
+            raise StoragePathError("report filename must use the .docx or .pdf suffix")
+        return self.report_dir(job_id) / safe_name

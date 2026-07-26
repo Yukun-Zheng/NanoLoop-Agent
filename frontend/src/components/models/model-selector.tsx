@@ -45,6 +45,7 @@ export function isModelSelectable(model: ModelMetadata) {
 
 export function ModelSelector({
   jobId,
+  images,
   image,
   boxSet,
   catalog,
@@ -52,6 +53,7 @@ export function ModelSelector({
   onRunsCreated
 }: {
   jobId: string;
+  images?: ImageAsset[];
   image: ImageAsset | null;
   boxSet: BoxSet | null;
   catalog: ModelList;
@@ -60,23 +62,39 @@ export function ModelSelector({
 }) {
   const queryClient = useQueryClient();
   const catalogModels = catalog.models ?? [];
+  const availableImages = images?.length ? images : image ? [image] : [];
+  const batchAvailable = availableImages.length > 1;
+  const activeRoiCount = (boxSet?.boxes ?? []).filter((box) => box.active).length;
+  const initialRoiMode: "full_image" | "boxes" =
+    !batchAvailable && activeRoiCount > 0 ? "boxes" : "full_image";
   const [selected, setSelected] = useState<string[]>(() => {
     const firstReady = catalogModels.find((model) => isModelSelectable(model));
     return firstReady ? [firstReady.model_id] : [];
   });
-  const [roiMode, setRoiMode] = useState<"full_image" | "boxes">("full_image");
+  const [imageScope, setImageScope] = useState<"current" | "all">(
+    batchAvailable ? "all" : "current"
+  );
+  const [roiMode, setRoiMode] = useState<"full_image" | "boxes">(initialRoiMode);
   const [prefer, setPrefer] = useState<"speed" | "balance" | "accuracy">("accuracy");
   const [threshold, setThreshold] = useState("");
   const [minArea, setMinArea] = useState("");
   const [device, setDevice] = useState<"auto" | "cpu" | "cuda" | "mps">("auto");
   const [watershed, setWatershed] = useState(false);
   const [excludeBorder, setExcludeBorder] = useState(true);
+  const selectedImages =
+    imageScope === "all" && batchAvailable
+      ? availableImages
+      : image
+        ? [image]
+        : [];
+  const batchMode = selectedImages.length > 1;
 
   const recommendation = useMutation({
     mutationFn: () => {
-      if (!image) throw new Error("请先选择图像");
+      const recommendationImage = image || selectedImages[0];
+      if (!recommendationImage) throw new Error("请先选择图像");
       const payload: ModelRecommendationRequest = {
-        image_id: image.image_id,
+        image_id: recommendationImage.image_id,
         roi_mode: roiMode,
         target_profile: "general",
         prefer,
@@ -117,9 +135,9 @@ export function ModelSelector({
         return !selectedModel || !isModelSelectable(selectedModel);
       });
       if (invalidSelection) {
-        throw new Error(`模型 ${invalidSelection} 当前不可用或未通过健康检查`);
+        throw new Error(`模型 ${invalidSelection} 当前未通过运行健康检查`);
       }
-      if (roiMode === "boxes" && (!boxSet || !(boxSet.boxes ?? []).length)) {
+      if (roiMode === "boxes" && activeRoiCount === 0) {
         throw new Error("选框模式需要先保存至少一个 ROI");
       }
       const inference: Record<string, unknown> = {
@@ -133,7 +151,7 @@ export function ModelSelector({
       return apiRequest<CreateRunsData>(`analyses/${encodeURIComponent(jobId)}/runs`, {
         method: "POST",
         body: {
-          image_ids: [image.image_id],
+          image_ids: selectedImages.map((item) => item.image_id),
           model_ids: selected,
           roi_mode: roiMode,
           ...(roiMode === "boxes" && boxSet
@@ -159,17 +177,37 @@ export function ModelSelector({
     );
   }
 
+  function changeRoiMode(nextMode: "full_image" | "boxes") {
+    setRoiMode(nextMode);
+    setSelected((current) => {
+      const compatible = current.filter((modelId) => {
+        const model = catalogModels.find((candidate) => candidate.model_id === modelId);
+        return Boolean(model && isModelSelectable(model));
+      });
+      if (compatible.length) return compatible;
+      const fallback = catalogModels.find((model) => isModelSelectable(model));
+      return fallback ? [fallback.model_id] : [];
+    });
+  }
+
+  function changeImageScope(nextScope: "current" | "all") {
+    setImageScope(nextScope);
+    if (nextScope === "all") {
+      setRoiMode("full_image");
+    }
+  }
+
   const readyCount = catalogModels.filter(
     (model) => model.status === "ready" && !model.health_error
   ).length;
   const parameterError = runParameterError(threshold, minArea);
   const roiError =
-    roiMode === "boxes" && (!boxSet || !(boxSet.boxes ?? []).length)
+    roiMode === "boxes" && activeRoiCount === 0
       ? "选框模式需要先到 ROI 页面保存至少一个区域"
       : null;
   const configurationError =
     writeBlocker ||
-    (!image ? "请先选择图像" : null) ||
+    (!selectedImages.length ? "请先选择图像" : null) ||
     (!selected.length ? "请选择至少一个就绪模型" : null) ||
     roiError ||
     parameterError;
@@ -179,16 +217,27 @@ export function ModelSelector({
       : selected.length > 1
         ? `${selected.length} 个模型并行对比`
         : "尚未选择模型";
+  const runCount = selectedImages.length * selected.length;
 
   return (
     <div className="model-selector">
       <section className="guided-run-card">
         <div>
-          <span>推荐的简单流程</span>
-          <h2>直接开始分割</h2>
-          <p>已自动使用全图、一个可运行模型和模型默认参数；无需填写阈值或设备。</p>
+          <span>本次分析设置</span>
+          <h2>确认范围和模型后开始</h2>
+          <p>
+            分析范围与模型都直接显示在这里；只有阈值和执行设备收在下方可选设置中。
+          </p>
         </div>
         <dl>
+          <div>
+            <dt>图像范围</dt>
+            <dd>
+              {batchMode
+                ? `${selectedImages.length} 张批处理`
+                : selectedImages[0]?.filename || "尚未选择"}
+            </dd>
+          </div>
           <div>
             <dt>分析范围</dt>
             <dd>{roiMode === "full_image" ? "整张图像" : "已保存 ROI"}</dd>
@@ -202,6 +251,100 @@ export function ModelSelector({
             <dd>{parameterError ? "需要修正" : "默认值 / 自动设备"}</dd>
           </div>
         </dl>
+        <div className="analysis-scope-block">
+          <div className="analysis-step-heading">
+            <b>1</b>
+            <div>
+              <strong>选择图像范围</strong>
+              <span>
+                {batchAvailable
+                  ? `任务中有 ${availableImages.length} 张图，可自动批量创建并行运行。`
+                  : "单图任务会直接沿用当前图像，不增加额外操作。"}
+              </span>
+            </div>
+          </div>
+          <div className="analysis-scope-options" role="radiogroup" aria-label="图像范围">
+            <button
+              type="button"
+              role="radio"
+              aria-checked={imageScope === "current"}
+              className={imageScope === "current" ? "active" : undefined}
+              onClick={() => changeImageScope("current")}
+            >
+              <span className="scope-choice-check">
+                {imageScope === "current" ? <Check size={14} /> : null}
+              </span>
+              <strong>仅当前图像</strong>
+              <small>{image?.filename || "未选择图像"}</small>
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={imageScope === "all"}
+              className={imageScope === "all" ? "active" : undefined}
+              disabled={!batchAvailable}
+              onClick={() => changeImageScope("all")}
+            >
+              <span className="scope-choice-check">
+                {imageScope === "all" ? <Check size={14} /> : null}
+              </span>
+              <strong>全部图像批处理</strong>
+              <small>
+                {batchAvailable
+                  ? `${availableImages.length} 张图使用同一冻结模型与参数`
+                  : "当前任务只有一张图像"}
+              </small>
+            </button>
+          </div>
+        </div>
+        <div className="analysis-scope-block">
+          <div className="analysis-step-heading">
+            <b>2</b>
+            <div>
+              <strong>选择分析范围</strong>
+              <span>
+                {activeRoiCount
+                  ? `检测到上一步已保存 ${activeRoiCount} 个 ROI，已默认只分析这些区域。`
+                  : "没有已保存 ROI 时使用整张图像。"}
+              </span>
+            </div>
+          </div>
+          <div className="analysis-scope-options" role="radiogroup" aria-label="分析范围">
+            <button
+              type="button"
+              role="radio"
+              aria-checked={roiMode === "full_image"}
+              className={roiMode === "full_image" ? "active" : undefined}
+              onClick={() => changeRoiMode("full_image")}
+            >
+              <span className="scope-choice-check">
+                {roiMode === "full_image" ? <Check size={14} /> : null}
+              </span>
+              <strong>整张图像</strong>
+              <small>分割并统计整幅图中的颗粒</small>
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={roiMode === "boxes"}
+              className={roiMode === "boxes" ? "active" : undefined}
+              disabled={batchMode || !activeRoiCount}
+              onClick={() => changeRoiMode("boxes")}
+            >
+              <span className="scope-choice-check">
+                {roiMode === "boxes" ? <Check size={14} /> : null}
+              </span>
+              <strong>只分析已保存 ROI</strong>
+              <small>
+                {batchMode
+                  ? "批处理使用全图；如需 ROI，请切换为仅当前图像"
+                  : activeRoiCount
+                  ? `${activeRoiCount} 个区域；框外内容不会进入结果统计`
+                  : "先到上一步保存至少一个有效区域"}
+              </small>
+            </button>
+          </div>
+        </div>
         <div className="guided-run-action">
           {configurationError ? (
             <p className="inline-configuration-error" role="status">
@@ -219,8 +362,8 @@ export function ModelSelector({
             <Play size={16} />
             {createRuns.isPending
               ? "正在提交…"
-              : selected.length > 1
-                ? `并行运行 ${selected.length} 个模型`
+              : runCount > 1
+                ? `批量创建 ${runCount} 个运行`
                 : "开始分割"}
           </Button>
         </div>
@@ -241,53 +384,17 @@ export function ModelSelector({
         />
       ) : null}
 
-      <details className="advanced-settings">
-        <summary>
-          <Settings2 size={17} />
+      <section className="analysis-model-settings" aria-labelledby="model-selection-title">
+        <header className="analysis-model-settings-heading">
+          <b>3</b>
           <div>
-            <strong>高级设置</strong>
-            <span>ROI、多模型对比、阈值和执行设备</span>
+            <strong id="model-selection-title">选择分析模型</strong>
+            <span>点击模型卡片即可切换；需要比较差异时可同时选择，最多 3 个。</span>
           </div>
           <small>已选 {selected.length}/3</small>
-        </summary>
+        </header>
         <div className="advanced-settings-body">
           <div className="model-toolbar">
-            <div className="segmented-control" aria-label="ROI 模式">
-              <button
-                className={roiMode === "full_image" ? "active" : undefined}
-                onClick={() => {
-                  setRoiMode("full_image");
-                  setSelected((current) =>
-                    current.filter((modelId) => {
-                      const currentModel = catalogModels.find(
-                        (candidate) => candidate.model_id === modelId
-                      );
-                      return Boolean(
-                        currentModel && isModelSelectable(currentModel)
-                      );
-                    })
-                  );
-                }}
-              >
-                全图
-              </button>
-              <button
-                className={roiMode === "boxes" ? "active" : undefined}
-                onClick={() => {
-                  setRoiMode("boxes");
-                  setSelected((current) =>
-                    current.filter((modelId) => {
-                      const currentModel = catalogModels.find(
-                        (candidate) => candidate.model_id === modelId
-                      );
-                      return Boolean(currentModel && isModelSelectable(currentModel));
-                    })
-                  );
-                }}
-              >
-                已保存 ROI
-              </button>
-            </div>
             <label className="compact-select">
               <span>推荐偏好</span>
               <select
@@ -374,7 +481,9 @@ export function ModelSelector({
                     </p>
                   ) : (
                     <p className="model-note">
-                      {model.notes || "模型声明不代表跨材料科学性能承诺。"}
+                      {roiMode === "boxes" && !model.supports_box_prompt
+                        ? "支持 ROI 分析：模型完成推理后，系统只保留并统计选区内结果。"
+                        : model.notes || "模型声明不代表跨材料科学性能承诺。"}
                     </p>
                   )}
                 </article>
@@ -382,85 +491,99 @@ export function ModelSelector({
             })}
           </div>
 
-          <section className="run-parameters">
-            <div className="section-subheading">
-              <span>OPTIONAL OVERRIDES</span>
-              <h3>参数覆盖（留空即使用模型默认值）</h3>
-            </div>
-            <div className="parameter-grid">
-              <label className="field">
-                <span>threshold</span>
-                <input
-                  className="input"
-                  type="number"
-                  min="0"
-                  max="1"
-                  step="0.01"
-                  value={threshold}
-                  onChange={(event) => setThreshold(event.target.value)}
-                  placeholder="模型默认值"
-                />
-              </label>
-              <label className="field">
-                <span>min_area_px</span>
-                <input
-                  className="input"
-                  type="number"
-                  min="0"
-                  step="1"
-                  value={minArea}
-                  onChange={(event) => setMinArea(event.target.value)}
-                  placeholder="模型默认值"
-                />
-              </label>
-              <label className="field">
-                <span>执行设备</span>
-                <select
-                  className="select"
-                  value={device}
-                  onChange={(event) => setDevice(event.target.value as typeof device)}
+          <details className="optional-run-settings">
+            <summary>
+              <Settings2 size={17} />
+              <div>
+                <strong>阈值与运行参数（可选）</strong>
+                <span>通常无需修改；留空会使用模型默认值，设备会自动选择。</span>
+              </div>
+              <small>
+                {threshold || minArea || device !== "auto" ? "已有自定义" : "使用默认"}
+              </small>
+            </summary>
+            <section className="run-parameters">
+              <div className="section-subheading">
+                <span>OPTIONAL OVERRIDES</span>
+                <h3>参数覆盖（留空即使用模型默认值）</h3>
+              </div>
+              <div className="parameter-grid">
+                <label className="field">
+                  <span>置信度阈值</span>
+                  <input
+                    className="input"
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={threshold}
+                    onChange={(event) => setThreshold(event.target.value)}
+                    placeholder="模型默认值"
+                  />
+                </label>
+                <label className="field">
+                  <span>最小颗粒面积（px）</span>
+                  <input
+                    className="input"
+                    type="number"
+                    min="0"
+                    step="1"
+                    value={minArea}
+                    onChange={(event) => setMinArea(event.target.value)}
+                    placeholder="模型默认值"
+                  />
+                </label>
+                <label className="field">
+                  <span>执行设备</span>
+                  <select
+                    className="select"
+                    value={device}
+                    onChange={(event) => setDevice(event.target.value as typeof device)}
+                  >
+                    <option value="auto">自动（推荐）</option>
+                    <option value="cpu">CPU</option>
+                    <option value="cuda">CUDA</option>
+                    <option value="mps">MPS</option>
+                  </select>
+                </label>
+                <label className="toggle-field">
+                  <input
+                    type="checkbox"
+                    checked={watershed}
+                    onChange={(event) => setWatershed(event.target.checked)}
+                  />
+                  <span>启用 watershed</span>
+                </label>
+                <label className="toggle-field">
+                  <input
+                    type="checkbox"
+                    checked={excludeBorder}
+                    onChange={(event) => setExcludeBorder(event.target.checked)}
+                  />
+                  <span>排除边界颗粒</span>
+                </label>
+              </div>
+              {parameterError || roiError ? (
+                <p className="form-warning" role="status">
+                  {parameterError || roiError}
+                </p>
+              ) : null}
+              <div className="run-submit">
+                <span>点击开始即确认保存本次不可变配置 · seed 42</span>
+                <Button
+                  tone="primary"
+                  onClick={() => createRuns.mutate()}
+                  disabled={Boolean(configurationError) || createRuns.isPending}
+                  title={configurationError || undefined}
                 >
-                  <option value="auto">自动（推荐）</option>
-                  <option value="cpu">CPU</option>
-                  <option value="cuda">CUDA</option>
-                  <option value="mps">MPS</option>
-                </select>
-              </label>
-              <label className="toggle-field">
-                <input
-                  type="checkbox"
-                  checked={watershed}
-                  onChange={(event) => setWatershed(event.target.checked)}
-                />
-                <span>启用 watershed</span>
-              </label>
-              <label className="toggle-field">
-                <input
-                  type="checkbox"
-                  checked={excludeBorder}
-                  onChange={(event) => setExcludeBorder(event.target.checked)}
-                />
-                <span>排除边界颗粒</span>
-              </label>
-            </div>
-            {parameterError || roiError ? (
-              <p className="form-warning" role="status">{parameterError || roiError}</p>
-            ) : null}
-            <div className="run-submit">
-              <span>点击开始即确认保存本次不可变配置 · seed 42</span>
-              <Button
-                tone="primary"
-                onClick={() => createRuns.mutate()}
-                disabled={Boolean(configurationError) || createRuns.isPending}
-                title={configurationError || undefined}
-              >
-                <Play size={16} />
-                {createRuns.isPending ? "正在提交…" : "使用以上设置开始"}
-              </Button>
-            </div>
-          </section>
+                  <Play size={16} />
+                  {createRuns.isPending ? "正在提交…" : "使用以上设置开始"}
+                </Button>
+              </div>
+            </section>
+          </details>
         </div>
-      </details>
+      </section>
       {createRuns.isError ? <RequestError error={createRuns.error} /> : null}
     </div>
   );

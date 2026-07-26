@@ -8,6 +8,7 @@ const rules: RouteRule[] = [
   { pattern: /^analyses$/, methods: new Set(["POST"]) },
   { pattern: /^analyses\/[^/]+$/, methods: new Set(["GET"]) },
   { pattern: /^analyses\/[^/]+\/export$/, methods: new Set(["GET"]) },
+  { pattern: /^analyses\/[^/]+\/report$/, methods: new Set(["POST"]) },
   {
     pattern: /^analyses\/[^/]+\/images\/[^/]+\/boxes$/,
     methods: new Set(["GET", "PUT"])

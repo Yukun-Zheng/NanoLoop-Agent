@@ -159,6 +159,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/analyses/{job_id}/report": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Generate Scientific Report */
+        post: operations["generateScientificReport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/analyses/{job_id}/runs": {
         parameters: {
             query?: never;
@@ -548,6 +565,14 @@ export interface components {
             request_id: string;
             status: components["schemas"]["ApiStatus"];
         };
+        /** ApiResponse[ScientificReportData] */
+        ApiResponse_ScientificReportData_: {
+            data?: components["schemas"]["ScientificReportData"] | null;
+            error?: components["schemas"]["ApiErrorPayload"] | null;
+            /** Request Id */
+            request_id: string;
+            status: components["schemas"]["ApiStatus"];
+        };
         /** ApiResponse[SegmentationRunDTO] */
         ApiResponse_SegmentationRunDTO_: {
             data?: components["schemas"]["SegmentationRunDTO"] | null;
@@ -580,6 +605,74 @@ export interface components {
          * @enum {string}
          */
         ApiStatus: "success" | "accepted" | "error";
+        /** BatchMetricDistributionDTO */
+        BatchMetricDistributionDTO: {
+            /** Coefficient Of Variation */
+            coefficient_of_variation?: number | null;
+            /** Key */
+            key: string;
+            /** Label */
+            label: string;
+            /** Maximum */
+            maximum: number;
+            /** Mean */
+            mean: number;
+            /** Median */
+            median: number;
+            /** Minimum */
+            minimum: number;
+            /** Q1 */
+            q1: number;
+            /** Q3 */
+            q3: number;
+            /** Sample Count */
+            sample_count: number;
+            /** Std Dev */
+            std_dev: number;
+            /** Unit */
+            unit: string;
+        };
+        /** BatchOutlierDTO */
+        BatchOutlierDTO: {
+            /**
+             * Direction
+             * @enum {string}
+             */
+            direction: "low" | "high";
+            /** Image Id */
+            image_id: string;
+            /** Metric Key */
+            metric_key: string;
+            /** Metric Label */
+            metric_label: string;
+            /** Run Id */
+            run_id: string;
+            /** Unit */
+            unit: string;
+            /** Value */
+            value: number;
+        };
+        /** BatchResultSummaryDTO */
+        BatchResultSummaryDTO: {
+            /** Distributions */
+            distributions: components["schemas"]["BatchMetricDistributionDTO"][];
+            /** Image Count */
+            image_count: number;
+            /** Model Count */
+            model_count: number;
+            /** Outliers */
+            outliers?: components["schemas"]["BatchOutlierDTO"][];
+            /** Quality Pass Count */
+            quality_pass_count: number;
+            /** Quality Review Count */
+            quality_review_count: number;
+            /** Quality Warning Count */
+            quality_warning_count: number;
+            /** Run Count */
+            run_count: number;
+            /** Total Particle Count */
+            total_particle_count: number;
+        };
         /** Body_createAnalysis */
         Body_createAnalysis: {
             /** Files */
@@ -684,6 +777,8 @@ export interface components {
             source_type?: string | null;
             /** Title */
             title: string;
+            /** Url */
+            url?: string | null;
         };
         /** ConversationDetailDTO */
         ConversationDetailDTO: {
@@ -882,6 +977,7 @@ export interface components {
             database: components["schemas"]["HealthComponent"];
             llm_provider?: components["schemas"]["HealthComponent"];
             model_registry: components["schemas"]["HealthComponent"];
+            online_research?: components["schemas"]["HealthComponent"];
             rag_index: components["schemas"]["HealthComponent"];
             service: components["schemas"]["HealthComponent"];
             /** Version */
@@ -947,6 +1043,8 @@ export interface components {
             quality_status: components["schemas"]["QualityStatus"];
             /** Roi Area Px */
             roi_area_px: number;
+            /** Roi Area Um2 */
+            roi_area_um2?: number | null;
             /** Run Id */
             run_id: string;
         };
@@ -1424,6 +1522,116 @@ export interface components {
             /** Expected Revision */
             expected_revision: number;
         };
+        /** ReportArtifactData */
+        ReportArtifactData: {
+            /** Download Url */
+            download_url: string;
+            /** Filename */
+            filename: string;
+            /** Media Type */
+            media_type: string;
+            /** Sha256 */
+            sha256: string;
+            /** Size Bytes */
+            size_bytes: number;
+        };
+        /** ReportFindingDTO */
+        ReportFindingDTO: {
+            /** Evidence Ids */
+            evidence_ids?: string[];
+            /** Interpretation */
+            interpretation: string;
+            /**
+             * Severity
+             * @enum {string}
+             */
+            severity: "info" | "caution" | "review";
+            /** Source Run Ids */
+            source_run_ids?: string[];
+            /** Title */
+            title: string;
+        };
+        /** ReportMetricDTO */
+        ReportMetricDTO: {
+            /** Definition */
+            definition: string;
+            /** Display Value */
+            display_value: string;
+            /** Key */
+            key: string;
+            /** Label */
+            label: string;
+            /** Source Run Ids */
+            source_run_ids?: string[];
+            /** Unit */
+            unit?: string | null;
+        };
+        /** ReportProvenanceDTO */
+        ReportProvenanceDTO: {
+            /** Box Revision */
+            box_revision?: number | null;
+            /** Image Sha256 */
+            image_sha256?: string | null;
+            /** Min Area Px */
+            min_area_px: number;
+            /** Model Bundle Sha256 */
+            model_bundle_sha256?: string | null;
+            /** Model Id */
+            model_id: string;
+            /** Model Version */
+            model_version: string;
+            /** Roi Mode */
+            roi_mode: string;
+            /** Run Id */
+            run_id: string;
+            /** Scale Nm Per Pixel */
+            scale_nm_per_pixel?: number | null;
+            /** Threshold */
+            threshold?: number | null;
+        };
+        /** ReportRecommendationDTO */
+        ReportRecommendationDTO: {
+            /** Action */
+            action: string;
+            /** Priority */
+            priority: number;
+            /** Rationale */
+            rationale: string;
+            /** Source Run Ids */
+            source_run_ids?: string[];
+            /** Verification */
+            verification: string;
+        };
+        /** ReportRunSummaryDTO */
+        ReportRunSummaryDTO: {
+            /** Coverage */
+            coverage: string;
+            /** Filename */
+            filename?: string | null;
+            /** Image Id */
+            image_id: string;
+            /** Mean Equivalent Diameter */
+            mean_equivalent_diameter: string;
+            /** Model Id */
+            model_id: string;
+            /** Number Density */
+            number_density: string;
+            /** Particle Count */
+            particle_count: number;
+            /** Perimeter Density */
+            perimeter_density: string;
+            /** Quality Reasons */
+            quality_reasons?: string[];
+            quality_status: components["schemas"]["QualityStatus"];
+            /** Roi Area */
+            roi_area: string;
+            /** Run Id */
+            run_id: string;
+            /** Sample Id */
+            sample_id?: string | null;
+            /** Scale Nm Per Pixel */
+            scale_nm_per_pixel?: number | null;
+        };
         /** ReviewRunData */
         ReviewRunData: {
             /** Parent Run Id */
@@ -1439,6 +1647,7 @@ export interface components {
             exclude_border?: boolean | null;
             /** Min Area Px */
             min_area_px?: number | null;
+            scale_calibration?: components["schemas"]["ScaleBarCalibrationInput"] | null;
             /** Threshold */
             threshold?: number | null;
             /** Watershed Enabled */
@@ -1540,6 +1749,7 @@ export interface components {
              */
             roi_context_px: number;
             roi_mode: components["schemas"]["RoiMode"];
+            scale_calibration?: components["schemas"]["ScaleCalibrationProvenance"] | null;
             /** Scale Nm Per Pixel */
             scale_nm_per_pixel?: number | null;
             /**
@@ -1586,6 +1796,113 @@ export interface components {
             event_id: number;
             from_status?: components["schemas"]["JobStatus"] | null;
             to_status: components["schemas"]["JobStatus"];
+        };
+        /**
+         * ScaleBarCalibrationInput
+         * @description Human-reviewed physical calibration derived from a visible scale bar.
+         */
+        ScaleBarCalibrationInput: {
+            /** Label Text */
+            label_text?: string | null;
+            /**
+             * Method
+             * @default manual_scale_bar
+             * @constant
+             */
+            method: "manual_scale_bar";
+            /** Physical Length Nm */
+            physical_length_nm: number;
+            /** Pixel Length Px */
+            pixel_length_px: number;
+        };
+        /**
+         * ScaleCalibrationProvenance
+         * @description Frozen calibration evidence stored with an immutable run.
+         */
+        ScaleCalibrationProvenance: {
+            /** Label Text */
+            label_text?: string | null;
+            /**
+             * Method
+             * @default manual_scale_bar
+             * @constant
+             */
+            method: "manual_scale_bar";
+            /** Physical Length Nm */
+            physical_length_nm: number;
+            /** Pixel Length Px */
+            pixel_length_px: number;
+            /** Scale Nm Per Pixel */
+            scale_nm_per_pixel: number;
+        };
+        /** ScientificReportData */
+        ScientificReportData: {
+            /**
+             * Analysis Mode
+             * @enum {string}
+             */
+            analysis_mode: "single_image" | "batch";
+            batch_summary?: components["schemas"]["BatchResultSummaryDTO"] | null;
+            /** Data Evidence */
+            data_evidence: components["schemas"]["ToolEvidence"][];
+            docx: components["schemas"]["ReportArtifactData"];
+            /** Fallback Used */
+            fallback_used: boolean;
+            /** Findings */
+            findings: components["schemas"]["ReportFindingDTO"][];
+            /** Further Questions */
+            further_questions: string[];
+            /**
+             * Generated At
+             * Format: date-time
+             */
+            generated_at: string;
+            /** Headline Metrics */
+            headline_metrics: components["schemas"]["ReportMetricDTO"][];
+            /** Job Id */
+            job_id: string;
+            /** Knowledge Citations */
+            knowledge_citations: components["schemas"]["Citation"][];
+            /** Limitations */
+            limitations: string[];
+            /** Methodology */
+            methodology: string[];
+            pdf: components["schemas"]["ReportArtifactData"];
+            /** Provenance */
+            provenance: components["schemas"]["ReportProvenanceDTO"][];
+            quality_status: components["schemas"]["QualityStatus"];
+            /** Recommendations */
+            recommendations: components["schemas"]["ReportRecommendationDTO"][];
+            /** Report Id */
+            report_id: string;
+            /** Run Summaries */
+            run_summaries: components["schemas"]["ReportRunSummaryDTO"][];
+            /**
+             * Scale Status
+             * @enum {string}
+             */
+            scale_status: "physical" | "mixed" | "pixel_only";
+            /** Selected Run Ids */
+            selected_run_ids: string[];
+            /** Synthesis Model */
+            synthesis_model?: string | null;
+            /**
+             * Synthesis Provider
+             * @enum {string}
+             */
+            synthesis_provider: "local_llm" | "deterministic_fallback";
+            /** Technical Summary */
+            technical_summary: string;
+            /** Title */
+            title: string;
+        };
+        /**
+         * ScientificReportRequest
+         * @description Select the completed runs that define one report snapshot.
+         */
+        ScientificReportRequest: {
+            /** Run Ids */
+            run_ids: string[];
         };
         /** SegmentationRunDTO */
         SegmentationRunDTO: {
@@ -3238,6 +3555,140 @@ export interface operations {
             };
         };
     };
+    generateScientificReport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ScientificReportRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_ScientificReportData_"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description API key required or invalid */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Request forbidden by security policy */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Resource not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description State or revision conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Payload too large */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Unsupported media type */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Validation error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Rate limit exceeded */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Frozen route awaiting service integration */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Dependency unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+        };
+    };
     createRuns: {
         parameters: {
             query?: never;
@@ -3377,6 +3828,8 @@ export interface operations {
             query?: {
                 /** @description Return a browser-native PNG when the artifact is TIFF or a numeric NumPy array. */
                 preview?: boolean;
+                /** @description Render a browser-native PDF inline. Other artifact types remain attachments. */
+                inline?: boolean;
             };
             header?: never;
             path: {

@@ -488,6 +488,28 @@ def test_analysis_upload_is_persisted_and_immediately_downloadable(
     assert archive.status_code == 200
     assert archive.content.startswith(b"PK")
 
+    report_response = api_harness.client.post(
+        f"/api/v1/analyses/{payload['data']['job']['job_id']}/report",
+        json={"run_ids": [run_id]},
+    )
+    assert report_response.status_code == 200
+    report = report_response.json()["data"]
+    assert report["selected_run_ids"] == [run_id]
+    assert report["scale_status"] == "pixel_only"
+    assert report["headline_metrics"]
+    assert report["recommendations"]
+    docx = api_harness.client.get(report["docx"]["download_url"])
+    assert docx.status_code == 200
+    assert docx.content.startswith(b"PK")
+    assert docx.headers["content-disposition"].startswith("attachment;")
+    pdf = api_harness.client.get(
+        report["pdf"]["download_url"],
+        params={"inline": "1"},
+    )
+    assert pdf.status_code == 200
+    assert pdf.content.startswith(b"%PDF")
+    assert pdf.headers["content-disposition"].startswith("inline;")
+
     corrected_buffer = BytesIO()
     corrected = Image.new("L", (23, 19), color=0)
     for x in range(7, 13):

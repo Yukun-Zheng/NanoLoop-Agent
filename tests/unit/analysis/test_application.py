@@ -37,6 +37,7 @@ from app.contracts.analyses import (
     ReviewRunRequest,
     ROIBox,
     RunConfiguration,
+    ScaleBarCalibrationInput,
     ScaleInput,
 )
 from app.contracts.enums import (
@@ -799,10 +800,7 @@ def test_create_runs_applies_model_min_area_only_when_request_omits_it(
     assert run.inference.min_area_px == expected_min_area_px
     assert run.configuration.inference.min_area_px == expected_min_area_px
     assert run.configuration.resolved_postprocess is not None
-    assert (
-        run.configuration.resolved_postprocess.min_area_px
-        == expected_min_area_px
-    )
+    assert run.configuration.resolved_postprocess.min_area_px == expected_min_area_px
 
 
 def test_queued_run_executes_complete_bundle_after_config_and_card_sources_change(
@@ -1734,6 +1732,55 @@ def test_review_creates_immutable_child_run(application_harness: ApplicationHarn
     completed_child = service.execute_run(child_id)
     assert completed_child.quality is not None
     assert "foreground_ratio_too_low" not in completed_child.quality.reasons
+
+
+def test_review_freezes_scale_bar_calibration_and_emits_physical_metrics(
+    application_harness: ApplicationHarness,
+) -> None:
+    _, file_store, factory = application_harness
+    service = AnalysisApplicationService(
+        uow_factory=factory,
+        file_store=file_store,
+        inference_gateway=FakeGateway(),
+    )
+    parent_id = service.create_runs(
+        "job_1",
+        CreateRunsRequest(
+            image_ids=["img_1"],
+            model_ids=["unet-general-balanced-v1"],
+            roi_mode=RoiMode.FULL_IMAGE,
+        ),
+        principal=LEGACY_ADMIN,
+    )[0]
+    parent = service.execute_run(parent_id)
+
+    child_id = service.create_review_run(
+        parent_id,
+        ReviewRunRequest(
+            scale_calibration=ScaleBarCalibrationInput(
+                physical_length_nm=100,
+                pixel_length_px=184,
+                label_text="100 nm",
+            )
+        ),
+        principal=LEGACY_ADMIN,
+    )
+    calibrated = service.execute_run(child_id)
+
+    assert parent.configuration.scale_nm_per_pixel == 1.0
+    assert calibrated.configuration.scale_nm_per_pixel == pytest.approx(100 / 184)
+    assert calibrated.configuration.scale_calibration is not None
+    assert calibrated.configuration.scale_calibration.method == "manual_scale_bar"
+    assert calibrated.configuration.scale_calibration.label_text == "100 nm"
+    assert calibrated.configuration.scale_calibration.pixel_length_px == 184
+    assert calibrated.summary is not None
+    assert calibrated.summary.mean_equivalent_diameter_nm == pytest.approx(
+        calibrated.summary.mean_equivalent_diameter_px * (100 / 184)
+    )
+    assert calibrated.summary.number_density_um2 is not None
+    assert calibrated.summary.perimeter_density_um is not None
+    assert calibrated.quality is not None
+    assert "physical_scale_missing_pixel_metrics_only" not in calibrated.quality.reasons
 
 
 def test_review_rejects_changed_model_provenance(

@@ -5,7 +5,6 @@ import { useQuery } from "@tanstack/react-query";
 import {
   Activity,
   ArrowLeft,
-  Bot,
   BoxSelect,
   CheckCircle2,
   CircleDot,
@@ -23,7 +22,6 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { ConversationPanel } from "@/components/agent/conversation-panel";
 import { ModelSelector } from "@/components/models/model-selector";
 import { ProjectOverview } from "@/components/project/project-overview";
 import { ResultView } from "@/components/results/result-view";
@@ -73,8 +71,7 @@ const stages: Array<{ value: WorkspaceStage; label: string; icon: typeof FolderK
   { value: "roi", label: "局部区域（可跳过）", icon: BoxSelect },
   { value: "models", label: "开始分析", icon: Microscope },
   { value: "runs", label: "运行进度", icon: Activity },
-  { value: "results", label: "查看结果", icon: Layers3 },
-  { value: "agent", label: "科研助手", icon: Bot }
+  { value: "results", label: "查看结果", icon: Layers3 }
 ];
 
 const COMPARABLE_RUN_STATUSES = new Set(["COMPLETED", "COMPLETED_WITH_WARNINGS"]);
@@ -100,6 +97,7 @@ export function WorkspaceCommandCenter({
   const setSelectedRuns = useWorkspaceStore((state) => state.setSelectedRuns);
   const railCollapsed = useWorkspaceStore((state) => state.railCollapsed);
   const toggleRail = useWorkspaceStore((state) => state.toggleRail);
+  const inspectorCollapsed = useWorkspaceStore((state) => state.inspectorCollapsed);
   const [answer, setAnswer] = useState<UnifiedQueryResponse | null>(null);
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [autoRevealRunIds, setAutoRevealRunIds] = useState<string[]>(
@@ -121,6 +119,11 @@ export function WorkspaceCommandCenter({
       );
       if (!hasActive) return false;
       return typeof document !== "undefined" && document.hidden ? 5_000 : 1_500;
+    },
+    refetchOnWindowFocus(query) {
+      return (query.state.data?.runs ?? []).some(
+        (run) => !TERMINAL_RUN_STATUSES.has(run.status)
+      );
     }
   });
 
@@ -241,13 +244,9 @@ export function WorkspaceCommandCenter({
       setActiveRun(completed.run_id);
       setSelectedRuns(
         trackedRuns
-          .filter(
-            (run) =>
-              run.image_id === completed.image_id &&
-              COMPARABLE_RUN_STATUSES.has(run.status)
-          )
+          .filter((run) => COMPARABLE_RUN_STATUSES.has(run.status))
           .map((run) => run.run_id)
-          .slice(0, 3)
+          .slice(0, 20)
       );
       setStage(COMPARABLE_RUN_STATUSES.has(completed.status) ? "results" : "runs");
     }
@@ -291,7 +290,6 @@ export function WorkspaceCommandCenter({
   const comparisonRuns = runs.filter(
     (run) =>
       selectedRunIds.includes(run.run_id) &&
-      run.image_id === activeImage?.image_id &&
       COMPARABLE_RUN_STATUSES.has(run.status)
   );
   const writeBlocker = coreMutationBlocker(health.data, {
@@ -302,7 +300,7 @@ export function WorkspaceCommandCenter({
   function handleRunsCreated(runIds: string[]) {
     const first = runIds[0];
     if (first) setActiveRun(first);
-    setSelectedRuns(runIds.slice(0, 3));
+    setSelectedRuns(runIds.slice(0, 20));
     setAutoRevealRunIds(runIds);
     setStage("runs");
   }
@@ -313,11 +311,7 @@ export function WorkspaceCommandCenter({
       setSelectedRuns(selectedRunIds.filter((id) => id !== run.run_id));
       return;
     }
-    const sameImage = runs.filter(
-      (candidate) =>
-        selectedRunIds.includes(candidate.run_id) && candidate.image_id === run.image_id
-    );
-    setSelectedRuns([...sameImage.map((candidate) => candidate.run_id), run.run_id].slice(-3));
+    setSelectedRuns([...selectedRunIds, run.run_id].slice(-20));
   }
 
   return (
@@ -351,7 +345,13 @@ export function WorkspaceCommandCenter({
         </div>
       </header>
 
-      <div className={`workspace-grid${railCollapsed ? " rail-collapsed" : ""}`}>
+      <div
+        className={[
+          "workspace-grid",
+          railCollapsed ? "rail-collapsed" : "",
+          inspectorCollapsed ? "inspector-collapsed" : ""
+        ].filter(Boolean).join(" ")}
+      >
         <aside className="project-rail" aria-label="项目与任务">
           <div className="rail-heading">
             <span>PROJECT</span>
@@ -391,7 +391,6 @@ export function WorkspaceCommandCenter({
                     setActiveRun(
                       runs.find((run) => run.image_id === image.image_id)?.run_id ?? null
                     );
-                    setSelectedRuns([]);
                   }}
                   title={image.filename}
                   aria-label={`${image.filename}${image.sample_id ? ` · ${image.sample_id}` : ""}`}
@@ -409,7 +408,10 @@ export function WorkspaceCommandCenter({
           <div className="rail-section rail-runs">
             <div className="rail-section-title">
               <span>运行</span>
-              <small>{runs.length}</small>
+              <small>
+                {runs.length}
+                {selectedRunIds.length ? ` · 汇总 ${selectedRunIds.length}` : ""}
+              </small>
             </div>
             <div className="rail-list">
               {runs.map((run) => (
@@ -421,15 +423,6 @@ export function WorkspaceCommandCenter({
                     onClick={() => {
                       setActiveRun(run.run_id);
                       setActiveImage(run.image_id);
-                      setSelectedRuns(
-                        selectedRunIds.filter((runId) =>
-                          runs.some(
-                            (candidate) =>
-                              candidate.run_id === runId &&
-                              candidate.image_id === run.image_id
-                          )
-                        )
-                      );
                       setStage(TERMINAL_RUN_STATUSES.has(run.status) ? "results" : "runs");
                     }}
                     title={`${run.model_id} · ${run.status}`}
@@ -443,7 +436,7 @@ export function WorkspaceCommandCenter({
                   </button>
                   <input
                     type="checkbox"
-                    aria-label={`将 ${run.model_id} 加入比较`}
+                    aria-label={`将 ${run.model_id} 加入批量汇总`}
                     checked={selectedRunIds.includes(run.run_id)}
                     disabled={!COMPARABLE_RUN_STATUSES.has(run.status)}
                     onChange={() => toggleComparison(run)}
@@ -505,8 +498,8 @@ export function WorkspaceCommandCenter({
                         <li className="current">
                           <span>2</span>
                           <div>
-                            <strong>开始全图分割</strong>
-                            <p>系统已准备好模型和默认参数；ROI 与调参都可以跳过。</p>
+                            <strong>确认范围与模型</strong>
+                            <p>有已保存 ROI 时会默认只分析选区；也可以明确切回整张图像。</p>
                           </div>
                         </li>
                         <li>
@@ -564,6 +557,7 @@ export function WorkspaceCommandCenter({
                 <ModelSelector
                   key={`${jobId}:${activeImage?.image_id ?? "no-image"}:roi-${boxes.data?.revision ?? "none"}`}
                   jobId={jobId}
+                  images={images}
                   image={activeImage}
                   boxSet={boxes.data || null}
                   catalog={models.data}
@@ -618,25 +612,25 @@ export function WorkspaceCommandCenter({
               />
             ) : null}
 
-            {stage === "agent" ? (
-              <ConversationPanel
-                jobId={jobId}
-                image={activeImage}
-                runIds={composerRunIds}
-                health={health.data || null}
-                writeBlocker={writeBlocker}
-                onLatestAnswer={setAnswer}
-              />
-            ) : null}
           </div>
         </section>
 
         <ScientificInspector
-          health={health.data || null}
+          collapsible
+          jobId={jobId}
           image={activeImage}
+          runIds={composerRunIds}
+          writeBlocker={writeBlocker}
+          health={health.data || null}
           model={activeModel}
           run={activeRun}
           answer={answer}
+          onLatestAnswer={setAnswer}
+          onChildCreated={(runId) => {
+            setActiveRun(runId);
+            setAutoRevealRunIds([runId]);
+            setStage("runs");
+          }}
         />
 
         <Dialog.Root open={inspectorOpen} onOpenChange={setInspectorOpen}>
@@ -664,11 +658,21 @@ export function WorkspaceCommandCenter({
               </button>
               </Dialog.Close>
               <ScientificInspector
-                health={health.data || null}
+                jobId={jobId}
                 image={activeImage}
+                runIds={composerRunIds}
+                writeBlocker={writeBlocker}
+                health={health.data || null}
                 model={activeModel}
                 run={activeRun}
                 answer={answer}
+                onLatestAnswer={setAnswer}
+                onChildCreated={(runId) => {
+                  setActiveRun(runId);
+                  setAutoRevealRunIds([runId]);
+                  setStage("runs");
+                  setInspectorOpen(false);
+                }}
               />
             </Dialog.Content>
           </Dialog.Portal>
@@ -698,9 +702,9 @@ function stageDescription(
   const descriptions: Record<WorkspaceStage, string> = {
     project: "先确认图像，然后按页面中的主按钮继续；系统会告诉你下一页发生什么。",
     roi: `只有想分析局部区域时，才需要为 ${image || "当前图像"} 画框；普通全图分析请直接跳过。`,
-    models: "先查看本次分析摘要，再点“开始分割”；模型、阈值和设备都已有默认值。",
+    models: "分析范围与模型直接显示；确认后点“开始分割”，阈值和设备可保持默认。",
     runs: runDescription,
-    results: "默认显示识别叠加图，并明确区分原图、掩码和模型结果。",
+    results: "默认显示识别叠加图，并明确区分原图、掩码和模型结果；右侧可随时追问。",
     agent: "像和科研助理对话一样描述目标；Qwen 会连续理解上下文，并为实验结论自动调用可审计工具。"
   };
   return descriptions[stage];

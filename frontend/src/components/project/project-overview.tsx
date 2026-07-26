@@ -69,7 +69,9 @@ export function ProjectOverview({ detail }: { detail: JobDetail }) {
                 <span>尺度</span>
                 <strong>
                   {image.scale_nm_per_pixel
-                    ? `${formatNumber(image.scale_nm_per_pixel)} nm/px`
+                    ? `${formatNumber(image.scale_nm_per_pixel)} nm/px${
+                        image.scale_source === "sem_metadata" ? " · 仪器自动读取" : ""
+                      }`
                     : "仅像素"}
                 </strong>
               </div>

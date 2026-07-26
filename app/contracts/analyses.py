@@ -30,6 +30,29 @@ class ScaleInput(ContractModel):
         return self
 
 
+class ScaleBarCalibrationInput(ContractModel):
+    """Human-reviewed physical calibration derived from a visible scale bar."""
+
+    physical_length_nm: float = Field(gt=0)
+    pixel_length_px: float = Field(gt=0)
+    label_text: str | None = Field(default=None, min_length=1, max_length=120)
+    method: Literal["manual_scale_bar"] = "manual_scale_bar"
+
+
+class ScaleCalibrationProvenance(ScaleBarCalibrationInput):
+    """Frozen calibration evidence stored with an immutable run."""
+
+    scale_nm_per_pixel: float = Field(gt=0)
+
+    @model_validator(mode="after")
+    def validate_computed_scale(self) -> "ScaleCalibrationProvenance":
+        expected = self.physical_length_nm / self.pixel_length_px
+        tolerance = max(abs(expected) * 1e-9, 1e-12)
+        if abs(self.scale_nm_per_pixel - expected) > tolerance:
+            raise ValueError("scale_nm_per_pixel must equal physical_length_nm / pixel_length_px")
+        return self
+
+
 class ImageMetadataInput(ContractModel):
     filename: str = Field(min_length=1, max_length=255)
     sample_id: str = Field(min_length=1, max_length=120)
@@ -212,6 +235,7 @@ class RunConfiguration(ContractModel):
     scale_nm_per_pixel: float | None = Field(default=None, gt=0)
     scale_source: Literal["none", "manual", "sem_metadata"] = "none"
     sem_metadata: SemInstrumentMetadata | None = None
+    scale_calibration: ScaleCalibrationProvenance | None = None
     resolved_postprocess: PostprocessProfile | None = None
     resolved_morphometry: MorphometryConfig | None = None
     resolved_quality_gate: QualityGateConfig | None = None
@@ -259,9 +283,7 @@ class RunConfiguration(ContractModel):
                     and self.adapter_sha256 is not None
                     and self.model_bundle.adapter_sha256 != self.adapter_sha256
                 ):
-                    raise ValueError(
-                        "model_bundle adapter digest must match frozen adapter_sha256"
-                    )
+                    raise ValueError("model_bundle adapter digest must match frozen adapter_sha256")
             if self.schema_version not in {2, 3} or missing:
                 raise ValueError(
                     "complete run provenance requires schema_version=2/3 and all "
@@ -352,6 +374,7 @@ class ImageSummaryDTO(ContractModel):
     run_id: str
     particle_count: int = Field(ge=0)
     roi_area_px: int = Field(ge=0)
+    roi_area_um2: float | None = Field(default=None, ge=0)
     number_density_px2: float = Field(ge=0)
     number_density_um2: float | None = Field(default=None, ge=0)
     mean_equivalent_diameter_px: float | None = Field(default=None, ge=0)
@@ -423,6 +446,7 @@ class ReviewRunRequest(ContractModel):
     watershed_enabled: bool | None = None
     exclude_border: bool | None = None
     corrected_mask_token: str | None = None
+    scale_calibration: ScaleBarCalibrationInput | None = None
 
     @model_validator(mode="after")
     def validate_has_change(self) -> "ReviewRunRequest":

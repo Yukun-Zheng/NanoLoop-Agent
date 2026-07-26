@@ -364,4 +364,5 @@ def _citation_from_context(context: CitationContext) -> Citation:
         retrieval_score=context.chunk.retrieval_score,
         source_type=context.chunk.source_type,
         citation_text=context.chunk.citation_text,
+        url=context.chunk.source_url,
     )

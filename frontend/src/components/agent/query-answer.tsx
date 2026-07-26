@@ -58,7 +58,7 @@ export function QueryAnswer({
               label={
                 response.outcome_code === "INSUFFICIENT_EVIDENCE"
                   ? "证据不足"
-                  : `置信度 ${response.confidence}`
+                  : confidenceLabel(response.confidence)
               }
             />
           </div>
@@ -96,7 +96,7 @@ export function QueryAnswer({
       <section className="evidence-section">
         <div className="evidence-title">
           <BookMarked size={17} />
-          <h4>材料知识证据</h4>
+          <h4>知识库、文献与网页证据</h4>
         </div>
         {citations.length ? (
           <div className="citation-list">
@@ -119,13 +119,30 @@ export function QueryAnswer({
                     </p>
                   ) : null}
                   <div className="citation-meta">
-                    <span>来源类型 {citation.source_type || "未声明"}</span>
+                    <span>{sourceTypeLabel(citation.source_type)}</span>
                     <span>
-                    文档 {compactId(citation.doc_id)} · 页 {citation.page || "—"} · chunk{" "}
-                    {compactId(citation.chunk_id)} · 相关度{" "}
-                    {formatNumber(citation.retrieval_score, 3)}
+                      {citation.page ? `第 ${citation.page} 页 · ` : ""}
+                      匹配度 {formatNumber(citation.retrieval_score * 100, 0)}%
                     </span>
                   </div>
+                  {safeExternalUrl(citation.url) ? (
+                    <a
+                      className="evidence-chart-link"
+                      href={citation.url!}
+                      rel="noreferrer"
+                      target="_blank"
+                    >
+                      <ExternalLink size={13} />
+                      查看原始来源
+                    </a>
+                  ) : null}
+                  <details className="citation-technical-details">
+                    <summary>来源定位信息</summary>
+                    <p>
+                      文档 {compactId(citation.doc_id)} · 内容片段{" "}
+                      {compactId(citation.chunk_id)}
+                    </p>
+                  </details>
                 </div>
               </article>
             ))}
@@ -295,6 +312,35 @@ function citationMarker(citationId: string): string {
   return citationId.startsWith("[") && citationId.endsWith("]")
     ? citationId
     : `[${citationId}]`;
+}
+
+function sourceTypeLabel(value?: string | null): string {
+  const labels: Record<string, string> = {
+    external_literature: "在线文献题录",
+    external_web: "网页搜索摘要",
+    pdf: "本地 PDF",
+    markdown: "本地文档",
+    text: "本地资料"
+  };
+  return value ? labels[value] || "本地知识库" : "本地知识库";
+}
+
+function confidenceLabel(value: string): string {
+  return {
+    low: "证据把握较低",
+    medium: "证据把握中等",
+    high: "证据把握较高"
+  }[value] || "证据把握未评估";
+}
+
+function safeExternalUrl(value?: string | null): boolean {
+  if (!value) return false;
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "https:" && !parsed.username && !parsed.password;
+  } catch {
+    return false;
+  }
 }
 
 function safeDomToken(value: string): string {

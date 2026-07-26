@@ -12,6 +12,10 @@ const exportBytes = Buffer.from("nanoloop-e2e-trusted-export");
 const exportSha = createHash("sha256").update(exportBytes).digest("hex");
 const overlayToken = "signed-overlay-token";
 const maskToken = "signed-mask-token";
+const reportPdfToken = "signed-report-pdf-token";
+const reportDocxToken = "signed-report-docx-token";
+const reportPdfBytes = Buffer.from("%PDF-1.4\n% NanoLoop E2E report\n");
+const reportDocxBytes = Buffer.from("PK NanoLoop E2E report");
 const imageBytes = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII=",
   "base64"
@@ -226,6 +230,7 @@ async function installApiMock(
     createRun: null as Record<string, unknown> | null,
     review: null as Record<string, unknown> | null,
     query: null as Record<string, unknown> | null,
+    report: null as Record<string, unknown> | null,
     knowledgeIngestBody: null as string | null,
     knowledgeToggles: [] as Array<Record<string, unknown>>,
     knowledgeReindex: null as Record<string, unknown> | null,
@@ -482,6 +487,89 @@ async function installApiMock(
         body: JSON.stringify(envelope(conversationDetail()))
       });
     }
+    if (path === `analyses/${jobId}/report` && method === "POST") {
+      captured.report = request.postDataJSON() as Record<string, unknown>;
+      return route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify(
+          envelope({
+            report_id: "report-e2e",
+            job_id: jobId,
+            title: "LaNiO₃ 颗粒分析 - SEM 纳米颗粒分析报告",
+            generated_at: now,
+            selected_run_ids: [reviewRunId],
+            quality_status: "pass",
+            scale_status: "physical",
+            technical_summary: "复核运行识别到 40 个颗粒，物理尺度可用 [D1]。",
+            synthesis_provider: "local_llm",
+            synthesis_model: "qwen3:test",
+            fallback_used: false,
+            headline_metrics: [
+              {
+                key: "particle_count",
+                label: "颗粒数量",
+                display_value: "40",
+                unit: "count",
+                definition: "canonical 实例数量。",
+                source_run_ids: [reviewRunId]
+              }
+            ],
+            findings: [
+              {
+                title: "当前运行通过质量门控",
+                interpretation: "现有自动规则未发现额外告警，仍需人工抽查边界。",
+                severity: "info",
+                evidence_ids: ["D1"],
+                source_run_ids: [reviewRunId]
+              }
+            ],
+            run_summaries: [
+              {
+                run_id: reviewRunId,
+                image_id: imageId,
+                model_id: model.model_id,
+                quality_status: "pass",
+                scale_nm_per_pixel: 2,
+                particle_count: 40,
+                roi_area: "3.15 µm²",
+                number_density: "13.35 µm⁻²",
+                mean_equivalent_diameter: "37 nm",
+                coverage: "12%",
+                perimeter_density: "3 µm⁻¹",
+                quality_reasons: []
+              }
+            ],
+            recommendations: [
+              {
+                priority: 1,
+                action: "抽查叠加图中的颗粒边界和相邻颗粒分离。",
+                rationale: "自动门控不能替代实例级人工复核。",
+                verification: "记录误检、漏检和粘连实例。",
+                source_run_ids: [reviewRunId]
+              }
+            ],
+            methodology: ["数据工具负责数值，本地模型只综合已验证证据。"],
+            limitations: ["单视野不能代表完整样品。"],
+            further_questions: ["其他视野是否保持一致？"],
+            data_evidence: [],
+            knowledge_citations: [],
+            provenance: [],
+            docx: reportArtifact(
+              reportDocxToken,
+              "nanoloop-e2e-report.docx",
+              reportDocxBytes,
+              "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            ),
+            pdf: reportArtifact(
+              reportPdfToken,
+              "nanoloop-e2e-report.pdf",
+              reportPdfBytes,
+              "application/pdf"
+            )
+          })
+        )
+      });
+    }
     if (path === `analyses/${jobId}/export` && method === "GET") {
       return route.fulfill({
         contentType: "application/json",
@@ -505,6 +593,17 @@ async function installApiMock(
           "cache-control": "private, no-store"
         },
         body: exportBytes
+      });
+    }
+    if (path === `files/${reportPdfToken}` && method === "GET") {
+      return route.fulfill({
+        status: 200,
+        headers: {
+          "content-type": "application/pdf",
+          "content-disposition": 'inline; filename="nanoloop-e2e-report.pdf"',
+          "cache-control": "private, no-store"
+        },
+        body: reportPdfBytes
       });
     }
     if ([`files/${overlayToken}`, `files/${maskToken}`].includes(path) && method === "GET") {
@@ -610,6 +709,21 @@ async function installApiMock(
       messages: conversationMessages
     };
   }
+}
+
+function reportArtifact(
+  token: string,
+  filename: string,
+  bytes: Buffer,
+  mediaType: string
+) {
+  return {
+    filename,
+    download_url: `/api/v1/files/${token}`,
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+    size_bytes: bytes.byteLength,
+    media_type: mediaType
+  };
 }
 
 test("lets users append images after the first selection", async ({ page }) => {
@@ -768,7 +882,6 @@ test("completes the mocked scientific workflow through verified export", async (
   await expect(page.locator(".roi-box").first().getByRole("spinbutton").nth(3)).toHaveValue("360");
 
   await page.getByRole("button", { name: "开始分析" }).click();
-  await page.getByText("高级设置", { exact: true }).click();
   await expect(page.getByRole("heading", { name: model.model_id })).toBeVisible();
   await expect(page.getByRole("heading", { name: unavailableModel.model_id })).toBeVisible();
   await expect(page.getByText("模型权重校验失败：checkpoint 缺失")).toBeVisible();
@@ -811,13 +924,36 @@ test("completes the mocked scientific workflow through verified export", async (
     watershed_enabled: true
   });
 
-  await page.getByRole("button", { name: "科研助手" }).click();
-  await page.getByLabel("发送实验问题").fill("这张图识别了多少颗粒？");
-  await page.getByRole("button", { name: "发送消息" }).click();
+  await page.getByRole("button", { name: "生成系统报告" }).click();
+  await expect(
+    page.getByRole("heading", {
+      name: "LaNiO₃ 颗粒分析 - SEM 纳米颗粒分析报告"
+    })
+  ).toBeVisible();
+  await expect(page.getByText("抽查叠加图中的颗粒边界和相邻颗粒分离。")).toBeVisible();
+  expect(captured.report).toEqual({ run_ids: [reviewRunId] });
+  await page.getByRole("button", { name: "开始分析", exact: true }).click();
+  await page.getByRole("button", { name: "查看结果", exact: true }).click();
+  await expect(
+    page.getByRole("heading", {
+      name: "LaNiO₃ 颗粒分析 - SEM 纳米颗粒分析报告"
+    })
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "重新生成" })).toBeVisible();
+  if (process.env.NANOLOOP_E2E_REPORT_SCREENSHOT) {
+    await page.locator(".scientific-report").screenshot({
+      path: process.env.NANOLOOP_E2E_REPORT_SCREENSHOT
+    });
+  }
 
-  await expect(page.getByText("该复核运行识别到 40 个颗粒")).toBeVisible();
-  await page.getByRole("button", { name: "展开并定位证据 D1" }).click();
-  await expect(page.getByText("实验数据证据")).toBeVisible();
+  await page.getByRole("button", { name: "打开科学审查器" }).click();
+  const inspector = page.getByRole("dialog", { name: "科学证据审查器" });
+  await inspector.getByLabel("发送实验问题").fill("这张图识别了多少颗粒？");
+  await inspector.getByRole("button", { name: "发送消息" }).click();
+
+  await expect(inspector.getByText("该复核运行识别到 40 个颗粒")).toBeVisible();
+  await inspector.getByRole("button", { name: "展开并定位证据 D1" }).click();
+  await expect(inspector.getByText("实验数据证据")).toBeVisible();
   expect(captured.query).toMatchObject({
     content: "这张图识别了多少颗粒？",
     query_type: "auto",
@@ -826,8 +962,13 @@ test("completes the mocked scientific workflow through verified export", async (
   });
 
   await page.reload();
-  await page.getByRole("button", { name: "科研助手" }).click();
-  await expect(page.getByText("该复核运行识别到 40 个颗粒")).toBeVisible();
+  await page.getByRole("button", { name: "打开科学审查器" }).click();
+  await expect(
+    page
+      .getByRole("dialog", { name: "科学证据审查器" })
+      .getByText("该复核运行识别到 40 个颗粒")
+  ).toBeVisible();
+  await page.getByRole("button", { name: "关闭科学审查器" }).click();
 
   await page.getByRole("button", { name: "查看结果", exact: true }).click();
   const downloadPromise = page.waitForEvent("download");

@@ -773,6 +773,46 @@
         "title": "ApiResponse[ReviewRunData]",
         "type": "object"
       },
+      "ApiResponse_ScientificReportData_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ScientificReportData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApiErrorPayload"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "request_id": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Request Id",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ApiStatus"
+          }
+        },
+        "required": [
+          "request_id",
+          "status"
+        ],
+        "title": "ApiResponse[ScientificReportData]",
+        "type": "object"
+      },
       "ApiResponse_SegmentationRunDTO_": {
         "additionalProperties": false,
         "properties": {
@@ -903,6 +943,198 @@
         ],
         "title": "ApiStatus",
         "type": "string"
+      },
+      "BatchMetricDistributionDTO": {
+        "additionalProperties": false,
+        "properties": {
+          "coefficient_of_variation": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Coefficient Of Variation"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "maximum": {
+            "title": "Maximum",
+            "type": "number"
+          },
+          "mean": {
+            "title": "Mean",
+            "type": "number"
+          },
+          "median": {
+            "title": "Median",
+            "type": "number"
+          },
+          "minimum": {
+            "title": "Minimum",
+            "type": "number"
+          },
+          "q1": {
+            "title": "Q1",
+            "type": "number"
+          },
+          "q3": {
+            "title": "Q3",
+            "type": "number"
+          },
+          "sample_count": {
+            "minimum": 1.0,
+            "title": "Sample Count",
+            "type": "integer"
+          },
+          "std_dev": {
+            "minimum": 0.0,
+            "title": "Std Dev",
+            "type": "number"
+          },
+          "unit": {
+            "title": "Unit",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "label",
+          "unit",
+          "sample_count",
+          "mean",
+          "std_dev",
+          "minimum",
+          "q1",
+          "median",
+          "q3",
+          "maximum"
+        ],
+        "title": "BatchMetricDistributionDTO",
+        "type": "object"
+      },
+      "BatchOutlierDTO": {
+        "additionalProperties": false,
+        "properties": {
+          "direction": {
+            "enum": [
+              "low",
+              "high"
+            ],
+            "title": "Direction",
+            "type": "string"
+          },
+          "image_id": {
+            "title": "Image Id",
+            "type": "string"
+          },
+          "metric_key": {
+            "title": "Metric Key",
+            "type": "string"
+          },
+          "metric_label": {
+            "title": "Metric Label",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "unit": {
+            "title": "Unit",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "number"
+          }
+        },
+        "required": [
+          "run_id",
+          "image_id",
+          "metric_key",
+          "metric_label",
+          "value",
+          "unit",
+          "direction"
+        ],
+        "title": "BatchOutlierDTO",
+        "type": "object"
+      },
+      "BatchResultSummaryDTO": {
+        "additionalProperties": false,
+        "properties": {
+          "distributions": {
+            "items": {
+              "$ref": "#/components/schemas/BatchMetricDistributionDTO"
+            },
+            "title": "Distributions",
+            "type": "array"
+          },
+          "image_count": {
+            "minimum": 2.0,
+            "title": "Image Count",
+            "type": "integer"
+          },
+          "model_count": {
+            "minimum": 1.0,
+            "title": "Model Count",
+            "type": "integer"
+          },
+          "outliers": {
+            "items": {
+              "$ref": "#/components/schemas/BatchOutlierDTO"
+            },
+            "title": "Outliers",
+            "type": "array"
+          },
+          "quality_pass_count": {
+            "minimum": 0.0,
+            "title": "Quality Pass Count",
+            "type": "integer"
+          },
+          "quality_review_count": {
+            "minimum": 0.0,
+            "title": "Quality Review Count",
+            "type": "integer"
+          },
+          "quality_warning_count": {
+            "minimum": 0.0,
+            "title": "Quality Warning Count",
+            "type": "integer"
+          },
+          "run_count": {
+            "minimum": 2.0,
+            "title": "Run Count",
+            "type": "integer"
+          },
+          "total_particle_count": {
+            "minimum": 0.0,
+            "title": "Total Particle Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "image_count",
+          "run_count",
+          "model_count",
+          "total_particle_count",
+          "quality_pass_count",
+          "quality_warning_count",
+          "quality_review_count",
+          "distributions"
+        ],
+        "title": "BatchResultSummaryDTO",
+        "type": "object"
       },
       "Body_createAnalysis": {
         "properties": {
@@ -1241,6 +1473,18 @@
           "title": {
             "title": "Title",
             "type": "string"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "pattern": "^https://",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
           }
         },
         "required": [
@@ -1783,6 +2027,9 @@
           "model_registry": {
             "$ref": "#/components/schemas/HealthComponent"
           },
+          "online_research": {
+            "$ref": "#/components/schemas/HealthComponent"
+          },
           "rag_index": {
             "$ref": "#/components/schemas/HealthComponent"
           },
@@ -2010,6 +2257,18 @@
             "minimum": 0.0,
             "title": "Roi Area Px",
             "type": "integer"
+          },
+          "roi_area_um2": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roi Area Um2"
           },
           "run_id": {
             "title": "Run Id",
@@ -3202,6 +3461,363 @@
         "title": "ReplaceBoxesRequest",
         "type": "object"
       },
+      "ReportArtifactData": {
+        "additionalProperties": false,
+        "properties": {
+          "download_url": {
+            "title": "Download Url",
+            "type": "string"
+          },
+          "filename": {
+            "title": "Filename",
+            "type": "string"
+          },
+          "media_type": {
+            "title": "Media Type",
+            "type": "string"
+          },
+          "sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Sha256",
+            "type": "string"
+          },
+          "size_bytes": {
+            "minimum": 1.0,
+            "title": "Size Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "filename",
+          "download_url",
+          "sha256",
+          "size_bytes",
+          "media_type"
+        ],
+        "title": "ReportArtifactData",
+        "type": "object"
+      },
+      "ReportFindingDTO": {
+        "additionalProperties": false,
+        "properties": {
+          "evidence_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Evidence Ids",
+            "type": "array"
+          },
+          "interpretation": {
+            "title": "Interpretation",
+            "type": "string"
+          },
+          "severity": {
+            "enum": [
+              "info",
+              "caution",
+              "review"
+            ],
+            "title": "Severity",
+            "type": "string"
+          },
+          "source_run_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Source Run Ids",
+            "type": "array"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "interpretation",
+          "severity"
+        ],
+        "title": "ReportFindingDTO",
+        "type": "object"
+      },
+      "ReportMetricDTO": {
+        "additionalProperties": false,
+        "properties": {
+          "definition": {
+            "title": "Definition",
+            "type": "string"
+          },
+          "display_value": {
+            "title": "Display Value",
+            "type": "string"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "source_run_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Source Run Ids",
+            "type": "array"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          }
+        },
+        "required": [
+          "key",
+          "label",
+          "display_value",
+          "definition"
+        ],
+        "title": "ReportMetricDTO",
+        "type": "object"
+      },
+      "ReportProvenanceDTO": {
+        "additionalProperties": false,
+        "properties": {
+          "box_revision": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Box Revision"
+          },
+          "image_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Sha256"
+          },
+          "min_area_px": {
+            "minimum": 0.0,
+            "title": "Min Area Px",
+            "type": "integer"
+          },
+          "model_bundle_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Bundle Sha256"
+          },
+          "model_id": {
+            "title": "Model Id",
+            "type": "string"
+          },
+          "model_version": {
+            "title": "Model Version",
+            "type": "string"
+          },
+          "roi_mode": {
+            "title": "Roi Mode",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "scale_nm_per_pixel": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scale Nm Per Pixel"
+          },
+          "threshold": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Threshold"
+          }
+        },
+        "required": [
+          "run_id",
+          "model_id",
+          "model_version",
+          "roi_mode",
+          "min_area_px"
+        ],
+        "title": "ReportProvenanceDTO",
+        "type": "object"
+      },
+      "ReportRecommendationDTO": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "priority": {
+            "minimum": 1.0,
+            "title": "Priority",
+            "type": "integer"
+          },
+          "rationale": {
+            "title": "Rationale",
+            "type": "string"
+          },
+          "source_run_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Source Run Ids",
+            "type": "array"
+          },
+          "verification": {
+            "title": "Verification",
+            "type": "string"
+          }
+        },
+        "required": [
+          "priority",
+          "action",
+          "rationale",
+          "verification"
+        ],
+        "title": "ReportRecommendationDTO",
+        "type": "object"
+      },
+      "ReportRunSummaryDTO": {
+        "additionalProperties": false,
+        "properties": {
+          "coverage": {
+            "title": "Coverage",
+            "type": "string"
+          },
+          "filename": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filename"
+          },
+          "image_id": {
+            "title": "Image Id",
+            "type": "string"
+          },
+          "mean_equivalent_diameter": {
+            "title": "Mean Equivalent Diameter",
+            "type": "string"
+          },
+          "model_id": {
+            "title": "Model Id",
+            "type": "string"
+          },
+          "number_density": {
+            "title": "Number Density",
+            "type": "string"
+          },
+          "particle_count": {
+            "minimum": 0.0,
+            "title": "Particle Count",
+            "type": "integer"
+          },
+          "perimeter_density": {
+            "title": "Perimeter Density",
+            "type": "string"
+          },
+          "quality_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Quality Reasons",
+            "type": "array"
+          },
+          "quality_status": {
+            "$ref": "#/components/schemas/QualityStatus"
+          },
+          "roi_area": {
+            "title": "Roi Area",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "sample_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sample Id"
+          },
+          "scale_nm_per_pixel": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scale Nm Per Pixel"
+          }
+        },
+        "required": [
+          "run_id",
+          "image_id",
+          "model_id",
+          "quality_status",
+          "particle_count",
+          "roi_area",
+          "number_density",
+          "mean_equivalent_diameter",
+          "coverage",
+          "perimeter_density"
+        ],
+        "title": "ReportRunSummaryDTO",
+        "type": "object"
+      },
       "ReviewRunData": {
         "additionalProperties": false,
         "properties": {
@@ -3257,6 +3873,16 @@
               }
             ],
             "title": "Min Area Px"
+          },
+          "scale_calibration": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ScaleBarCalibrationInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "threshold": {
             "anyOf": [
@@ -3672,6 +4298,16 @@
           "roi_mode": {
             "$ref": "#/components/schemas/RoiMode"
           },
+          "scale_calibration": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ScaleCalibrationProvenance"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "scale_nm_per_pixel": {
             "anyOf": [
               {
@@ -3835,6 +4471,303 @@
           "created_at"
         ],
         "title": "RunStatusEventDTO",
+        "type": "object"
+      },
+      "ScaleBarCalibrationInput": {
+        "additionalProperties": false,
+        "description": "Human-reviewed physical calibration derived from a visible scale bar.",
+        "properties": {
+          "label_text": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label Text"
+          },
+          "method": {
+            "const": "manual_scale_bar",
+            "default": "manual_scale_bar",
+            "title": "Method",
+            "type": "string"
+          },
+          "physical_length_nm": {
+            "exclusiveMinimum": 0.0,
+            "title": "Physical Length Nm",
+            "type": "number"
+          },
+          "pixel_length_px": {
+            "exclusiveMinimum": 0.0,
+            "title": "Pixel Length Px",
+            "type": "number"
+          }
+        },
+        "required": [
+          "physical_length_nm",
+          "pixel_length_px"
+        ],
+        "title": "ScaleBarCalibrationInput",
+        "type": "object"
+      },
+      "ScaleCalibrationProvenance": {
+        "additionalProperties": false,
+        "description": "Frozen calibration evidence stored with an immutable run.",
+        "properties": {
+          "label_text": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label Text"
+          },
+          "method": {
+            "const": "manual_scale_bar",
+            "default": "manual_scale_bar",
+            "title": "Method",
+            "type": "string"
+          },
+          "physical_length_nm": {
+            "exclusiveMinimum": 0.0,
+            "title": "Physical Length Nm",
+            "type": "number"
+          },
+          "pixel_length_px": {
+            "exclusiveMinimum": 0.0,
+            "title": "Pixel Length Px",
+            "type": "number"
+          },
+          "scale_nm_per_pixel": {
+            "exclusiveMinimum": 0.0,
+            "title": "Scale Nm Per Pixel",
+            "type": "number"
+          }
+        },
+        "required": [
+          "physical_length_nm",
+          "pixel_length_px",
+          "scale_nm_per_pixel"
+        ],
+        "title": "ScaleCalibrationProvenance",
+        "type": "object"
+      },
+      "ScientificReportData": {
+        "additionalProperties": false,
+        "properties": {
+          "analysis_mode": {
+            "enum": [
+              "single_image",
+              "batch"
+            ],
+            "title": "Analysis Mode",
+            "type": "string"
+          },
+          "batch_summary": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BatchResultSummaryDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "data_evidence": {
+            "items": {
+              "$ref": "#/components/schemas/ToolEvidence"
+            },
+            "title": "Data Evidence",
+            "type": "array"
+          },
+          "docx": {
+            "$ref": "#/components/schemas/ReportArtifactData"
+          },
+          "fallback_used": {
+            "title": "Fallback Used",
+            "type": "boolean"
+          },
+          "findings": {
+            "items": {
+              "$ref": "#/components/schemas/ReportFindingDTO"
+            },
+            "title": "Findings",
+            "type": "array"
+          },
+          "further_questions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Further Questions",
+            "type": "array"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "title": "Generated At",
+            "type": "string"
+          },
+          "headline_metrics": {
+            "items": {
+              "$ref": "#/components/schemas/ReportMetricDTO"
+            },
+            "title": "Headline Metrics",
+            "type": "array"
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "knowledge_citations": {
+            "items": {
+              "$ref": "#/components/schemas/Citation"
+            },
+            "title": "Knowledge Citations",
+            "type": "array"
+          },
+          "limitations": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Limitations",
+            "type": "array"
+          },
+          "methodology": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Methodology",
+            "type": "array"
+          },
+          "pdf": {
+            "$ref": "#/components/schemas/ReportArtifactData"
+          },
+          "provenance": {
+            "items": {
+              "$ref": "#/components/schemas/ReportProvenanceDTO"
+            },
+            "title": "Provenance",
+            "type": "array"
+          },
+          "quality_status": {
+            "$ref": "#/components/schemas/QualityStatus"
+          },
+          "recommendations": {
+            "items": {
+              "$ref": "#/components/schemas/ReportRecommendationDTO"
+            },
+            "title": "Recommendations",
+            "type": "array"
+          },
+          "report_id": {
+            "title": "Report Id",
+            "type": "string"
+          },
+          "run_summaries": {
+            "items": {
+              "$ref": "#/components/schemas/ReportRunSummaryDTO"
+            },
+            "title": "Run Summaries",
+            "type": "array"
+          },
+          "scale_status": {
+            "enum": [
+              "physical",
+              "mixed",
+              "pixel_only"
+            ],
+            "title": "Scale Status",
+            "type": "string"
+          },
+          "selected_run_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Selected Run Ids",
+            "type": "array"
+          },
+          "synthesis_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Synthesis Model"
+          },
+          "synthesis_provider": {
+            "enum": [
+              "local_llm",
+              "deterministic_fallback"
+            ],
+            "title": "Synthesis Provider",
+            "type": "string"
+          },
+          "technical_summary": {
+            "title": "Technical Summary",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "report_id",
+          "job_id",
+          "title",
+          "generated_at",
+          "selected_run_ids",
+          "analysis_mode",
+          "quality_status",
+          "scale_status",
+          "technical_summary",
+          "synthesis_provider",
+          "fallback_used",
+          "headline_metrics",
+          "findings",
+          "run_summaries",
+          "recommendations",
+          "methodology",
+          "limitations",
+          "further_questions",
+          "data_evidence",
+          "knowledge_citations",
+          "provenance",
+          "docx",
+          "pdf"
+        ],
+        "title": "ScientificReportData",
+        "type": "object"
+      },
+      "ScientificReportRequest": {
+        "additionalProperties": false,
+        "description": "Select the completed runs that define one report snapshot.",
+        "properties": {
+          "run_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 20,
+            "minItems": 1,
+            "title": "Run Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "run_ids"
+        ],
+        "title": "ScientificReportRequest",
         "type": "object"
       },
       "SegmentationRunDTO": {
@@ -6283,6 +7216,173 @@
         ]
       }
     },
+    "/api/v1/analyses/{job_id}/report": {
+      "post": {
+        "operationId": "generateScientificReport",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScientificReportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_ScientificReportData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Bad request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "API key required or invalid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Request forbidden by security policy"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "State or revision conflict"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Payload too large"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Unsupported media type"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Validation error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Rate limit exceeded"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Internal server error"
+          },
+          "501": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Frozen route awaiting service integration"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_dict_str__object__"
+                }
+              }
+            },
+            "description": "Dependency unavailable"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Generate Scientific Report",
+        "tags": [
+          "reports"
+        ]
+      }
+    },
     "/api/v1/analyses/{job_id}/runs": {
       "post": {
         "operationId": "createRuns",
@@ -6472,6 +7572,18 @@
               "default": false,
               "description": "Return a browser-native PNG when the artifact is TIFF or a numeric NumPy array.",
               "title": "Preview",
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Render a browser-native PDF inline. Other artifact types remain attachments.",
+            "in": "query",
+            "name": "inline",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Render a browser-native PDF inline. Other artifact types remain attachments.",
+              "title": "Inline",
               "type": "boolean"
             }
           }

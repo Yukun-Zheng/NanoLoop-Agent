@@ -7,7 +7,11 @@ from starlette.background import BackgroundTask
 from starlette.requests import ClientDisconnect
 from starlette.types import Message, Scope
 
-from app.api.routes.files import _PinnedStreamingResponse
+from app.api.routes.files import (
+    _content_disposition,
+    _inline_content_disposition,
+    _PinnedStreamingResponse,
+)
 from app.storage import open_pinned_managed_file
 
 
@@ -41,3 +45,14 @@ async def test_client_disconnect_immediately_closes_pinned_descriptor(
         await response(scope, receive, send)
 
     assert pinned.closed is True
+
+
+def test_pdf_preview_disposition_is_inline_and_filename_safe() -> None:
+    filename = '报告"; filename="malicious.pdf'
+
+    inline = _inline_content_disposition(filename)
+    attachment = _content_disposition(filename)
+
+    assert inline.startswith('inline; filename="preview.pdf"; filename*=UTF-8\'\'')
+    assert attachment.startswith('attachment; filename="download"; filename*=UTF-8\'\'')
+    assert 'filename="malicious.pdf"' not in inline

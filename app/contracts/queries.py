@@ -40,6 +40,7 @@ class Citation(ContractModel):
     retrieval_score: float = Field(ge=0)
     source_type: str | None = None
     citation_text: str | None = None
+    url: str | None = Field(default=None, pattern=r"^https://")
 
 
 class ToolEvidence(ContractModel):

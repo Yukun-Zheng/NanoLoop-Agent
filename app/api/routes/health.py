@@ -51,6 +51,10 @@ async def health(request: Request) -> ApiResponse[HealthData]:
             _llm_provider_health,
             conversation_service,
         ),
+        online_research=await run_in_threadpool(
+            _online_research_health,
+            conversation_service,
+        ),
         version=_application_version(),
     )
     return success_response(data, request=request)
@@ -69,6 +73,22 @@ def _llm_provider_health(conversation_service: object | None) -> HealthComponent
         return HealthComponent(
             status="unavailable",
             detail=f"provider health probe failed: {type(error).__name__}",
+        )
+
+
+def _online_research_health(conversation_service: object | None) -> HealthComponent:
+    service = getattr(conversation_service, "research_service", None)
+    if service is None:
+        return HealthComponent(
+            status="unavailable",
+            detail="联网检索服务未初始化",
+        )
+    try:
+        return HealthComponent.model_validate(service.health())
+    except Exception as error:
+        return HealthComponent(
+            status="unavailable",
+            detail=f"联网检索状态检查失败：{type(error).__name__}",
         )
 
 

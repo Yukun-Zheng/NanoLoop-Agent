@@ -59,6 +59,7 @@ from app.rag.retrieval import RetrievalService
 from app.rag.service import KnowledgeService
 from app.rag.vector_index import DatabaseVectorIndexPublisher, VectorIndexPublisher
 from app.rag.vector_store import PersistentFaissVectorStore
+from app.research import OnlineResearchService
 from app.storage import (
     FileTokenV2KeyRing,
     FileTokenV2KeyRingStore,
@@ -575,6 +576,16 @@ def _build_query_services(
         router=QueryRouter(),
         data_tools=data_tools,
         knowledge_service=knowledge,
+        research_service=OnlineResearchService(
+            enabled=settings.online_research_enabled,
+            tavily_api_key=(
+                settings.tavily_api_key.get_secret_value()
+                if settings.tavily_api_key is not None
+                else None
+            ),
+            timeout_seconds=settings.research_timeout_seconds,
+            max_results=settings.research_max_results,
+        ),
         llm_provider=conversation_provider,
         history_turns=settings.llm_history_turns,
         history_max_chars=settings.llm_history_max_chars,

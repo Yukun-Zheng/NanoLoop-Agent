@@ -30,6 +30,17 @@ const nextConfig: NextConfig = {
               `default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; img-src 'self' blob: data:; connect-src 'self'; font-src 'self'; style-src 'self' 'unsafe-inline'; ${scriptPolicy}; worker-src 'self' blob:`
           }
         ]
+      },
+      {
+        source: "/api/nanoloop/files/:path*",
+        headers: [
+          { key: "X-Frame-Options", value: "SAMEORIGIN" },
+          {
+            key: "Content-Security-Policy",
+            value:
+              `default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; form-action 'self'; img-src 'self' blob: data:; connect-src 'self'; font-src 'self'; style-src 'self' 'unsafe-inline'; ${scriptPolicy}; worker-src 'self' blob:`
+          }
+        ]
       }
     ];
   }

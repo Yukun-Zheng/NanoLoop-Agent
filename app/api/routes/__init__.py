@@ -13,6 +13,7 @@ from app.api.routes import (
     knowledge,
     models,
     queries,
+    reports,
     runs,
 )
 
@@ -25,6 +26,7 @@ api_router.include_router(runs.router)
 api_router.include_router(queries.router)
 api_router.include_router(conversations.router)
 api_router.include_router(knowledge.router)
+api_router.include_router(reports.router)
 api_router.include_router(exports.router)
 api_router.include_router(files.router)
 

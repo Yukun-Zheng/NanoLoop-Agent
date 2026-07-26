@@ -8,10 +8,14 @@ const apiMocks = vi.hoisted(() => ({
   fetchArtifact: vi.fn()
 }));
 
-vi.mock("@/lib/api/client", () => ({
-  fetchArtifact: apiMocks.fetchArtifact,
-  toBffArtifactUrl: (value: string) => value
-}));
+vi.mock("@/lib/api/client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api/client")>();
+  return {
+    ...actual,
+    fetchArtifact: apiMocks.fetchArtifact,
+    toBffArtifactUrl: (value: string) => value
+  };
+});
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -25,6 +29,24 @@ function imageResponse(bytes: string) {
   return new Response(new Blob([bytes], { type: "image/png" }), {
     headers: { "content-type": "image/png" }
   });
+}
+
+function artifactUrl(artifactId: string, tokenId: string) {
+  const payload = Buffer.from(
+    JSON.stringify({
+      v: 2,
+      tid: "tnt_00000000000000000000000000000000",
+      sub: "prn_00000000000000000000000000000000",
+      jid: "job_123",
+      aid: artifactId,
+      pur: "download.run_artifact",
+      sha256: "a".repeat(64),
+      iat: tokenId === "first" ? 100 : 200,
+      exp: tokenId === "first" ? 1000 : 1100,
+      jti: tokenId
+    })
+  ).toString("base64url");
+  return `/api/v1/files/v2.initial.${payload}.${tokenId}-signature`;
 }
 
 afterEach(() => {
@@ -105,6 +127,33 @@ describe("ArtifactPreview", () => {
     await act(async () => current.resolve(imageResponse("current")));
     expect(await screen.findByRole("img", { name: "当前图层" })).toBeVisible();
     expect(createObjectUrl).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a decoded preview visible when the same artifact receives a new token", async () => {
+    const firstUrl = artifactUrl("art_same", "first");
+    const reissuedUrl = artifactUrl("art_same", "second");
+    apiMocks.fetchArtifact.mockResolvedValueOnce(imageResponse("same artifact"));
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:stable");
+    const revokeObjectUrl = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+
+    const view = render(
+      <ArtifactPreview url={firstUrl} alt="识别叠加图层" filename="overlay.png" />
+    );
+    expect(await screen.findByRole("img", { name: "识别叠加图层" })).toHaveAttribute(
+      "src",
+      "blob:stable"
+    );
+
+    view.rerender(
+      <ArtifactPreview url={reissuedUrl} alt="识别叠加图层" filename="overlay.png" />
+    );
+
+    expect(screen.getByRole("img", { name: "识别叠加图层" })).toHaveAttribute(
+      "src",
+      "blob:stable"
+    );
+    expect(apiMocks.fetchArtifact).toHaveBeenCalledOnce();
+    expect(revokeObjectUrl).not.toHaveBeenCalled();
   });
 
   it("keeps the raw artifact download available when preview generation fails", async () => {

@@ -34,6 +34,7 @@ import { loadInstanceArtifact } from "@/lib/results/instance-artifact";
 import { runParameterError } from "@/lib/runs/configuration";
 
 import { ArtifactPreview } from "./artifact-preview";
+import { ScientificReport } from "./scientific-report";
 
 type LayerKey =
   | "original"
@@ -368,6 +369,12 @@ export function ResultView({
       ) : null}
       {exportRun.isError ? <RequestError error={exportRun.error} /> : null}
 
+      <ScientificReport
+        jobId={jobId}
+        runs={[run, ...comparisonRuns]}
+        writeBlocker={writeBlocker}
+      />
+
       <section className="quality-first">
         <div className="quality-heading">
           <div>
@@ -410,7 +417,14 @@ export function ResultView({
         {summary ? (
           <div className="metric-grid">
             <Metric label="颗粒数量" value={formatNumber(summary.particle_count, 0)} />
-            <Metric label="ROI 面积" value={`${formatNumber(summary.roi_area_px, 0)} px²`} />
+            <Metric
+              label="ROI 面积"
+              value={
+                summary.roi_area_um2 === null
+                  ? `${formatNumber(summary.roi_area_px, 0)} px²`
+                  : `${formatNumber(summary.roi_area_um2)} µm²`
+              }
+            />
             <Metric
               label="数量密度"
               value={

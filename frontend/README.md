@@ -21,7 +21,8 @@ make frontend
 Open `http://127.0.0.1:3000`. The user-facing routes are:
 
 - `/` — create or reopen an analysis;
-- `/workspace/{job_id}` — project, ROI, models/runs, timeline, results/review/export and Agent query;
+- `/workspace/{job_id}` — project, ROI, models/runs, timeline, results/review, report/export and
+  run-scoped Q&A in the right scientific inspector;
 - `/knowledge` — knowledge ingestion, status and reindex actions.
 
 ## Server-only API boundary

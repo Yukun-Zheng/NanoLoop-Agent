@@ -107,6 +107,14 @@ def download_file(
             )
         ),
     ] = False,
+    inline: Annotated[
+        bool,
+        Query(
+            description=(
+                "Render a browser-native PDF inline. Other artifact types remain attachments."
+            )
+        ),
+    ] = False,
 ) -> Response:
     try:
         resolved = file_access.resolve_download(token, principal=principal)
@@ -121,12 +129,17 @@ def download_file(
     pinned = resolved.pinned_file
     chunks = pinned.iter_chunks()
     try:
+        disposition = (
+            _inline_content_disposition(resolved.filename)
+            if inline and resolved.media_type.casefold() == "application/pdf"
+            else _content_disposition(resolved.filename)
+        )
         return _PinnedStreamingResponse(
             chunks,
             media_type=resolved.media_type,
             headers={
                 "Cache-Control": "private, no-store",
-                "Content-Disposition": _content_disposition(resolved.filename),
+                "Content-Disposition": disposition,
                 "Content-Length": str(pinned.size_bytes),
                 "Cross-Origin-Resource-Policy": "same-origin",
                 "Referrer-Policy": "no-referrer",
@@ -265,3 +278,8 @@ def _content_disposition(filename: str) -> str:
 
     encoded = quote(filename, safe="", encoding="utf-8", errors="strict")
     return f"attachment; filename=\"download\"; filename*=UTF-8''{encoded}"
+
+
+def _inline_content_disposition(filename: str) -> str:
+    encoded = quote(filename, safe="", encoding="utf-8", errors="strict")
+    return f"inline; filename=\"preview.pdf\"; filename*=UTF-8''{encoded}"

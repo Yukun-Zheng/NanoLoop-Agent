@@ -81,9 +81,7 @@ def _seed_job_image(session: Session) -> SqlAlchemyRepositorySet:
                     scale_nm_per_pixel=0.5,
                     analysis_roi=AnalysisROI(
                         valid_rect=PixelRect(x1=0, y1=0, x2=256, y2=200),
-                        invalid_rects=[
-                            InvalidPixelRegion(x1=0, y1=180, x2=256, y2=200)
-                        ],
+                        invalid_rects=[InvalidPixelRegion(x1=0, y1=180, x2=256, y2=200)],
                         source="detected",
                     ),
                 ),
@@ -105,14 +103,17 @@ def _seed_job_image(session: Session) -> SqlAlchemyRepositorySet:
     return repositories
 
 
-def _run_configuration(now: datetime) -> RunConfiguration:
+def _run_configuration(
+    now: datetime,
+    *,
+    scale_nm_per_pixel: float | None = None,
+) -> RunConfiguration:
     return RunConfiguration(
         model_id="unet-small-balanced-v1",
         model_version="1.0.0",
         roi_mode=RoiMode.FULL_IMAGE,
-        analysis_roi=AnalysisROI(
-            valid_rect=PixelRect(x1=0, y1=0, x2=256, y2=200)
-        ),
+        scale_nm_per_pixel=scale_nm_per_pixel,
+        analysis_roi=AnalysisROI(valid_rect=PixelRect(x1=0, y1=0, x2=256, y2=200)),
         inference=InferenceOptions(),
         preprocess_profile="sem_gray_v1",
         postprocess_profile="small_particle_v1",
@@ -171,9 +172,7 @@ def test_box_revisions_include_empty_snapshots(session: Session) -> None:
         (ROIBox(x1=20, y1=150, x2=80, y2=190), "overlaps_invalid_region"),
     ],
 )
-def test_box_validation_is_strict(
-    session: Session, box: ROIBox, reason: str
-) -> None:
+def test_box_validation_is_strict(session: Session, box: ROIBox, reason: str) -> None:
     repositories = _seed_job_image(session)
     with pytest.raises(InvalidBoxError) as exc_info:
         repositories.boxes.replace("img_1", 0, [box])
@@ -264,7 +263,7 @@ def test_run_result_round_trip(session: Session) -> None:
                 status=JobStatus.ANALYZING,
                 roi_mode=RoiMode.FULL_IMAGE,
                 inference=InferenceOptions(),
-                configuration=_run_configuration(now),
+                configuration=_run_configuration(now, scale_nm_per_pixel=2.0),
                 created_at=now,
                 updated_at=now,
             )
@@ -274,6 +273,7 @@ def test_run_result_round_trip(session: Session) -> None:
         run_id="run_1",
         particle_count=0,
         roi_area_px=46080,
+        roi_area_um2=0.18432,
         number_density_px2=0,
         number_density_um2=0,
         mean_equivalent_diameter_px=None,
@@ -300,7 +300,11 @@ def test_run_result_round_trip(session: Session) -> None:
     session.commit()
 
     stored = repositories.runs.get("run_1")
-    assert stored.summary == summary
+    assert stored.summary is not None
+    assert stored.summary.roi_area_um2 == pytest.approx(0.18432)
+    assert stored.summary.model_dump(exclude={"roi_area_um2"}) == summary.model_dump(
+        exclude={"roi_area_um2"}
+    )
     assert stored.quality == quality
     assert stored.execution == _execution(now)
     assert stored.artifacts.mask_url == "/api/v1/files/token"

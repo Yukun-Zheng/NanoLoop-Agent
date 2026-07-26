@@ -14,7 +14,7 @@ from app.contracts.conversations import (
     ConversationMessageRequest,
     CreateConversationRequest,
 )
-from app.contracts.enums import JobStatus
+from app.contracts.enums import JobStatus, QueryType
 from app.contracts.identity import (
     LEGACY_PRINCIPAL_ID,
     LEGACY_TENANT_ID,
@@ -23,6 +23,7 @@ from app.contracts.identity import (
     PrincipalKind,
     PrincipalRole,
 )
+from app.contracts.queries import ToolEvidence
 from app.core.config import Settings
 from app.core.errors import ResourceNotFoundError
 from app.core.identity import legacy_principal_context
@@ -65,6 +66,12 @@ class FakeConversationProvider:
         self.task_contexts: list[dict[str, Any]] = []
         self.query_types: list[str] = []
         self.calls = 0
+        self.response = ConversationProviderAnswer(
+            answer="你好，我可以解释流程并使用当前任务证据回答。",
+            used_data_ids=(),
+            used_citation_ids=(),
+            confidence="high",
+        )
 
     def health(self) -> HealthComponent:
         return HealthComponent(status="healthy", detail="fixture")
@@ -74,10 +81,27 @@ class FakeConversationProvider:
         self.histories.append([dict(item) for item in kwargs["history"]])
         self.task_contexts.append(dict(kwargs["task_context"]))
         self.query_types.append(str(kwargs["query_type"]))
-        return ConversationProviderAnswer(
-            answer="你好，我可以解释流程并使用当前任务证据回答。",
-            used_data_ids=(),
-            used_citation_ids=(),
+        return self.response
+
+
+class EvidenceDataTools:
+    def answer(self, query: DataQuery) -> DataQueryResult:
+        del query
+        return DataQueryResult(
+            answer="完成结果共记录 64 个颗粒。",
+            evidence=(
+                ToolEvidence(
+                    tool_name="get_job_overview",
+                    validated_arguments={"intent": "overview"},
+                    rows=[
+                        {
+                            "quality_status": "PASS",
+                            "mean_equivalent_diameter_nm": 28.14,
+                        }
+                    ],
+                    source_run_ids=["run_physical"],
+                ),
+            ),
             confidence="high",
         )
 
@@ -205,6 +229,8 @@ def test_open_ended_request_is_answered_as_safe_general_chat(tmp_path: Path) -> 
         assert provider.task_contexts[-1]["selected_image"] == {
             "filename": "BaNi-3.tif",
             "sample_id": "BaNi-3",
+            "width_px": 2048,
+            "height_px": 1536,
             "material_name": None,
             "material_formula": None,
             "has_physical_scale": False,
@@ -218,6 +244,55 @@ def test_open_ended_request_is_answered_as_safe_general_chat(tmp_path: Path) -> 
             "进入“开始分析”选择模型并创建一次全图分割运行。",
             "局部区域（ROI）是可选步骤，可以直接跳过。",
         ]
+    finally:
+        database.dispose()
+
+
+def test_analysis_chat_keeps_numbers_deterministic_and_uses_local_model_for_interpretation(
+    tmp_path: Path,
+) -> None:
+    service, database, provider = _service(tmp_path)
+    service.data_tools = EvidenceDataTools()  # type: ignore[assignment]
+    provider.response = ConversationProviderAnswer(
+        answer=(
+            "自动质量门控通过，但仍需人工抽查实例边界 [D2]。"
+            "建议增加重复视野和对照运行以验证代表性 [D2]。"
+        ),
+        used_data_ids=("D2",),
+        used_citation_ids=(),
+        confidence="medium",
+    )
+    try:
+        conversation = service.create(
+            "job_chat",
+            CreateConversationRequest(),
+            principal=_PRINCIPAL,
+        )
+        result = service.send(
+            "job_chat",
+            conversation.conversation_id,
+            ConversationMessageRequest(
+                content="当前结果有哪些质量限制，下一步应如何验证？",
+                query_type=QueryType.ANALYSIS_DATA,
+                image_id="img_chat",
+            ),
+            principal=_PRINCIPAL,
+        )
+
+        assistant = result.messages[-1]
+        assert assistant.content.startswith("完成结果共记录 64 个颗粒。 [D1]")
+        assert "本地模型综合：自动质量门控通过" in assistant.content
+        assert assistant.evidence is not None
+        assert assistant.evidence.llm_provider == "openai_compatible"
+        assert assistant.evidence.fallback_used is False
+        assert [item.tool_name for item in assistant.evidence.data_evidence] == [
+            "get_job_overview",
+            "interpret_analysis_guardrails",
+        ]
+        guardrails = assistant.evidence.data_evidence[-1].aggregates
+        assert guardrails["scale_interpretation"] == (
+            "当前证据包含物理尺度指标，不得声称缺少比例尺"
+        )
     finally:
         database.dispose()
 

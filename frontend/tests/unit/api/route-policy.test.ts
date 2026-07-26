@@ -10,6 +10,7 @@ const allowed = [
   ["POST", "analyses"],
   ["GET", "analyses/job-1"],
   ["GET", "analyses/job-1/export"],
+  ["POST", "analyses/job-1/report"],
   ["GET", "analyses/job-1/images/image-1/boxes"],
   ["PUT", "analyses/job-1/images/image-1/boxes"],
   ["GET", "analyses/job-1/queries"],
