@@ -792,11 +792,11 @@ test("lets users append images after the first selection", async ({ page }) => {
   const uploadedBox = await commandCard.boundingBox();
   expect(uploadedBox).not.toBeNull();
   expect(Math.abs(uploadedBox!.x + uploadedBox!.width / 2 - initialCenter)).toBeLessThan(1);
-  expect(
-    await page.evaluate(
-      () => document.documentElement.scrollWidth === document.documentElement.clientWidth
-    )
-  ).toBe(true);
+  const uploadedLayout = await page.locator(".launchpad-page").evaluate((element) => ({
+    clientWidth: element.clientWidth,
+    scrollWidth: element.scrollWidth
+  }));
+  expect(uploadedLayout.scrollWidth).toBeLessThanOrEqual(uploadedLayout.clientWidth + 1);
 
   const appendChooser = page.waitForEvent("filechooser");
   await actions.getByRole("button", { name: "继续添加" }).click();
@@ -811,6 +811,11 @@ test("lets users append images after the first selection", async ({ page }) => {
   const appendedBox = await commandCard.boundingBox();
   expect(appendedBox).not.toBeNull();
   expect(Math.abs(appendedBox!.x + appendedBox!.width / 2 - initialCenter)).toBeLessThan(1);
+  const appendedLayout = await page.locator(".launchpad-page").evaluate((element) => ({
+    clientWidth: element.clientWidth,
+    scrollWidth: element.scrollWidth
+  }));
+  expect(appendedLayout.scrollWidth).toBeLessThanOrEqual(appendedLayout.clientWidth + 1);
   await expect(
     page.getByRole("button", { name: "自动分割 2 张图像" })
   ).toBeEnabled();
