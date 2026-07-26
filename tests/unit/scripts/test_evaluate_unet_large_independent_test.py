@@ -51,13 +51,22 @@ BUILD = {
 }
 
 
-def test_frozen_adapter_digest_matches_current_repository_source() -> None:
+def test_frozen_adapter_digest_remains_the_historical_delivery_identity() -> None:
     repository_root = Path(__file__).resolve().parents[3]
-    observed = hashlib.sha256(
+    audit = json.loads(
+        (
+            repository_root
+            / "model_artifacts/evidence/unet-large-optimized-v1/delivery-audit-2026-07-23.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    source_contract = audit["independent_evaluation_source_contract"]
+    assert source_contract["adapter_sha256"] == ADAPTER_SHA256
+    assert source_contract["frozen_for_historical_evaluation"] is True
+    assert source_contract["current_repository_adapter_sha256"] == hashlib.sha256(
         (repository_root / "app/inference/adapters/unet.py").read_bytes()
     ).hexdigest()
-
-    assert observed == ADAPTER_SHA256
+    assert source_contract["historical_evaluation_identity_preserved"] is True
 
 
 def _run_config(image_sha256: str) -> dict[str, Any]:

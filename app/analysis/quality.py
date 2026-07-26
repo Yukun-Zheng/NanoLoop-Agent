@@ -46,7 +46,7 @@ def evaluate(inputs: QualityInputs, config: QualityGateConfig) -> QualityReportD
     edge_touch_ratio = boundary_count / candidate_count if candidate_count else 0.0
 
     review: list[str] = []
-    warnings = list(inputs.validation_warnings)
+    warnings = list(dict.fromkeys(inputs.validation_warnings))
     recommendations: list[str] = []
     if foreground_ratio <= config.foreground_ratio_review_low:
         review.append("foreground_ratio_too_low")
@@ -65,6 +65,7 @@ def evaluate(inputs: QualityInputs, config: QualityGateConfig) -> QualityReportD
     if edge_touch_ratio > config.edge_touch_ratio_warn_above:
         warnings.append("roi_edge_truncation")
         recommendations.append("扩大选框或使用全图模式")
+    warnings = list(dict.fromkeys(warnings))
 
     if review:
         status = QualityStatus.REVIEW_REQUIRED

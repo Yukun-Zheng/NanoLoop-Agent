@@ -29,6 +29,11 @@ import type {
   ModelRecommendationRequest
 } from "@/lib/api/types";
 import { formatNumber } from "@/lib/format/value";
+import {
+  recommendModelsForImages,
+  runAssignmentPayload,
+  type ImageModelAssignment
+} from "@/lib/models/recommendation";
 import { runParameterError } from "@/lib/runs/configuration";
 
 const variantLabels: Record<string, string> = {
@@ -74,6 +79,12 @@ export function ModelSelector({
   const [imageScope, setImageScope] = useState<"current" | "all">(
     batchAvailable ? "all" : "current"
   );
+  const [batchModelMode, setBatchModelMode] = useState<"per_image" | "shared">(
+    "per_image"
+  );
+  const [imageAssignments, setImageAssignments] = useState<ImageModelAssignment[]>(
+    []
+  );
   const [roiMode, setRoiMode] = useState<"full_image" | "boxes">(initialRoiMode);
   const [prefer, setPrefer] = useState<"speed" | "balance" | "accuracy">("accuracy");
   const [threshold, setThreshold] = useState("");
@@ -94,9 +105,11 @@ export function ModelSelector({
       const recommendationImage = image || selectedImages[0];
       if (!recommendationImage) throw new Error("请先选择图像");
       const payload: ModelRecommendationRequest = {
+        job_id: recommendationImage.job_id,
         image_id: recommendationImage.image_id,
         roi_mode: roiMode,
         target_profile: "general",
+        auto_profile: true,
         prefer,
         device
       };
@@ -122,20 +135,39 @@ export function ModelSelector({
     [recommendation.data]
   );
 
+  const perImageRecommendation = useMutation({
+    mutationFn: () =>
+      recommendModelsForImages({
+        images: selectedImages,
+        models: catalogModels,
+        roiMode,
+        prefer,
+        device
+      }),
+    onSuccess(assignments) {
+      setImageAssignments(assignments);
+    }
+  });
+
   const createRuns = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       if (!image) throw new Error("请先选择图像");
-      if (!selected.length) throw new Error("至少选择一个就绪模型");
+      const usePerImageModels = batchMode && batchModelMode === "per_image";
+      if (!usePerImageModels && !selected.length) {
+        throw new Error("至少选择一个就绪模型");
+      }
       const invalidParameters = runParameterError(threshold, minArea);
       if (invalidParameters) throw new Error(invalidParameters);
-      const invalidSelection = selected.find((modelId) => {
-        const selectedModel = (catalog.models ?? []).find(
-          (candidate) => candidate.model_id === modelId
-        );
-        return !selectedModel || !isModelSelectable(selectedModel);
-      });
-      if (invalidSelection) {
-        throw new Error(`模型 ${invalidSelection} 当前未通过运行健康检查`);
+      if (!usePerImageModels) {
+        const invalidSelection = selected.find((modelId) => {
+          const selectedModel = (catalog.models ?? []).find(
+            (candidate) => candidate.model_id === modelId
+          );
+          return !selectedModel || !isModelSelectable(selectedModel);
+        });
+        if (invalidSelection) {
+          throw new Error(`模型 ${invalidSelection} 当前未通过运行健康检查`);
+        }
       }
       if (roiMode === "boxes" && activeRoiCount === 0) {
         throw new Error("选框模式需要先保存至少一个 ROI");
@@ -148,11 +180,24 @@ export function ModelSelector({
       };
       if (threshold !== "") inference.threshold = Number(threshold);
       if (minArea !== "") inference.min_area_px = Number(minArea);
+      const assignments = usePerImageModels
+        ? await recommendModelsForImages({
+            images: selectedImages,
+            models: catalogModels,
+            roiMode,
+            prefer,
+            device
+          })
+        : [];
+      if (assignments.length) setImageAssignments(assignments);
+      const modelPayload = usePerImageModels
+        ? runAssignmentPayload(assignments)
+        : { model_ids: selected };
       return apiRequest<CreateRunsData>(`analyses/${encodeURIComponent(jobId)}/runs`, {
         method: "POST",
         body: {
           image_ids: selectedImages.map((item) => item.image_id),
-          model_ids: selected,
+          ...modelPayload,
           roi_mode: roiMode,
           ...(roiMode === "boxes" && boxSet
             ? { box_revisions: { [image.image_id]: boxSet.revision } }
@@ -192,6 +237,7 @@ export function ModelSelector({
 
   function changeImageScope(nextScope: "current" | "all") {
     setImageScope(nextScope);
+    setImageAssignments([]);
     if (nextScope === "all") {
       setRoiMode("full_image");
     }
@@ -208,16 +254,27 @@ export function ModelSelector({
   const configurationError =
     writeBlocker ||
     (!selectedImages.length ? "请先选择图像" : null) ||
-    (!selected.length ? "请选择至少一个就绪模型" : null) ||
+    (batchMode && batchModelMode === "per_image"
+      ? !readyCount
+        ? "当前没有可运行模型"
+        : null
+      : !selected.length
+        ? "请选择至少一个就绪模型"
+        : null) ||
     roiError ||
     parameterError;
   const selectedLabel =
-    selected.length === 1
+    batchMode && batchModelMode === "per_image"
+      ? `逐图自动匹配（${selectedImages.length} 张）`
+      : selected.length === 1
       ? selected[0]
       : selected.length > 1
         ? `${selected.length} 个模型并行对比`
         : "尚未选择模型";
-  const runCount = selectedImages.length * selected.length;
+  const runCount =
+    batchMode && batchModelMode === "per_image"
+      ? selectedImages.length
+      : selectedImages.length * selected.length;
 
   return (
     <div className="model-selector">
@@ -291,7 +348,7 @@ export function ModelSelector({
               <strong>全部图像批处理</strong>
               <small>
                 {batchAvailable
-                  ? `${availableImages.length} 张图使用同一冻结模型与参数`
+                  ? `${availableImages.length} 张图；模型可逐图匹配`
                   : "当前任务只有一张图像"}
               </small>
             </button>
@@ -370,6 +427,9 @@ export function ModelSelector({
       </section>
 
       {recommendation.isError ? <RequestError error={recommendation.error} /> : null}
+      {perImageRecommendation.isError ? (
+        <RequestError error={perImageRecommendation.error} />
+      ) : null}
       {writeBlocker ? (
         <p className="form-warning" role="status">
           {writeBlocker}
@@ -394,12 +454,75 @@ export function ModelSelector({
           <small>已选 {selected.length}/3</small>
         </header>
         <div className="advanced-settings-body">
+          {batchMode ? (
+            <div className="batch-model-strategy">
+              <strong>批量模型策略</strong>
+              <div
+                className="analysis-scope-options"
+                role="radiogroup"
+                aria-label="批量模型策略"
+              >
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={batchModelMode === "per_image"}
+                  className={batchModelMode === "per_image" ? "active" : undefined}
+                  onClick={() => {
+                    setBatchModelMode("per_image");
+                    setImageAssignments([]);
+                  }}
+                >
+                  <span className="scope-choice-check">
+                    {batchModelMode === "per_image" ? <Check size={14} /> : null}
+                  </span>
+                  <strong>每张图自动匹配（推荐）</strong>
+                  <small>逐张独立推荐；相似图像仍可能选择同一模型</small>
+                </button>
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={batchModelMode === "shared"}
+                  className={batchModelMode === "shared" ? "active" : undefined}
+                  onClick={() => {
+                    setBatchModelMode("shared");
+                    setImageAssignments([]);
+                  }}
+                >
+                  <span className="scope-choice-check">
+                    {batchModelMode === "shared" ? <Check size={14} /> : null}
+                  </span>
+                  <strong>全部图使用同一模型</strong>
+                  <small>适合严格控制变量或并行比较多个模型</small>
+                </button>
+              </div>
+              {imageAssignments.length ? (
+                <div className="image-model-assignments" aria-label="逐图模型匹配结果">
+                  {imageAssignments.map((assignment) => (
+                    <div key={assignment.imageId}>
+                      <span>{assignment.filename}</span>
+                      <strong>{assignment.modelId}</strong>
+                      <small>
+                        {assignment.usedFallback
+                          ? "安全回退"
+                          : assignment.score === null
+                            ? "已匹配"
+                            : `推荐分 ${formatNumber(assignment.score, 3)}`}
+                      </small>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
           <div className="model-toolbar">
             <label className="compact-select">
               <span>推荐偏好</span>
               <select
                 value={prefer}
-                onChange={(event) => setPrefer(event.target.value as typeof prefer)}
+                onChange={(event) => {
+                  setPrefer(event.target.value as typeof prefer);
+                  setImageAssignments([]);
+                }}
               >
                 <option value="accuracy">精度</option>
                 <option value="balance">平衡</option>
@@ -407,18 +530,37 @@ export function ModelSelector({
               </select>
             </label>
             <Button
-              onClick={() => recommendation.mutate()}
-              disabled={Boolean(writeBlocker) || !image || recommendation.isPending}
+              onClick={() =>
+                batchMode && batchModelMode === "per_image"
+                  ? perImageRecommendation.mutate()
+                  : recommendation.mutate()
+              }
+              disabled={
+                Boolean(writeBlocker) ||
+                !image ||
+                recommendation.isPending ||
+                perImageRecommendation.isPending
+              }
               title={writeBlocker || undefined}
             >
               <Lightbulb size={15} />
-              {recommendation.isPending ? "正在推荐…" : "重新推荐并应用"}
+              {recommendation.isPending || perImageRecommendation.isPending
+                ? "正在推荐…"
+                : batchMode && batchModelMode === "per_image"
+                  ? "预览逐图匹配"
+                  : "重新推荐并应用"}
             </Button>
           </div>
 
           <p className="advanced-help">
-            一般只运行推荐模型。只有需要比较模型差异时才多选，最多同时运行 3 个。
+            {batchMode && batchModelMode === "per_image"
+              ? "开始运行时会再次逐图确认推荐；下方模型卡用于查看目录，切换到统一模型后可手动选择。"
+              : "一般只运行推荐模型。只有需要比较模型差异时才多选，最多同时运行 3 个。"}
           </p>
+          <div className="model-scope-note" role="note">
+            图像尺寸会自动分块、补边和裁除已识别的信息栏；卡片中的“参考尺寸”是模型训练或验证时的基准，
+            不是上传限制。当前模型主要面向 SEM 颗粒与团聚体，其他形貌请人工复核分割叠加图。
+          </div>
           <div className="model-grid">
             {catalogModels.map((model) => {
               const selectable = isModelSelectable(model);
@@ -434,7 +576,9 @@ export function ModelSelector({
                   <button
                     type="button"
                     className="model-select-target"
-                    disabled={!selectable}
+                    disabled={
+                      !selectable || (batchMode && batchModelMode === "per_image")
+                    }
                     onClick={() => toggleModel(model.model_id)}
                     aria-pressed={active}
                     aria-label={`${active ? "取消选择" : "选择"} ${model.model_id}`}
@@ -463,7 +607,7 @@ export function ModelSelector({
                       <dd>{formatNumber(model.default_min_area_px, 0)} px</dd>
                     </div>
                     <div>
-                      <dt><Cpu size={13} />输入尺寸</dt>
+                      <dt><Cpu size={13} />参考尺寸</dt>
                       <dd>{model.expected_input_width || "—"}×{model.expected_input_height || "—"}</dd>
                     </div>
                   </dl>
@@ -538,7 +682,10 @@ export function ModelSelector({
                   <select
                     className="select"
                     value={device}
-                    onChange={(event) => setDevice(event.target.value as typeof device)}
+                    onChange={(event) => {
+                      setDevice(event.target.value as typeof device);
+                      setImageAssignments([]);
+                    }}
                   >
                     <option value="auto">自动（推荐）</option>
                     <option value="cpu">CPU</option>

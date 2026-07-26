@@ -214,7 +214,11 @@ const reviewRun = {
 
 async function installApiMock(
   page: Page,
-  options: { failCreateRun?: boolean } = {}
+  options: {
+    failCreateRun?: boolean;
+    reissueOriginalTokens?: boolean;
+    pollingRun?: boolean;
+  } = {}
 ) {
   let hasRun = false;
   let hasReviewRun = false;
@@ -234,8 +238,31 @@ async function installApiMock(
     knowledgeIngestBody: null as string | null,
     knowledgeToggles: [] as Array<Record<string, unknown>>,
     knowledgeReindex: null as Record<string, unknown> | null,
-    exportDownloads: 0
+    exportDownloads: 0,
+    analysisGets: 0,
+    originalPreviewGets: 0
   };
+
+  function currentImage() {
+    if (!options.reissueOriginalTokens) return image;
+    const claims = {
+      v: 2,
+      tid: "tnt_e2e",
+      sub: "prn_e2e",
+      jid: jobId,
+      aid: imageId,
+      pur: "download.image_asset",
+      sha256: sha,
+      iat: captured.analysisGets,
+      exp: 9999999999,
+      jti: `issue-${captured.analysisGets}`
+    };
+    const payload = Buffer.from(JSON.stringify(claims)).toString("base64url");
+    return {
+      ...image,
+      original_download_url: `/api/v1/files/v2.e2e.${payload}.signature-${captured.analysisGets}`
+    };
+  }
 
   page.on("request", (request) => {
     if (request.resourceType() === "fetch" || request.resourceType() === "xhr") {
@@ -267,17 +294,24 @@ async function installApiMock(
       captured.createAnalysisBody = request.postData();
       return route.fulfill({
         contentType: "application/json",
-        body: JSON.stringify(envelope({ job, images: [image], runs: [], partial_failures: [] }))
+        body: JSON.stringify(
+          envelope({ job, images: [currentImage()], runs: [], partial_failures: [] })
+        )
       });
     }
     if (path === `analyses/${jobId}` && method === "GET") {
+      captured.analysisGets += 1;
       return route.fulfill({
         contentType: "application/json",
         body: JSON.stringify(
           envelope({
             job,
-            images: [image],
-            runs: hasRun ? [run, ...(hasReviewRun ? [reviewRun] : [])] : [],
+            images: [currentImage()],
+            runs: options.pollingRun
+              ? [{ ...run, status: "RUNNING" }]
+              : hasRun
+                ? [run, ...(hasReviewRun ? [reviewRun] : [])]
+                : [],
             partial_failures: []
           })
         )
@@ -616,6 +650,17 @@ async function installApiMock(
         body: imageBytes
       });
     }
+    if (path.startsWith("files/v2.e2e.") && method === "GET") {
+      captured.originalPreviewGets += 1;
+      return route.fulfill({
+        status: 200,
+        headers: {
+          "content-type": "image/png",
+          "cache-control": "private, no-store"
+        },
+        body: imageBytes
+      });
+    }
     if (path === "knowledge/documents" && method === "GET") {
       return route.fulfill({
         contentType: "application/json",
@@ -729,6 +774,10 @@ function reportArtifact(
 test("lets users append images after the first selection", async ({ page }) => {
   await installApiMock(page);
   await page.goto("/");
+  const commandCard = page.locator(".command-card");
+  const initialBox = await commandCard.boundingBox();
+  expect(initialBox).not.toBeNull();
+  const initialCenter = initialBox!.x + initialBox!.width / 2;
 
   await page.locator('input[type="file"]').setInputFiles({
     name: "first.png",
@@ -740,6 +789,14 @@ test("lets users append images after the first selection", async ({ page }) => {
   await expect(summary.getByText("1 张图像")).toBeVisible();
   await expect(actions.getByRole("button", { name: "继续添加" })).toBeVisible();
   await expect(actions.getByRole("button", { name: "重新选择" })).toBeVisible();
+  const uploadedBox = await commandCard.boundingBox();
+  expect(uploadedBox).not.toBeNull();
+  expect(Math.abs(uploadedBox!.x + uploadedBox!.width / 2 - initialCenter)).toBeLessThan(1);
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth === document.documentElement.clientWidth
+    )
+  ).toBe(true);
 
   const appendChooser = page.waitForEvent("filechooser");
   await actions.getByRole("button", { name: "继续添加" }).click();
@@ -751,6 +808,9 @@ test("lets users append images after the first selection", async ({ page }) => {
     buffer: Buffer.from("e2e-image-second")
   });
   await expect(summary.getByText("2 张图像")).toBeVisible();
+  const appendedBox = await commandCard.boundingBox();
+  expect(appendedBox).not.toBeNull();
+  expect(Math.abs(appendedBox!.x + appendedBox!.width / 2 - initialCenter)).toBeLessThan(1);
   await expect(
     page.getByRole("button", { name: "自动分割 2 张图像" })
   ).toBeEnabled();
@@ -768,6 +828,92 @@ test("lets users append images after the first selection", async ({ page }) => {
   await expect(
     page.getByRole("button", { name: "自动分割 1 张图像" })
   ).toBeEnabled();
+});
+
+test("edits only the ROI selected from the right-side list by dragging the canvas", async ({
+  page
+}) => {
+  await installApiMock(page);
+  await page.goto(`/workspace/${jobId}`);
+  await page.getByRole("button", { name: "局部区域（可跳过）", exact: true }).click();
+  await page.getByRole("button", { name: "添加" }).click();
+  await page.getByRole("button", { name: "添加" }).click();
+
+  const roiBoxes = page.locator(".roi-box");
+  await expect(roiBoxes).toHaveCount(2);
+  const firstX1 = roiBoxes.nth(0).getByText("x1", { exact: true })
+    .locator("..").getByRole("spinbutton");
+  const secondX1 = roiBoxes.nth(1).getByText("x1", { exact: true })
+    .locator("..").getByRole("spinbutton");
+  await expect(firstX1).toHaveValue("0");
+  await expect(secondX1).toHaveValue("0");
+
+  await roiBoxes.nth(0).getByRole("button", { name: "在画布中调整此 ROI" }).click();
+  await roiBoxes.nth(1).getByRole("button", { name: "在画布中调整此 ROI" }).click();
+  await expect(
+    roiBoxes.nth(1).getByRole("button", { name: "正在画布中调整" })
+  ).toHaveAttribute("aria-pressed", "true");
+
+  const canvas = page.locator(".roi-canvas canvas").first();
+  const canvasBox = await canvas.boundingBox();
+  expect(canvasBox).not.toBeNull();
+  const scale = Math.min(canvasBox!.width / image.width, canvasBox!.height / image.height);
+  const offsetX = (canvasBox!.width - image.width * scale) / 2;
+  const offsetY = (canvasBox!.height - image.height * scale) / 2;
+  await page.mouse.move(
+    canvasBox!.x + offsetX + 64 * scale,
+    canvasBox!.y + offsetY + 64 * scale
+  );
+  await page.mouse.down();
+  await page.mouse.move(
+    canvasBox!.x + offsetX + 160 * scale,
+    canvasBox!.y + offsetY + 128 * scale,
+    { steps: 5 }
+  );
+  await page.mouse.up();
+
+  await expect(firstX1).toHaveValue("0");
+  await expect(secondX1).not.toHaveValue("0");
+
+  const secondX2 = roiBoxes.nth(1).getByText("x2", { exact: true })
+    .locator("..").getByRole("spinbutton");
+  const secondY2 = roiBoxes.nth(1).getByText("y2", { exact: true })
+    .locator("..").getByRole("spinbutton");
+  const beforeResizeX1 = Number(await secondX1.inputValue());
+  const beforeResizeX2 = Number(await secondX2.inputValue());
+  const beforeResizeY2 = Number(await secondY2.inputValue());
+  await page.mouse.move(
+    canvasBox!.x + offsetX + beforeResizeX2 * scale,
+    canvasBox!.y + offsetY + beforeResizeY2 * scale
+  );
+  await page.mouse.down();
+  await page.mouse.move(
+    canvasBox!.x + offsetX + (beforeResizeX2 + 96) * scale,
+    canvasBox!.y + offsetY + (beforeResizeY2 + 64) * scale,
+    { steps: 5 }
+  );
+  await page.mouse.up();
+
+  const afterResizeX1 = Number(await secondX1.inputValue());
+  const afterResizeX2 = Number(await secondX2.inputValue());
+  expect(afterResizeX2 - afterResizeX1).toBeGreaterThan(
+    beforeResizeX2 - beforeResizeX1
+  );
+});
+
+test("keeps the ROI preview stable while analysis polling reissues signed URLs", async ({
+  page
+}) => {
+  const { captured } = await installApiMock(page, {
+    reissueOriginalTokens: true,
+    pollingRun: true
+  });
+  await page.goto(`/workspace/${jobId}`);
+  await page.getByRole("button", { name: "局部区域（可跳过）", exact: true }).click();
+  await expect.poll(() => captured.originalPreviewGets).toBe(1);
+  await expect.poll(() => captured.analysisGets, { timeout: 5_000 }).toBeGreaterThan(1);
+  await page.waitForTimeout(1_800);
+  expect(captured.originalPreviewGets).toBe(1);
 });
 
 test("auto-segments one image without requiring a task name or parameters", async ({

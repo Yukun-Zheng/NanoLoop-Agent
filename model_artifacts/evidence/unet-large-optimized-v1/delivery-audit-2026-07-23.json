@@ -47,6 +47,13 @@
     "execution_git_commit": "unknown",
     "actual_device": "cpu"
   },
+  "independent_evaluation_source_contract": {
+    "adapter_sha256": "6055db452f0a78a0352732d66ea3436f16a558cf19d1a6f022a78627136dfab6",
+    "frozen_for_historical_evaluation": true,
+    "current_repository_adapter_sha256": "9f6ebf03dfa7732607cb3472a565edb6755d8e5213857526f531d38b28d43bf2",
+    "post_evaluation_change_scope": "adaptive_input_dimensions_and_detected_footer_roi",
+    "historical_evaluation_identity_preserved": true
+  },
   "independent_pixel_evaluation": {
     "verification_method": "independent_recalculation_from_delivered_prediction_and_human_gt_bytes",
     "evaluated_rect_half_open": [

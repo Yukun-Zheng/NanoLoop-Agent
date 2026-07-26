@@ -47,14 +47,19 @@ class MSBIAdapter(BaseSegmentationAdapter):
         started = time.perf_counter()
         rgb = open_rgb(request.image_bytes or request.image_path)
         height, width = rgb.shape[:2]
-        self._validate_expected_shape(height, width)
+        reference_mismatch = self._reference_shape_mismatch(height, width)
         gray = (
             0.299 * rgb[:, :, 0].astype(np.float32)
             + 0.587 * rgb[:, :, 1].astype(np.float32)
             + 0.114 * rgb[:, :, 2].astype(np.float32)
         )
         invalid_bottom = int(self.config.get("bottom_crop_px", 0))
-        inference_height = height - invalid_bottom
+        if request.inference_rect is not None:
+            inference_height = min(height, request.inference_rect.y2)
+        elif reference_mismatch:
+            inference_height = height
+        else:
+            inference_height = height - invalid_bottom
         if inference_height <= 0:
             raise ValueError("MSBI bottom crop exhausts the image")
         normalized = self._normalize(gray, inference_height)
@@ -103,7 +108,14 @@ class MSBIAdapter(BaseSegmentationAdapter):
                 )
         anchor_blend_at = time.perf_counter()
         valid = np.zeros((height, width), dtype=bool)
-        valid[:inference_height] = True
+        if request.inference_rect is None:
+            valid[:inference_height] = True
+        else:
+            rect = request.inference_rect
+            valid[
+                max(0, rect.y1) : min(inference_height, rect.y2),
+                max(0, rect.x1) : min(width, rect.x2),
+            ] = True
         if request.roi_mode == RoiMode.BOXES:
             allowed = np.zeros_like(valid)
             for box in request.boxes:
@@ -360,6 +372,15 @@ class MSBIAdapter(BaseSegmentationAdapter):
                 "mean_large_gate": mean_large_gate,
                 **profile_scores,
             },
+            warnings=(
+                [
+                    "input_dimensions_adapted:"
+                    f"reference={self.metadata.expected_input_width}x"
+                    f"{self.metadata.expected_input_height}:observed={width}x{height}"
+                ]
+                if reference_mismatch
+                else []
+            ),
             runtime_ms=elapsed_ms,
         )
 
@@ -740,18 +761,14 @@ class MSBIAdapter(BaseSegmentationAdapter):
             raise ValueError(f"MSBI anchor output has invalid shape/content: {array.shape}")
         return array[:, 0]
 
-    def _validate_expected_shape(self, height: int, width: int) -> None:
+    def _reference_shape_mismatch(self, height: int, width: int) -> bool:
         expected_height = self.metadata.expected_input_height
         expected_width = self.metadata.expected_input_width
-        if (
+        return (
             expected_height is not None
             and expected_width is not None
             and (height, width) != (expected_height, expected_width)
-        ):
-            raise ValueError(
-                f"MSBI expected image {(expected_width, expected_height)}, "
-                f"observed {(width, height)}"
-            )
+        )
 
     def _normalize(self, image: np.ndarray, valid_height: int) -> np.ndarray:
         normalization = str(self.config.get("normalization", "percentile"))

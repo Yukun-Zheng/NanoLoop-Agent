@@ -875,6 +875,10 @@ export interface components {
             /** Image Ids */
             image_ids: string[];
             inference?: components["schemas"]["InferenceOptions"];
+            /** Model Assignments */
+            model_assignments?: {
+                [key: string]: string;
+            };
             /** Model Ids */
             model_ids: string[];
             roi_mode: components["schemas"]["RoiMode"];
@@ -1296,10 +1300,17 @@ export interface components {
         };
         /** ModelRecommendationRequest */
         ModelRecommendationRequest: {
+            /**
+             * Auto Profile
+             * @default false
+             */
+            auto_profile: boolean;
             /** @default auto */
             device: components["schemas"]["DevicePreference"];
             /** Image Id */
             image_id: string;
+            /** Job Id */
+            job_id?: string | null;
             /** Max Gpu Memory Mb */
             max_gpu_memory_mb?: number | null;
             /**

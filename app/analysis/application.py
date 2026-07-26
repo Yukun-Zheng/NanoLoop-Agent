@@ -451,6 +451,7 @@ class AnalysisApplicationService:
         selected_models = [
             self._require_ready_model(model_id, models) for model_id in request.model_ids
         ]
+        selected_models_by_id = {model.model_id: model for model in selected_models}
         health = {item.model_id: item for item in self.inference_gateway.health()}
         freeze_bundle = getattr(self.inference_gateway, "freeze_model_bundle", None)
         frozen_bundles: dict[str, ModelBundleReference] = {}
@@ -551,7 +552,12 @@ class AnalysisApplicationService:
 
             for image in selected_images:
                 box_set = boxes_by_image[image.image_id]
-                for model in selected_models:
+                image_models = (
+                    [selected_models_by_id[request.model_assignments[image.image_id]]]
+                    if request.model_assignments
+                    else selected_models
+                )
+                for model in image_models:
                     model_analysis_roi = self._apply_model_invalid_bottom(image, model)
                     if request.roi_mode == RoiMode.BOXES:
                         try:
@@ -611,7 +617,10 @@ class AnalysisApplicationService:
                     configuration = RunConfiguration(
                         schema_version=3 if model_bundle is not None else 2,
                         provenance_status="complete",
-                        provenance_warnings=[],
+                        provenance_warnings=self._input_adaptation_warnings(
+                            image=image,
+                            model=model,
+                        ),
                         model_id=model.model_id,
                         model_version=model.version,
                         adapter_path=model.adapter_path,
@@ -1462,7 +1471,12 @@ class AnalysisApplicationService:
 
     @staticmethod
     def _apply_model_invalid_bottom(image: ImageAssetDTO, model: ModelMetadata) -> AnalysisROI:
-        """Freeze a model-declared bottom information bar outside the scientific ROI."""
+        """Apply a model footer only to its reference acquisition geometry.
+
+        Registered input dimensions describe the geometry used to validate a model, not an
+        upload restriction.  A fixed pixel footer is meaningful only for that exact geometry;
+        other image sizes rely on the image's detected SEM information bar instead.
+        """
 
         bottom_px = model.inference_invalid_bottom_px
         expected_size_declared = (
@@ -1481,18 +1495,7 @@ class AnalysisApplicationService:
                 model.expected_input_width,
                 model.expected_input_height,
             ):
-                raise InvalidImageError(
-                    details={
-                        "image_id": image.image_id,
-                        "model_id": model.model_id,
-                        "reason": "model_input_dimensions_mismatch",
-                        "expected": [
-                            model.expected_input_width,
-                            model.expected_input_height,
-                        ],
-                        "observed": [image.width, image.height],
-                    }
-                )
+                return image.analysis_roi.model_copy(deep=True)
         if bottom_px == 0:
             return image.analysis_roi.model_copy(deep=True)
         if bottom_px >= image.height:
@@ -1515,6 +1518,26 @@ class AnalysisApplicationService:
             update={"invalid_rects": [*image.analysis_roi.invalid_rects, invalid_bottom]},
             deep=True,
         )
+
+    @staticmethod
+    def _input_adaptation_warnings(
+        *,
+        image: ImageAssetDTO,
+        model: ModelMetadata,
+    ) -> list[str]:
+        expected_width = model.expected_input_width
+        expected_height = model.expected_input_height
+        if (
+            expected_width is None
+            or expected_height is None
+            or (image.width, image.height) == (expected_width, expected_height)
+        ):
+            return []
+        return [
+            "input_dimensions_adapted:"
+            f"reference={expected_width}x{expected_height}:"
+            f"observed={image.width}x{image.height}"
+        ]
 
     def _normalize_output(
         self,

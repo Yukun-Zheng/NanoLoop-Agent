@@ -80,3 +80,21 @@ def test_quality_gate_exposes_review_and_warning_reasons() -> None:
     )
     assert warning.status == QualityStatus.WARN
     assert "model_confidence_low" in warning.reasons
+
+
+def test_quality_gate_deduplicates_adapter_and_provenance_warnings() -> None:
+    warning = evaluate(
+        QualityInputs(
+            roi_area_px=10_000,
+            foreground_area_px=1_000,
+            instances=[_instance(1, 10, 10)],
+            minimum_area_px=8,
+            validation_warnings=[
+                "input_dimensions_adapted",
+                "input_dimensions_adapted",
+            ],
+        ),
+        QualityGateConfig(),
+    )
+
+    assert warning.reasons.count("input_dimensions_adapted") == 1
