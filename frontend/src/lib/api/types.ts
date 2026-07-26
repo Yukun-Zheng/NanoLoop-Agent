@@ -27,9 +27,11 @@ export type ModelRecommendationRequest =
   components["schemas"]["ModelRecommendationRequest"];
 export type QueryHistoryData = components["schemas"]["QueryHistoryData"];
 export type ReindexReport = components["schemas"]["ReindexReport"];
+export type ReportArtifactData = components["schemas"]["ReportArtifactData"];
 export type ReviewRunData = components["schemas"]["ReviewRunData"];
 export type ReviewRunRequest = components["schemas"]["ReviewRunRequest"];
 export type RoiBox = components["schemas"]["ROIBox"];
 export type Run = components["schemas"]["SegmentationRunDTO"];
+export type ScientificReportData = components["schemas"]["ScientificReportData"];
 export type UnifiedQueryRequest = components["schemas"]["UnifiedQueryRequest"];
 export type UnifiedQueryResponse = components["schemas"]["UnifiedQueryResponse"];

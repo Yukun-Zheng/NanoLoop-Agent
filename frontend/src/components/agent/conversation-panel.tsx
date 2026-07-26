@@ -33,7 +33,8 @@ import type { QueryMode } from "@/lib/store/workspace";
 const phases = [
   "正在理解问题",
   "正在查询实验数据",
-  "正在检索知识库",
+  "正在检索本地知识库",
+  "正在搜索在线文献与网页",
   "正在组织回答",
   "正在校验证据"
 ];
@@ -41,8 +42,8 @@ const phases = [
 const advancedModes: Array<{ value: QueryMode; label: string }> = [
   { value: "auto", label: "自动判断（推荐）" },
   { value: "analysis_data", label: "只查实验数据" },
-  { value: "material_knowledge", label: "只查知识库" },
-  { value: "mixed", label: "数据与知识综合" }
+  { value: "material_knowledge", label: "知识库与联网检索" },
+  { value: "mixed", label: "实验数据与文献综合" }
 ];
 
 export function ConversationPanel({
@@ -51,7 +52,8 @@ export function ConversationPanel({
   runIds,
   health,
   writeBlocker,
-  onLatestAnswer
+  onLatestAnswer,
+  variant = "page"
 }: {
   jobId: string;
   image: ImageAsset | null;
@@ -59,7 +61,9 @@ export function ConversationPanel({
   health: HealthData | null;
   writeBlocker: string | null;
   onLatestAnswer: (answer: UnifiedQueryResponse | null) => void;
+  variant?: "page" | "inspector";
 }) {
+  const compact = variant === "inspector";
   const queryClient = useQueryClient();
   const [activeId, setActiveId] = useState<string | null>(null);
   const [question, setQuestion] = useState("");
@@ -205,22 +209,27 @@ export function ConversationPanel({
   const messages = detail.data?.messages ?? [];
   const llmHealth = health?.llm_provider;
   const llmUnavailable = Boolean(llmHealth && llmHealth.status !== "healthy");
+  const researchHealth = health?.online_research;
+  const researchAvailable = Boolean(
+    researchHealth && researchHealth.status !== "unavailable"
+  );
   const suggestions = runIds.length
     ? [
         "帮我概括当前任务和已有结果",
-        "这次运行最值得先检查什么？",
+        "联网检索与当前材料相关的最新文献",
         "当前结果有哪些质量限制？",
         "结合证据，建议我下一步怎么做？"
       ]
     : [
         "帮我看看接下来该做什么",
-        "这张图现在可以做哪些分析？",
+        "联网检索这类材料的相关论文",
         "开始分析前需要准备什么？",
         "介绍一下你能调用的工具"
       ];
+  const visibleSuggestions = compact ? suggestions.slice(0, 2) : suggestions;
 
   return (
-    <div className="conversation-shell">
+    <div className={`conversation-shell ${compact ? "inspector-conversation" : ""}`}>
       <aside className="conversation-list" aria-label="对话列表">
         <div className="conversation-list-heading">
           <div>
@@ -267,6 +276,24 @@ export function ConversationPanel({
           ) : (
             <StatusBadge value="healthy" label="Qwen 已连接" />
           )}
+          {!researchHealth ? (
+            <StatusBadge value="pending" label="正在检查文献检索" />
+          ) : researchAvailable ? (
+            <StatusBadge value="healthy" label="在线文献可检索" />
+          ) : (
+            <StatusBadge value="degraded" label="联网检索不可用" />
+          )}
+          {compact ? (
+            <button
+              className="inspector-new-conversation"
+              type="button"
+              onClick={() => createConversation.mutate()}
+              disabled={createConversation.isPending}
+            >
+              <MessageSquarePlus size={12} />
+              新对话
+            </button>
+          ) : null}
         </div>
 
         <div className="conversation-messages" aria-live="polite">
@@ -275,13 +302,14 @@ export function ConversationPanel({
           {!messages.length && (!resolvedActiveId || !detail.isPending) ? (
             <div className="conversation-welcome">
               <span className="conversation-welcome-icon"><Sparkles size={22} /></span>
-              <h2>和 NanoLoop 一起分析这次实验</h2>
+              <h2>{compact ? "直接追问这次结果" : "和 NanoLoop 一起分析这次实验"}</h2>
               <p>
-                像使用 Codex 一样直接描述目标。Qwen 会自然对话，并在涉及实验事实时
-                自动调用数据工具或知识库，把结论和证据放在同一条回答里。
+                {compact
+                  ? "助手会结合当前图像和运行，并检索本地资料、在线文献与网页后给出带来源的回答。"
+                  : "像使用 Codex 一样直接描述目标。助手会按问题调用实验数据工具、本地知识库、在线文献和网页搜索，并把结论、来源与局限放在同一条回答里。"}
               </p>
               <div className="conversation-suggestions">
-                {suggestions.map((suggestion) => (
+                {visibleSuggestions.map((suggestion) => (
                   <button
                     type="button"
                     key={suggestion}
@@ -437,7 +465,7 @@ function MessageBubble({ message }: { message: ChatMessage }) {
                 <span className="message-model">{message.evidence.llm_model}</span>
               ) : null}
               <StatusBadge value={message.outcome_code || "unknown"} />
-              <span>{message.query_type}</span>
+              <span>{queryTypeLabel(message.query_type)}</span>
               {message.evidence?.fallback_used ? (
                 <StatusBadge value="degraded" label="已安全降级" />
               ) : null}
@@ -531,6 +559,16 @@ function messageEvidenceTarget(
 
 function safeDomToken(value: string): string {
   return value.replace(/[^A-Za-z0-9_-]/g, "-") || "unknown";
+}
+
+function queryTypeLabel(value: string): string {
+  return {
+    auto: "自动判断",
+    general_chat: "任务帮助",
+    analysis_data: "实验数据",
+    material_knowledge: "文献与知识",
+    mixed: "数据与文献综合"
+  }[value] || value;
 }
 
 function messageAsQueryResponse(message: ChatMessage): UnifiedQueryResponse {

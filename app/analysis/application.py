@@ -47,6 +47,7 @@ from app.contracts.analyses import (
     PixelRect,
     ReviewRunRequest,
     RunConfiguration,
+    ScaleCalibrationProvenance,
     SegmentationRunDTO,
 )
 from app.contracts.common import utc_now
@@ -576,9 +577,7 @@ class AnalysisApplicationService:
                         if request.inference.threshold is not None
                         else model.default_threshold
                     )
-                    inference_updates: dict[str, object] = {
-                        "threshold": effective_threshold
-                    }
+                    inference_updates: dict[str, object] = {"threshold": effective_threshold}
                     if (
                         "min_area_px" not in request.inference.model_fields_set
                         and model.default_min_area_px is not None
@@ -809,15 +808,37 @@ class AnalysisApplicationService:
             "inference": inference,
             "image_sha256": (image.sha256 if legacy_parent else parent.configuration.image_sha256),
             "scale_nm_per_pixel": (
-                image.scale_nm_per_pixel
-                if legacy_parent
-                else parent.configuration.scale_nm_per_pixel
+                request.scale_calibration.physical_length_nm
+                / request.scale_calibration.pixel_length_px
+                if request.scale_calibration is not None
+                else (
+                    image.scale_nm_per_pixel
+                    if legacy_parent
+                    else parent.configuration.scale_nm_per_pixel
+                )
             ),
             "scale_source": (
-                image.scale_source if legacy_parent else parent.configuration.scale_source
+                "manual"
+                if request.scale_calibration is not None
+                else (
+                    image.scale_source
+                    if legacy_parent
+                    else parent.configuration.scale_source
+                )
             ),
             "sem_metadata": (
                 image.sem_metadata if legacy_parent else parent.configuration.sem_metadata
+            ),
+            "scale_calibration": (
+                ScaleCalibrationProvenance(
+                    **request.scale_calibration.model_dump(),
+                    scale_nm_per_pixel=(
+                        request.scale_calibration.physical_length_nm
+                        / request.scale_calibration.pixel_length_px
+                    ),
+                )
+                if request.scale_calibration is not None
+                else parent.configuration.scale_calibration
             ),
             "resolved_postprocess": resolved_postprocess,
             "resolved_morphometry": parent_settings.morphometry.model_copy(deep=True),
@@ -1445,14 +1466,10 @@ class AnalysisApplicationService:
 
         bottom_px = model.inference_invalid_bottom_px
         expected_size_declared = (
-            model.expected_input_width is not None
-            or model.expected_input_height is not None
+            model.expected_input_width is not None or model.expected_input_height is not None
         )
         if model.family == ModelFamily.UNET and (bottom_px or expected_size_declared):
-            if (
-                model.expected_input_width is None
-                or model.expected_input_height is None
-            ):
+            if model.expected_input_width is None or model.expected_input_height is None:
                 raise InvalidImageError(
                     details={
                         "image_id": image.image_id,

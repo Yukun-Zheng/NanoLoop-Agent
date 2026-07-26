@@ -94,6 +94,7 @@ class RetrievedChunk(ContractModel):
     title: str
     source_type: str | None = None
     citation_text: str | None = None
+    source_url: str | None = Field(default=None, pattern=r"^https://")
     page_start: int | None = Field(default=None, ge=1)
     page_end: int | None = Field(default=None, ge=1)
     section_title: str | None = None

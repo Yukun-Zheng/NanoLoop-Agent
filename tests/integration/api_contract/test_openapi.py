@@ -33,6 +33,7 @@ def test_openapi_contains_the_frozen_v1_surface(api_harness: ApiHarness) -> None
         ("/api/v1/knowledge/documents", "get"),
         ("/api/v1/knowledge/documents/{doc_id}", "patch"),
         ("/api/v1/knowledge/reindex", "post"),
+        ("/api/v1/analyses/{job_id}/report", "post"),
         ("/api/v1/analyses/{job_id}/export", "get"),
         ("/api/v1/files/{token}", "get"),
     }

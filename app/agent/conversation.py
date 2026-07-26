@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from time import monotonic
 from uuid import uuid4
 
@@ -26,7 +28,8 @@ from app.contracts.conversations import (
 )
 from app.contracts.enums import QueryType
 from app.contracts.identity import AuthMode, PrincipalContext
-from app.contracts.queries import Citation, MaterialContext
+from app.contracts.knowledge import RetrievedChunk
+from app.contracts.queries import Citation, MaterialContext, ToolCallLog, ToolEvidence
 from app.core.errors import ResourceNotFoundError, ServiceUnavailableError
 from app.db.models import (
     AnalysisJob,
@@ -40,6 +43,7 @@ from app.db.repositories import SqlAlchemyRepositorySet
 from app.rag.prompts import CHAT_PROMPT_TEMPLATE_ID, CHAT_PROMPT_TEMPLATE_SHA256
 from app.rag.providers import (
     AnswerProviderError,
+    CitationContext,
     CitationValidationError,
     ExtractiveAnswerProvider,
     OpenAICompatibleProvider,
@@ -47,6 +51,7 @@ from app.rag.providers import (
     validate_provider_answer,
 )
 from app.rag.service import KnowledgeEvidence, KnowledgeService
+from app.research import OnlineResearchService, ResearchEvidence
 
 _UNTRUSTED_REQUEST = re.compile(
     r"忽略(?:文献|引用|规则)|编造|虚构|ignore (?:the )?(?:rules|citations)|fabricate",
@@ -54,6 +59,16 @@ _UNTRUSTED_REQUEST = re.compile(
 )
 _NUMERIC_SENTENCE = re.compile(r".*?[。！？.!?；;\n]+|.+$", re.S)
 _NUMBER = re.compile(r"(?<![A-Za-z])[-+]?(?:\d+(?:\.\d+)?|\.\d+)")
+_EVIDENCE_REFERENCE = re.compile(r"\[[DC]\d+\]")
+_DATA_REFERENCE = re.compile(r"\[(D\d+)\]")
+_MISSING_SCALE_CLAIM = re.compile(
+    r"(?:缺乏|缺少).{0,8}(?:比例尺|物理尺度)|未提供.{0,6}比例尺|"
+    r"(?:像素单位|像素尺度).{0,12}(?:推断|转换为真实)"
+)
+_NEGATED_MISSING_SCALE_CLAIM = re.compile(
+    r"(?:不得|不应|不能).{0,8}(?:缺乏|缺少|未提供).{0,8}(?:比例尺|物理尺度)"
+)
+logger = logging.getLogger(__name__)
 
 
 class ConversationService:
@@ -66,6 +81,7 @@ class ConversationService:
         router: QueryRouter,
         data_tools: DataToolService,
         knowledge_service: KnowledgeService,
+        research_service: OnlineResearchService | None = None,
         llm_provider: OpenAICompatibleProvider | None,
         history_turns: int,
         history_max_chars: int,
@@ -74,6 +90,7 @@ class ConversationService:
         self.router = router
         self.data_tools = data_tools
         self.knowledge_service = knowledge_service
+        self.research_service = research_service
         self.llm_provider = llm_provider
         self.history_turns = history_turns
         self.history_max_chars = history_max_chars
@@ -216,10 +233,7 @@ class ConversationService:
                     material_context=resolved.material_context,
                     previous_query_type=previous_type,
                 )
-                if (
-                    query_type is QueryType.AUTO
-                    or decision.query_type is not QueryType.AUTO
-                ):
+                if query_type is QueryType.AUTO or decision.query_type is not QueryType.AUTO:
                     query_type = decision.query_type
             if query_type is QueryType.AUTO:
                 query_type = QueryType.GENERAL_CHAT
@@ -294,12 +308,8 @@ class ConversationService:
             assistant.evidence = ChatTurnEvidence(
                 message_id=assistant.message_id,
                 citations_json=[item.model_dump(mode="json") for item in answer.citations],
-                data_evidence_json=[
-                    item.model_dump(mode="json") for item in answer.data.evidence
-                ],
-                tool_calls_json=[
-                    item.model_dump(mode="json") for item in answer.data.tool_calls
-                ],
+                data_evidence_json=[item.model_dump(mode="json") for item in answer.data.evidence],
+                tool_calls_json=[item.model_dump(mode="json") for item in answer.tool_calls],
                 limitations_json=list(answer.limitations),
                 llm_provider=answer.llm_provider,
                 llm_model=answer.llm_model,
@@ -334,6 +344,7 @@ class ConversationService:
             return _policy_refusal(started)
         data = DataQueryResult(answer="")
         knowledge = KnowledgeEvidence((), (), (), "OK")
+        research = ResearchEvidence()
         if query_type in {QueryType.ANALYSIS_DATA, QueryType.MIXED}:
             data = self.data_tools.answer(
                 DataQuery(
@@ -347,6 +358,14 @@ class ConversationService:
                     run_ids=tuple(request.run_ids),
                 )
             )
+            if query_type is QueryType.ANALYSIS_DATA and data.evidence:
+                data = replace(
+                    data,
+                    evidence=(
+                        *data.evidence,
+                        _analysis_guardrail_evidence(data.evidence),
+                    ),
+                )
         if query_type in {QueryType.MATERIAL_KNOWLEDGE, QueryType.MIXED}:
             knowledge = self.knowledge_service.collect_evidence(
                 request.content,
@@ -354,6 +373,12 @@ class ConversationService:
             )
         if knowledge.blocked_untrusted_instruction:
             return _policy_refusal(started)
+        if (
+            query_type in {QueryType.MATERIAL_KNOWLEDGE, QueryType.MIXED}
+            and self.research_service is not None
+        ):
+            research = self.research_service.collect(request.content)
+            knowledge = _merge_research_evidence(knowledge, research)
 
         provider = self.llm_provider
         if provider is not None and provider.health().status != "unavailable":
@@ -367,19 +392,50 @@ class ConversationService:
                     material_context=request.material_context,
                     task_context=task_context,
                 )
+                validation_limitations = generated.limitations
+                validation_data_ids = generated.used_data_ids
+                if query_type is QueryType.ANALYSIS_DATA:
+                    _validate_qualitative_analysis_synthesis(
+                        answer=generated.answer,
+                        physical_scale_available=_guardrail_has_physical_scale(data.evidence),
+                    )
+                    validation_limitations = ()
+                    validation_data_ids = tuple(
+                        sorted(
+                            set(_DATA_REFERENCE.findall(generated.answer)),
+                            key=lambda item: int(item[1:]),
+                        )
+                    )
                 validate_conversation_answer(
                     answer=generated.answer,
-                    limitations=generated.limitations,
-                    used_data_ids=generated.used_data_ids,
+                    limitations=validation_limitations,
+                    used_data_ids=validation_data_ids,
                     used_citation_ids=generated.used_citation_ids,
                     data_evidence=data.evidence,
                     citation_contexts=knowledge.contexts,
                     allow_uncited_general_chat=query_type is QueryType.GENERAL_CHAT,
                 )
                 used_citations = set(generated.used_citation_ids)
+                content = generated.answer
+                if query_type is QueryType.ANALYSIS_DATA:
+                    numeric_evidence_count = sum(
+                        item.tool_name != "interpret_analysis_guardrails" for item in data.evidence
+                    )
+                    deterministic = _cite_deterministic_data(
+                        data.answer,
+                        numeric_evidence_count,
+                    )
+                    if deterministic:
+                        content = f"{deterministic}\n\n本地模型综合：{generated.answer}"
+                generated_limitations = (
+                    _deterministic_analysis_limitations(data.evidence)
+                    if query_type is QueryType.ANALYSIS_DATA
+                    else generated.limitations
+                )
                 return _TurnAnswer(
-                    content=generated.answer,
+                    content=content,
                     data=data,
+                    tool_calls=tuple((*data.tool_calls, *research.tool_calls)),
                     citations=tuple(
                         citation
                         for citation in knowledge.citations
@@ -387,7 +443,7 @@ class ConversationService:
                     ),
                     limitations=tuple(
                         dict.fromkeys(
-                            [*data.limitations, *knowledge.limitations, *generated.limitations]
+                            [*data.limitations, *knowledge.limitations, *generated_limitations]
                         )
                     ),
                     confidence=generated.confidence,
@@ -397,13 +453,21 @@ class ConversationService:
                     fallback_used=False,
                     generation_time_ms=_elapsed_ms(started),
                 )
-            except (AnswerProviderError, CitationValidationError):
-                pass
+            except (AnswerProviderError, CitationValidationError) as error:
+                logger.info(
+                    "conversation_llm_fallback",
+                    extra={
+                        "reason": type(error).__name__,
+                        "detail": str(error),
+                        "query_type": query_type.value,
+                    },
+                )
         return self._fallback(
             request,
             query_type=query_type,
             data=data,
             knowledge=knowledge,
+            research_tool_calls=research.tool_calls,
             generation_time_ms=_elapsed_ms(started),
         )
 
@@ -414,6 +478,7 @@ class ConversationService:
         query_type: QueryType,
         data: DataQueryResult,
         knowledge: KnowledgeEvidence,
+        research_tool_calls: Sequence[ToolCallLog],
         generation_time_ms: int,
     ) -> _TurnAnswer:
         data_answer = _cite_deterministic_data(data.answer, len(data.evidence))
@@ -434,9 +499,7 @@ class ConversationService:
                 knowledge_answer = extracted.answer
                 knowledge_limitations = extracted.limitations
                 used = set(extracted.used_citation_ids)
-                citations = tuple(
-                    item for item in knowledge.citations if item.citation_id in used
-                )
+                citations = tuple(item for item in knowledge.citations if item.citation_id in used)
             except (AnswerProviderError, CitationValidationError):
                 knowledge_answer = "知识库证据不足，无法基于当前已导入文档回答该问题。"
         if query_type is QueryType.GENERAL_CHAT:
@@ -456,6 +519,7 @@ class ConversationService:
         return _TurnAnswer(
             content=content,
             data=data,
+            tool_calls=tuple((*data.tool_calls, *research_tool_calls)),
             citations=citations,
             limitations=tuple(
                 dict.fromkeys(
@@ -571,6 +635,20 @@ class ConversationService:
             if (run := selected_runs_by_id.get(run_id)) is not None
         ]
         run_total = sum(run_status_counts.values())
+        selected_run_configs = (
+            session.scalars(
+                select(SegmentationRun.run_config_json).where(
+                    SegmentationRun.job_id == job_id,
+                    SegmentationRun.run_id.in_(request.run_ids),
+                )
+            ).all()
+            if request.run_ids
+            else []
+        )
+        selected_run_has_physical_scale = any(
+            isinstance(config, Mapping) and config.get("scale_nm_per_pixel") is not None
+            for config in selected_run_configs
+        )
         active_statuses = {
             "CREATED",
             "VALIDATING",
@@ -601,9 +679,13 @@ class ConversationService:
                 {
                     "filename": image.filename,
                     "sample_id": image.sample_id,
+                    "width_px": image.width,
+                    "height_px": image.height,
                     "material_name": image.material_name,
                     "material_formula": image.material_formula,
-                    "has_physical_scale": image.scale_nm_per_pixel is not None,
+                    "has_physical_scale": (
+                        image.scale_nm_per_pixel is not None or selected_run_has_physical_scale
+                    ),
                     "scale_nm_per_pixel": image.scale_nm_per_pixel,
                     "scale_source": image.scale_source,
                     "sem_metadata": image.sem_metadata_json or None,
@@ -614,6 +696,7 @@ class ConversationService:
             "runs": {
                 "selected_count": len(request.run_ids),
                 "selected": selected_runs,
+                "selected_has_physical_scale": selected_run_has_physical_scale,
                 "job_total_count": run_total,
                 "status_counts": run_status_counts,
             },
@@ -658,14 +741,14 @@ class ConversationService:
             )
             missing = [run_id for run_id in run_ids if run_id not in owned]
             if missing:
-                raise ResourceNotFoundError(
-                    details={"resource": "run", "run_ids": missing}
-                )
+                raise ResourceNotFoundError(details={"resource": "run", "run_ids": missing})
         material = request.material_context
         if material is not None and material.source == "image_metadata":
             material = material.model_copy(update={"source": "request"})
-        if material is None and image is not None and (
-            image.material_name or image.material_formula
+        if (
+            material is None
+            and image is not None
+            and (image.material_name or image.material_formula)
         ):
             material = MaterialContext(
                 name=image.material_name,
@@ -688,6 +771,7 @@ class _TurnAnswer:
         *,
         content: str,
         data: DataQueryResult,
+        tool_calls: tuple[ToolCallLog, ...],
         citations: tuple[Citation, ...],
         limitations: tuple[str, ...],
         confidence: str,
@@ -699,6 +783,7 @@ class _TurnAnswer:
     ) -> None:
         self.content = content
         self.data = data
+        self.tool_calls = tool_calls
         self.citations = citations
         self.limitations = limitations
         self.confidence = confidence
@@ -810,6 +895,144 @@ def _cite_deterministic_data(answer: str, evidence_count: int) -> str:
     ).strip()
 
 
+def _analysis_guardrail_evidence(
+    evidence: Sequence[ToolEvidence],
+) -> ToolEvidence:
+    rows = [row for item in evidence for row in item.rows]
+    quality_statuses = {
+        str(row.get("quality_status")) for row in rows if row.get("quality_status") is not None
+    }
+    physical_scale_available = any(
+        row.get("number_density_um2") is not None
+        or row.get("mean_equivalent_diameter_nm") is not None
+        for row in rows
+    )
+    quality_interpretation = (
+        "自动质量门控通过，但不能替代人工实例边界抽查"
+        if quality_statuses == {"PASS"}
+        else "自动质量门控存在告警或状态不完整，应先人工复核实例边界与告警区域"
+    )
+    scale_interpretation = (
+        "当前证据包含物理尺度指标，不得声称缺少比例尺"
+        if physical_scale_available
+        else "当前证据只支持像素尺度，不得推断物理尺寸"
+    )
+    source_run_ids = sorted({run_id for item in evidence for run_id in item.source_run_ids})
+    warnings = list(
+        dict.fromkeys(warning for item in evidence for warning in item.quality_warnings)
+    )
+    return ToolEvidence(
+        tool_name="interpret_analysis_guardrails",
+        validated_arguments={"intent": "qualitative_interpretation"},
+        aggregates={
+            "quality_interpretation": quality_interpretation,
+            "scale_interpretation": scale_interpretation,
+            "scope_limitation": "当前图像视野不能单独代表完整样品的空间异质性",
+            "allowed_next_steps": [
+                "人工抽查小颗粒、粘连区和边界实例",
+                "增加重复视野以评估空间变异",
+                "增加对照运行或人工真值以评估模型与参数敏感性",
+            ],
+        },
+        source_run_ids=source_run_ids,
+        quality_warnings=warnings,
+    )
+
+
+def _validate_qualitative_analysis_synthesis(
+    *,
+    answer: str,
+    physical_scale_available: bool,
+) -> None:
+    if _NUMBER.search(_EVIDENCE_REFERENCE.sub("", answer)):
+        raise CitationValidationError(
+            "analysis synthesis must leave numeric claims to deterministic tools"
+        )
+    if not _DATA_REFERENCE.search(answer):
+        raise CitationValidationError(
+            "analysis synthesis requires at least one data evidence reference"
+        )
+    scale_claims = _NEGATED_MISSING_SCALE_CLAIM.sub("", answer)
+    if physical_scale_available and _MISSING_SCALE_CLAIM.search(scale_claims):
+        raise CitationValidationError("analysis synthesis contradicted the frozen physical scale")
+
+
+def _guardrail_has_physical_scale(evidence: Sequence[ToolEvidence]) -> bool:
+    return any(
+        item.tool_name == "interpret_analysis_guardrails"
+        and str(item.aggregates.get("scale_interpretation", "")).startswith(
+            "当前证据包含物理尺度指标"
+        )
+        for item in evidence
+    )
+
+
+def _deterministic_analysis_limitations(
+    evidence: Sequence[ToolEvidence],
+) -> tuple[str, ...]:
+    for index, item in enumerate(evidence, start=1):
+        if item.tool_name != "interpret_analysis_guardrails":
+            continue
+        marker = f"[D{index}]"
+        return tuple(
+            f"{text} {marker}"
+            for text in (
+                item.aggregates.get("quality_interpretation"),
+                item.aggregates.get("scope_limitation"),
+            )
+            if isinstance(text, str) and text
+        )
+    return ()
+
+
+def _merge_research_evidence(
+    knowledge: KnowledgeEvidence,
+    research: ResearchEvidence,
+) -> KnowledgeEvidence:
+    chunks = [
+        *(context.chunk for context in knowledge.contexts),
+        *research.chunks,
+    ][:12]
+    contexts: list[CitationContext] = []
+    citations: list[Citation] = []
+    for index, chunk in enumerate(chunks, start=1):
+        citation_id = f"C{index}"
+        contexts.append(CitationContext(citation_id=citation_id, chunk=chunk))
+        citations.append(_citation_from_chunk(citation_id, chunk))
+    return KnowledgeEvidence(
+        contexts=tuple(contexts),
+        citations=tuple(citations),
+        limitations=tuple(
+            dict.fromkeys(
+                [
+                    *knowledge.limitations,
+                    *research.limitations,
+                    "联网检索结果是本轮发现的摘要或题录，不等同于完整、系统的文献综述",
+                ]
+            )
+        ),
+        outcome_code="OK" if contexts else "INSUFFICIENT_EVIDENCE",
+        blocked_untrusted_instruction=knowledge.blocked_untrusted_instruction,
+    )
+
+
+def _citation_from_chunk(citation_id: str, chunk: RetrievedChunk) -> Citation:
+    compact = " ".join(chunk.text.split())
+    excerpt = compact if len(compact) <= 160 else compact[:159].rstrip() + "…"
+    return Citation(
+        citation_id=citation_id,
+        doc_id=chunk.doc_id,
+        title=chunk.title,
+        page=chunk.page_start,
+        chunk_id=chunk.chunk_id,
+        excerpt=excerpt,
+        retrieval_score=chunk.retrieval_score,
+        source_type=chunk.source_type,
+        citation_text=chunk.citation_text,
+        url=chunk.source_url,
+    )
+
+
 def _outcome(
     query_type: QueryType,
     data: DataQueryResult,
@@ -841,11 +1064,7 @@ def _data_tool_question(
     normalized = question.casefold().strip()
     if not any(marker in normalized for marker in ("差异", "为什么", "那", "这个")):
         return question
-    return (
-        f"{previous_user_question}；{question}"
-        if previous_user_question
-        else question
-    )
+    return f"{previous_user_question}；{question}" if previous_user_question else question
 
 
 def _elapsed_ms(started: float) -> int:
@@ -854,10 +1073,9 @@ def _elapsed_ms(started: float) -> int:
 
 def _policy_refusal(started: float) -> _TurnAnswer:
     return _TurnAnswer(
-        content=(
-            "我不能忽略证据或编造科学结论。请提供可核验的当前任务数据或知识库来源。"
-        ),
+        content=("我不能忽略证据或编造科学结论。请提供可核验的当前任务数据或知识库来源。"),
         data=DataQueryResult(answer=""),
+        tool_calls=(),
         citations=(),
         limitations=("拒绝绕过数据与引用约束；未调用模型或数据/检索工具",),
         confidence="low",

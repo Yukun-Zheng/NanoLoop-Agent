@@ -479,6 +479,9 @@ class OpenAICompatibleProvider:
                 {
                     "citation_id": context.citation_id,
                     "title": context.chunk.title,
+                    "source_type": context.chunk.source_type,
+                    "citation_text": context.chunk.citation_text,
+                    "source_url": context.chunk.source_url,
                     "page_start": context.chunk.page_start,
                     "page_end": context.chunk.page_end,
                     "text": context.chunk.text,

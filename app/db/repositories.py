@@ -166,11 +166,20 @@ def _image_dto(record: ImageAsset) -> ImageAssetDTO:
     )
 
 
-def _summary_dto(record: ImageSummary) -> ImageSummaryDTO:
+def _summary_dto(
+    record: ImageSummary,
+    *,
+    scale_nm_per_pixel: float | None,
+) -> ImageSummaryDTO:
     return ImageSummaryDTO(
         run_id=record.run_id,
         particle_count=record.particle_count,
         roi_area_px=record.roi_area_px,
+        roi_area_um2=(
+            record.roi_area_px * (scale_nm_per_pixel / 1000.0) ** 2
+            if scale_nm_per_pixel is not None
+            else None
+        ),
         number_density_px2=record.number_density_px2,
         number_density_um2=record.number_density_um2,
         mean_equivalent_diameter_px=record.mean_equivalent_diameter_px,
@@ -189,7 +198,15 @@ def _quality_dto(record: ImageSummary) -> QualityReportDTO:
 
 
 def _run_dto(record: SegmentationRun) -> SegmentationRunDTO:
-    summary = _summary_dto(record.summary) if record.summary is not None else None
+    configuration = RunConfiguration.model_validate(record.run_config_json)
+    summary = (
+        _summary_dto(
+            record.summary,
+            scale_nm_per_pixel=configuration.scale_nm_per_pixel,
+        )
+        if record.summary is not None
+        else None
+    )
     quality = _quality_dto(record.summary) if record.summary is not None else None
     public_paths = {
         key: value for key, value in record.paths_json.items() if key in RunArtifacts.model_fields
@@ -204,7 +221,7 @@ def _run_dto(record: SegmentationRun) -> SegmentationRunDTO:
         box_revision=record.box_revision,
         threshold=record.threshold,
         inference=InferenceOptions.model_validate(record.inference_json),
-        configuration=RunConfiguration.model_validate(record.run_config_json),
+        configuration=configuration,
         parent_run_id=record.parent_run_id,
         artifacts=RunArtifacts.model_validate(public_paths),
         summary=summary,

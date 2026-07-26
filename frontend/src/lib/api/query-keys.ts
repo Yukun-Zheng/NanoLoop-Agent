@@ -9,5 +9,7 @@ export const queryKeys = {
   models: ["models"] as const,
   run: (runId: string) => ["run", runId] as const,
   instanceArtifact: (runId: string) => ["instance-artifact", runId] as const,
+  scientificReport: (jobId: string, runIds: string[]) =>
+    ["scientific-report", jobId, ...runIds] as const,
   knowledge: ["knowledge"] as const
 };

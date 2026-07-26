@@ -45,8 +45,9 @@ describe("QueryAnswer", () => {
               chunk_id: "chunk-1",
               excerpt: "Evidence excerpt",
               retrieval_score: 0.8,
-              source_type: "material_note",
-              citation_text: "NanoLoop team, Materials note, 2026."
+              source_type: "external_literature",
+              citation_text: "NanoLoop team, Materials note, 2026.",
+              url: "https://doi.org/10.1000/example"
             }
           ],
           limitations: ["样本量有限"],
@@ -56,7 +57,7 @@ describe("QueryAnswer", () => {
       />
     );
     expect(screen.getByText("实验数据证据")).toBeVisible();
-    expect(screen.getByText("材料知识证据")).toBeVisible();
+    expect(screen.getByText("知识库、文献与网页证据")).toBeVisible();
     expect(screen.getByText("限制")).toBeVisible();
     expect(screen.getByText("证据不足")).toBeVisible();
     expect(screen.getByTestId("answer-copy").textContent).toBe(answer);
@@ -65,7 +66,11 @@ describe("QueryAnswer", () => {
     expect(citationLink).toHaveAttribute("href", "#citation-C1-1");
     expect(screen.getAllByText("[C1]")).toHaveLength(2);
     expect(screen.getByText("NanoLoop team, Materials note, 2026.")).toBeVisible();
-    expect(screen.getByText("来源类型 material_note")).toBeVisible();
+    expect(screen.getByText("在线文献题录")).toBeVisible();
+    expect(screen.getByRole("link", { name: "查看原始来源" })).toHaveAttribute(
+      "href",
+      "https://doi.org/10.1000/example"
+    );
 
     const argumentsBlock = screen.getByLabelText("compare_models 已验证参数");
     expect(argumentsBlock).toHaveTextContent('"metric": "number_density_px2"');

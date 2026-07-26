@@ -105,7 +105,7 @@ export function apiUpload<T>(
 
 export function toBffArtifactUrl(
   value: string | null | undefined,
-  options: { preview?: boolean } = {}
+  options: { preview?: boolean; inline?: boolean } = {}
 ): string | null {
   if (!value) return null;
   let pathname: string;
@@ -122,12 +122,60 @@ export function toBffArtifactUrl(
   if (!pathname.startsWith(prefix)) return null;
   const token = pathname.slice(prefix.length);
   if (!token || token.includes("/") || token.length > 4096) return null;
-  return `${BFF_ROOT}/files/${token}${options.preview ? "?preview=1" : ""}`;
+  const query = new URLSearchParams();
+  if (options.preview) query.set("preview", "1");
+  if (options.inline) query.set("inline", "1");
+  const suffix = query.size ? `?${query.toString()}` : "";
+  return `${BFF_ROOT}/files/${token}${suffix}`;
+}
+
+export function artifactPreviewIdentity(
+  value: string | null | undefined
+): string | null {
+  if (!value) return null;
+  try {
+    const base =
+      typeof window === "undefined" ? "http://nanoloop.invalid" : window.location.origin;
+    const parsed = new URL(value, base);
+    if (parsed.origin !== base && parsed.origin !== "http://nanoloop.invalid") return value;
+    const prefixes = ["/api/v1/files/", `${BFF_ROOT}/files/`];
+    const prefix = prefixes.find((candidate) => parsed.pathname.startsWith(candidate));
+    if (!prefix) return value;
+    const token = parsed.pathname.slice(prefix.length);
+    const parts = token.split(".");
+    if (parts.length !== 4 || parts[0] !== "v2" || !parts[2]) return value;
+    const normalized = parts[2].replace(/-/g, "+").replace(/_/g, "/");
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+    const claims = JSON.parse(atob(padded)) as Record<string, unknown>;
+    if (
+      claims.v !== 2 ||
+      typeof claims.tid !== "string" ||
+      typeof claims.sub !== "string" ||
+      typeof claims.jid !== "string" ||
+      typeof claims.aid !== "string" ||
+      typeof claims.pur !== "string" ||
+      typeof claims.sha256 !== "string" ||
+      !/^[a-f0-9]{64}$/i.test(claims.sha256)
+    ) {
+      return value;
+    }
+    return [
+      "v2",
+      claims.tid,
+      claims.sub,
+      claims.jid,
+      claims.aid,
+      claims.pur,
+      claims.sha256.toLowerCase()
+    ].join(":");
+  } catch {
+    return value;
+  }
 }
 
 export async function fetchArtifact(
   value: string,
-  options: { preview?: boolean } = {}
+  options: { preview?: boolean; inline?: boolean } = {}
 ): Promise<Response> {
   const url = toBffArtifactUrl(value, options);
   if (!url) {

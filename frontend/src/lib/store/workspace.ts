@@ -2,6 +2,8 @@ import { create } from "zustand";
 
 export type WorkspaceStage = "project" | "roi" | "models" | "runs" | "results" | "agent";
 export type InspectorTab =
+  | "assistant"
+  | "scale"
   | "system"
   | "image"
   | "model"
@@ -19,6 +21,7 @@ type WorkspaceState = {
   queryMode: QueryMode;
   queryDraft: string;
   railCollapsed: boolean;
+  inspectorCollapsed: boolean;
   setActiveImage: (value: string | null) => void;
   setActiveRun: (value: string | null) => void;
   setSelectedRuns: (value: string[]) => void;
@@ -27,6 +30,7 @@ type WorkspaceState = {
   setQueryMode: (value: QueryMode) => void;
   setQueryDraft: (value: string) => void;
   toggleRail: () => void;
+  toggleInspector: () => void;
 };
 
 export const useWorkspaceStore = create<WorkspaceState>((set) => ({
@@ -34,10 +38,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   activeRunId: null,
   selectedRunIds: [],
   stage: "project",
-  inspectorTab: "system",
+  inspectorTab: "assistant",
   queryMode: "auto",
   queryDraft: "",
   railCollapsed: false,
+  inspectorCollapsed: false,
   setActiveImage: (activeImageId) => set({ activeImageId }),
   setActiveRun: (activeRunId) => set({ activeRunId }),
   setSelectedRuns: (selectedRunIds) => set({ selectedRunIds }),
@@ -45,5 +50,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   setInspectorTab: (inspectorTab) => set({ inspectorTab }),
   setQueryMode: (queryMode) => set({ queryMode }),
   setQueryDraft: (queryDraft) => set({ queryDraft }),
-  toggleRail: () => set((state) => ({ railCollapsed: !state.railCollapsed }))
+  toggleRail: () => set((state) => ({ railCollapsed: !state.railCollapsed })),
+  toggleInspector: () =>
+    set((state) => ({ inspectorCollapsed: !state.inspectorCollapsed }))
 }));

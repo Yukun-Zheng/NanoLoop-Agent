@@ -18,8 +18,10 @@ dependencies = [
   "pillow>=11,<13",
   "pydantic>=2.10,<3",
   "pydantic-settings>=2.7,<3",
+  "python-docx>=1.2,<2",
   "python-multipart>=0.0.20,<1",
   "pyyaml>=6,<7",
+  "reportlab>=4.4,<5",
   "scikit-image>=0.25,<1",
   "scipy>=1.15,<2",
   "sqlalchemy>=2.0,<3",
@@ -42,7 +44,10 @@ models = [
   "torchvision>=0.26,<1",
   "ultralytics>=8.3,<9",
 ]
-docs = ["python-docx>=1.2,<2"]
+docs = [
+  "python-docx>=1.2,<2",
+  "reportlab>=4.4,<5",
+]
 dev = [
   "mypy>=1.15,<2",
   "pytest>=8.3,<9",
@@ -80,7 +85,16 @@ warn_unused_ignores = true
 exclude = ["app/db/migrations/versions"]
 
 [[tool.mypy.overrides]]
-module = ["scipy", "scipy.*", "skimage", "skimage.*", "tifffile", "tifffile.*"]
+module = [
+  "reportlab",
+  "reportlab.*",
+  "scipy",
+  "scipy.*",
+  "skimage",
+  "skimage.*",
+  "tifffile",
+  "tifffile.*",
+]
 follow_imports = "skip"
 ignore_missing_imports = true
 

@@ -9,10 +9,14 @@ import {
   Plus,
   ScanLine
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useEffectEvent, useState } from "react";
 
 import { Button } from "@/components/ui/button";
-import { fetchArtifact, toBffArtifactUrl } from "@/lib/api/client";
+import {
+  artifactPreviewIdentity,
+  fetchArtifact,
+  toBffArtifactUrl
+} from "@/lib/api/client";
 import { errorMessage } from "@/lib/api/errors";
 import type { InstanceArtifact } from "@/lib/results/instance-artifact";
 
@@ -42,33 +46,42 @@ export function ArtifactPreview({
   const [fit, setFit] = useState(true);
   const [zoom, setZoom] = useState(1);
   const [copiedInstance, setCopiedInstance] = useState<number | null>(null);
+  const previewIdentity = artifactPreviewIdentity(url);
+  const currentUrl = useEffectEvent(() => url);
 
   useEffect(() => {
-    if (!url) return;
+    const requestUrl = currentUrl();
+    if (!previewIdentity || !requestUrl) return;
     let active = true;
     let objectUrl: string | null = null;
-    void fetchArtifact(url, { preview: true })
+    void fetchArtifact(requestUrl, { preview: true })
       .then(async (response) => {
         const contentType = response.headers.get("content-type") || "application/octet-stream";
         if (!contentType.startsWith("image/")) {
-          if (active) setState({ source: url, status: "unsupported", contentType });
+          if (active) {
+            setState({ source: previewIdentity, status: "unsupported", contentType });
+          }
           return;
         }
         const blob = await response.blob();
         if (!active) return;
         objectUrl = URL.createObjectURL(blob);
-        setState({ source: url, status: "ready", objectUrl, contentType });
+        setState({ source: previewIdentity, status: "ready", objectUrl, contentType });
       })
       .catch((error: unknown) => {
         if (active) {
-          setState({ source: url, status: "error", message: errorMessage(error) });
+          setState({
+            source: previewIdentity,
+            status: "error",
+            message: errorMessage(error)
+          });
         }
       });
     return () => {
       active = false;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [url]);
+  }, [previewIdentity]);
 
   if (!url) {
     return (
@@ -80,7 +93,9 @@ export function ArtifactPreview({
   }
 
   const visibleState: PreviewState =
-    state.source === url ? state : { source: url, status: "loading" };
+    state.source === previewIdentity
+      ? state
+      : { source: previewIdentity, status: "loading" };
 
   async function copyInstance(instanceIndex: number) {
     await navigator.clipboard.writeText(String(instanceIndex));
@@ -136,7 +151,7 @@ export function ArtifactPreview({
         <div className={`artifact-scroll${fit ? " is-fit" : " is-actual"}`}>
           <div
             className="artifact-image-stack"
-            style={{ transform: `scale(${zoom})` }}
+            style={{ transform: `translateZ(0) scale(${zoom})` }}
           >
             {/* Signed bytes render only from a short-lived same-origin object URL. */}
             {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -144,6 +159,7 @@ export function ArtifactPreview({
               className="artifact-image"
               src={visibleState.objectUrl}
               alt={alt}
+              decoding="async"
             />
             {mode === "instances" && instances?.labels.length ? (
               <div className="instance-label-layer" aria-label="可交互实例编号">

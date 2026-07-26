@@ -67,4 +67,10 @@ class HealthData(ContractModel):
             detail="LLM provider status not reported",
         )
     )
+    online_research: HealthComponent = Field(
+        default_factory=lambda: HealthComponent(
+            status="degraded",
+            detail="联网检索状态尚未报告",
+        )
+    )
     version: str
