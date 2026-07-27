@@ -62,13 +62,16 @@ class GroundedLocalProvider:
     def health(self) -> HealthComponent:
         return HealthComponent(status="healthy")
 
-    def generate_conversation(self, **_: object) -> ConversationProviderAnswer:
+    def generate_conversation(self, **kwargs: object) -> ConversationProviderAnswer:
+        evidence_count = len(kwargs.get("data_evidence", ()))  # type: ignore[arg-type]
+        answer = (
+            "自动质量门控不替代人工边界抽查，单个图像视野不能代表完整样品 [D1]。"
+        )
+        if evidence_count > 1:
+            answer += " 汇总统计应与识别叠加图逐视野核对，并增加重复视野 [D2]。"
         return ConversationProviderAnswer(
-            answer=(
-                "自动质量门控不替代人工边界抽查，单个图像视野不能代表完整样品，"
-                "建议增加重复视野 [D1]。"
-            ),
-            used_data_ids=("D1",),
+            answer=answer,
+            used_data_ids=tuple(f"D{index}" for index in range(1, evidence_count + 1)),
             used_citation_ids=(),
             confidence="high",
         )
@@ -180,7 +183,7 @@ def test_scientific_report_builds_preview_docx_and_pdf_from_one_snapshot(
     preview, docx_file, pdf_file = ScientificReportBuilder(
         file_store=file_store,
         data_tools=data_tools,
-        llm_provider=None,
+        llm_provider=GroundedLocalProvider(),  # type: ignore[arg-type]
     ).build(
         snapshot=snapshot,
         tenant_id="tenant_report",
@@ -189,8 +192,8 @@ def test_scientific_report_builds_preview_docx_and_pdf_from_one_snapshot(
 
     assert len(data_tools.questions) == 4
     assert preview.scale_status == "physical"
-    assert preview.fallback_used is True
-    assert preview.synthesis_provider == "deterministic_fallback"
+    assert preview.fallback_used is False
+    assert preview.synthesis_provider == "local_llm"
     assert preview.headline_metrics[2].display_value == "59.37 nm"
     assert preview.quality_status is QualityStatus.WARN
     assert any("min_area_px=8" in item.action for item in preview.recommendations)
@@ -238,7 +241,7 @@ def test_scientific_report_builds_preview_docx_and_pdf_from_one_snapshot(
     batch_preview, batch_docx, batch_pdf = ScientificReportBuilder(
         file_store=file_store,
         data_tools=data_tools,
-        llm_provider=None,
+        llm_provider=GroundedLocalProvider(),  # type: ignore[arg-type]
     ).build(
         snapshot=batch_snapshot,
         tenant_id="tenant_report",
@@ -273,8 +276,8 @@ def test_scientific_report_builds_preview_docx_and_pdf_from_one_snapshot(
     assert synthesis_provider == "local_llm"
     assert synthesis_model == "fixture-qwen"
     assert fallback_used is False
-    assert "本地模型综合：" in llm_summary
-    assert "建议增加重复视野 [D1]" in llm_summary
+    assert "结果解读：" in llm_summary
+    assert "不能代表完整样品 [D1]" in llm_summary
 
 
 def test_batch_summary_exposes_distributions_variability_and_iqr_outliers() -> None:

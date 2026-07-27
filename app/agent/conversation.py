@@ -392,31 +392,44 @@ class ConversationService:
                     material_context=request.material_context,
                     task_context=task_context,
                 )
-                validation_limitations = generated.limitations
+                answer = generated.answer
+                provider_limitations = generated.limitations
+                validation_limitations = provider_limitations
                 validation_data_ids = generated.used_data_ids
+                validation_citation_ids = generated.used_citation_ids
+                if query_type is QueryType.GENERAL_CHAT:
+                    answer = _EVIDENCE_REFERENCE.sub("", answer).strip()
+                    provider_limitations = tuple(
+                        cleaned
+                        for item in provider_limitations
+                        if (cleaned := _EVIDENCE_REFERENCE.sub("", item).strip())
+                    )
+                    validation_limitations = provider_limitations
+                    validation_data_ids = ()
+                    validation_citation_ids = ()
                 if query_type is QueryType.ANALYSIS_DATA:
                     _validate_qualitative_analysis_synthesis(
-                        answer=generated.answer,
+                        answer=answer,
                         physical_scale_available=_guardrail_has_physical_scale(data.evidence),
                     )
                     validation_limitations = ()
                     validation_data_ids = tuple(
                         sorted(
-                            set(_DATA_REFERENCE.findall(generated.answer)),
+                            set(_DATA_REFERENCE.findall(answer)),
                             key=lambda item: int(item[1:]),
                         )
                     )
                 validate_conversation_answer(
-                    answer=generated.answer,
+                    answer=answer,
                     limitations=validation_limitations,
                     used_data_ids=validation_data_ids,
-                    used_citation_ids=generated.used_citation_ids,
+                    used_citation_ids=validation_citation_ids,
                     data_evidence=data.evidence,
                     citation_contexts=knowledge.contexts,
                     allow_uncited_general_chat=query_type is QueryType.GENERAL_CHAT,
                 )
-                used_citations = set(generated.used_citation_ids)
-                content = generated.answer
+                used_citations = set(validation_citation_ids)
+                content = answer
                 if query_type is QueryType.ANALYSIS_DATA:
                     numeric_evidence_count = sum(
                         item.tool_name != "interpret_analysis_guardrails" for item in data.evidence
@@ -426,11 +439,11 @@ class ConversationService:
                         numeric_evidence_count,
                     )
                     if deterministic:
-                        content = f"{deterministic}\n\n本地模型综合：{generated.answer}"
+                        content = f"{deterministic}\n\n本地模型综合：{answer}"
                 generated_limitations = (
                     _deterministic_analysis_limitations(data.evidence)
                     if query_type is QueryType.ANALYSIS_DATA
-                    else generated.limitations
+                    else provider_limitations
                 )
                 return _TurnAnswer(
                     content=content,
@@ -503,9 +516,15 @@ class ConversationService:
             except (AnswerProviderError, CitationValidationError):
                 knowledge_answer = "知识库证据不足，无法基于当前已导入文档回答该问题。"
         if query_type is QueryType.GENERAL_CHAT:
+            provider_available = (
+                self.llm_provider is not None
+                and self.llm_provider.health().status != "unavailable"
+            )
             content = (
-                "本地 Qwen 当前未连接，因此这一轮无法完成通用 AI 对话。"
-                "请启动或恢复 Ollama 后重试；实验数据和知识库查询仍可使用安全降级。"
+                "本地 Qwen 已连接，但本轮回答未通过证据校验，请直接重试或换一种问法。"
+                if provider_available
+                else "本地 Qwen 当前未连接。请启动或恢复 Ollama 后重试；"
+                "实验数据和知识库查询仍可使用安全降级。"
             )
         elif query_type is QueryType.ANALYSIS_DATA:
             content = data_answer or "当前任务没有足够的已完成运行数据可供回答。"

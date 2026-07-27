@@ -1034,11 +1034,13 @@ test("completes the mocked scientific workflow through verified export", async (
 
   await page.getByRole("button", { name: "开始分析" }).click();
   await expect(page.getByRole("heading", { name: model.model_id })).toBeVisible();
-  await expect(page.getByRole("heading", { name: unavailableModel.model_id })).toBeVisible();
-  await expect(page.getByText("模型权重校验失败：checkpoint 缺失")).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: unavailableModel.model_id })
+  ).toHaveCount(0);
+  await expect(page.getByText("模型权重校验失败：checkpoint 缺失")).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: `选择 ${unavailableModel.model_id}` })
-  ).toBeDisabled();
+  ).toHaveCount(0);
   await expect(
     page.getByRole("radio", { name: /只分析已保存 ROI/ })
   ).toHaveAttribute("aria-checked", "true");

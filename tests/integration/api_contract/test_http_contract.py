@@ -503,7 +503,7 @@ def test_analysis_upload_is_persisted_and_immediately_downloadable(
 
     report_response = api_harness.client.post(
         f"/api/v1/analyses/{payload['data']['job']['job_id']}/report",
-        json={"run_ids": [run_id]},
+        json={"run_ids": [run_id], "require_qwen": False},
     )
     assert report_response.status_code == 200
     report = report_response.json()["data"]

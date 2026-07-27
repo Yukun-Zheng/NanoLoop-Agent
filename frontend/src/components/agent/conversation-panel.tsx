@@ -208,7 +208,8 @@ export function ConversationPanel({
 
   const messages = detail.data?.messages ?? [];
   const llmHealth = health?.llm_provider;
-  const llmUnavailable = Boolean(llmHealth && llmHealth.status !== "healthy");
+  const llmUnavailable = llmHealth?.status === "unavailable";
+  const llmDegraded = llmHealth?.status === "degraded";
   const researchHealth = health?.online_research;
   const researchAvailable = Boolean(
     researchHealth && researchHealth.status !== "unavailable"
@@ -273,9 +274,20 @@ export function ConversationPanel({
             <StatusBadge value="pending" label="正在检查本地 Qwen" />
           ) : llmUnavailable ? (
             <StatusBadge value="degraded" label="Qwen 未连接：当前仅为证据降级模式" />
+          ) : llmDegraded ? (
+            <StatusBadge value="degraded" label="Qwen 已连接：上一轮失败，可直接重试" />
           ) : (
             <StatusBadge value="healthy" label="Qwen 已连接" />
           )}
+          {llmUnavailable || llmDegraded ? (
+            <button
+              className="conversation-health-retry"
+              type="button"
+              onClick={() => queryClient.invalidateQueries({ queryKey: queryKeys.health })}
+            >
+              重新检测
+            </button>
+          ) : null}
           {!researchHealth ? (
             <StatusBadge value="pending" label="正在检查文献检索" />
           ) : researchAvailable ? (

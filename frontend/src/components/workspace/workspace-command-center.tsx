@@ -135,7 +135,8 @@ export function WorkspaceCommandCenter({
 
   const models = useQuery({
     queryKey: queryKeys.models,
-    queryFn: () => apiRequest<ModelList>("models").then((response) => response.data)
+    queryFn: () =>
+      apiRequest<ModelList>("models?status=ready").then((response) => response.data)
   });
 
   const activeImage = useMemo(
@@ -597,7 +598,11 @@ export function WorkspaceCommandCenter({
 
             {stage === "results" ? (
               <ResultView
-                key={activeRun?.run_id ?? "no-run"}
+                key={
+                  activeRun
+                    ? `${activeRun.run_id}-${activeRun.status}`
+                    : "no-run"
+                }
                 jobId={jobId}
                 image={activeImage}
                 run={activeRun}

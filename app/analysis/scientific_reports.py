@@ -62,6 +62,7 @@ from app.contracts.reports import (
     ReportRunSummaryDTO,
     ScientificReportPreviewDTO,
 )
+from app.core.errors import ServiceUnavailableError
 from app.rag.providers import (
     AnswerProviderError,
     CitationValidationError,
@@ -102,6 +103,7 @@ class ScientificReportBuilder:
         snapshot: JobExportSnapshot,
         tenant_id: str,
         run_ids: Sequence[str],
+        require_qwen: bool = True,
     ) -> tuple[ScientificReportPreviewDTO, StoredFile, StoredFile]:
         runs_by_id = {run.run_id: run for run in snapshot.runs}
         selected = tuple(runs_by_id[run_id] for run_id in run_ids)
@@ -125,6 +127,7 @@ class ScientificReportBuilder:
             snapshot=snapshot,
             runs=selected,
             evidence=evidence,
+            require_qwen=require_qwen,
         )
         report_id = _report_id(
             snapshot=snapshot,
@@ -145,10 +148,10 @@ class ScientificReportBuilder:
             evidence=evidence,
             tool_limitations=tool_limitations,
         )
-        overlay = _primary_overlay(snapshot, selected[0].run_id, self.file_store)
+        figures = _report_figures(snapshot, selected, self.file_store)
         with _REPORT_LOCK:
-            docx_bytes = _render_docx(preview, overlay=overlay)
-            pdf_bytes = _render_pdf(preview, overlay=overlay)
+            docx_bytes = _render_docx(preview, figures=figures)
+            pdf_bytes = _render_pdf(preview, figures=figures)
             docx_file = self._store_report(
                 snapshot.job.job_id,
                 f"nanoloop-scientific-report-{report_id[-12:]}.docx",
@@ -207,24 +210,47 @@ class ScientificReportBuilder:
         snapshot: JobExportSnapshot,
         runs: Sequence[SegmentationRunDTO],
         evidence: Sequence[ToolEvidence],
+        require_qwen: bool = True,
     ) -> tuple[str, str, str | None, bool]:
         fallback = _deterministic_summary(snapshot, runs, evidence)
         provider = self.llm_provider
         if provider is None or not evidence:
+            if require_qwen:
+                raise ServiceUnavailableError(
+                    "科研报告需要本地 Qwen 参与整理；请先启动 Ollama 并确认 Qwen 状态为已连接。",
+                    details={"dependency": "qwen", "reason": "provider_not_configured"},
+                )
             return fallback, "deterministic_fallback", None, True
         try:
             if provider.health().status == "unavailable":
+                if require_qwen:
+                    raise ServiceUnavailableError(
+                        "科研报告需要本地 Qwen 参与整理，但当前无法连接模型。"
+                        "请启动 Ollama 后重新检测。",
+                        details={"dependency": "qwen", "reason": "provider_unavailable"},
+                    )
                 return fallback, "deterministic_fallback", None, True
+            if not provider.model or "qwen" not in provider.model.lower():
+                raise ServiceUnavailableError(
+                    "科研报告仅接受 Qwen 整理结果；当前配置的模型不是 Qwen。",
+                    details={
+                        "dependency": "qwen",
+                        "reason": "unexpected_model",
+                        "configured_model": provider.model,
+                    },
+                )
+            synthesis_evidence = evidence[:2]
             generated = provider.generate_conversation(
                 question=(
-                    "只写一个中文句子，必须忠实包含 DATA_EVIDENCE 的质量解释、"
-                    "视野限制和一个建议步骤；不得出现任何实验数值、百分比、单位、"
-                    "参数或运行编号；句末必须保留 [D1]。"
-                    "不要声称元素、晶相、价态、性能或因果机理。"
+                    "请写 2 至 4 句简洁、自然的中文科研结果解读。必须综合使用每一条 "
+                    "DATA_EVIDENCE，并保留对应 [D#] 标记；先说明质量状态和视野代表性，"
+                    "再解释汇总统计应如何审阅，最后给出一个可执行的复核步骤。"
+                    "只能使用输入中已有的事实，不得补造实验数值、材料成分、晶相、价态、"
+                    "性能或因果机理。正文不要出现“AI”“人工智能”“大模型”等表述。"
                 ),
                 query_type="analysis_data",
                 history=(),
-                data_evidence=evidence[:1],
+                data_evidence=synthesis_evidence,
                 contexts=(),
                 material_context=None,
             )
@@ -233,35 +259,42 @@ class ScientificReportBuilder:
                 limitations=generated.limitations,
                 used_data_ids=generated.used_data_ids,
                 used_citation_ids=generated.used_citation_ids,
-                data_evidence=evidence[:1],
+                data_evidence=synthesis_evidence,
                 citation_contexts=(),
                 allow_uncited_general_chat=False,
             )
-            if not generated.used_data_ids:
+            required_ids = {f"D{index}" for index in range(1, len(synthesis_evidence) + 1)}
+            if not required_ids.issubset(set(generated.used_data_ids)):
                 raise CitationValidationError(
-                    "report synthesis must cite at least one data evidence item"
+                    "report synthesis must cite every supplied report evidence item"
                 )
-            without_marker = re.sub(r"\[D\d+\]", "", generated.answer)
-            if re.search(r"\d", without_marker):
+            if re.search(r"\b(?:AI|人工智能|大模型)\b", generated.answer, flags=re.I):
                 raise CitationValidationError(
-                    "report qualitative synthesis must not contain numerical claims"
-                )
-            if any(term not in generated.answer for term in ("人工", "视野", "建议")):
-                raise CitationValidationError(
-                    "report qualitative synthesis omitted required review guardrails"
+                    "report synthesis contains disallowed process-oriented wording"
                 )
             return (
-                f"{fallback}\n\n本地模型综合：{generated.answer}",
+                f"{fallback}\n\n结果解读：{generated.answer}",
                 "local_llm",
                 provider.model,
                 False,
             )
+        except ServiceUnavailableError:
+            raise
         except (
             AnswerProviderError,
             CitationValidationError,
             TypeError,
             ValueError,
         ) as error:
+            if require_qwen:
+                raise ServiceUnavailableError(
+                    "Qwen 未能生成通过证据校验的报告解读，请确认 Ollama 与模型正常后重试。",
+                    details={
+                        "dependency": "qwen",
+                        "reason": type(error).__name__,
+                        "model": provider.model,
+                    },
+                ) from error
             logger.info(
                 "scientific_report_llm_fallback",
                 extra={"reason": type(error).__name__},
@@ -349,7 +382,7 @@ def _build_preview(
             ),
             (
                 "颗粒数量、面积、等效粒径、覆盖率和密度由 canonical 实例与形貌统计代码计算；"
-                f"报告层不在浏览器或大模型中重算数值。{_scale_methodology(runs)}"
+                f"报告整理过程不在浏览器或语言模型中重算数值。{_scale_methodology(runs)}"
             ),
             (
                 "批量模式按运行汇总均值、标准差、四分位数、极值和变异系数，"
@@ -362,8 +395,8 @@ def _build_preview(
                 "并把来源运行和单位作为证据保留。"
             ),
             (
-                "本地大模型只对已验证证据做一次语言综合；模型不可用或证据标记校验失败时，"
-                "自动采用确定性摘要。"
+                f"Qwen（{synthesis_model or '未记录型号'}）只依据已验证的统计证据整理结果解读；"
+                "所有数值仍以冻结的运行汇总、表格和证据记录为准。"
             ),
         ],
         limitations=limitations,
@@ -1423,7 +1456,34 @@ def _primary_overlay(
     return None
 
 
-def _render_docx(report: ScientificReportPreviewDTO, *, overlay: Path | None) -> bytes:
+def _report_figures(
+    snapshot: JobExportSnapshot,
+    runs: Sequence[SegmentationRunDTO],
+    file_store: LocalFileStore,
+) -> tuple[tuple[Path, str], ...]:
+    images_by_id = {image.image_id: image for image in snapshot.images}
+    figures: list[tuple[Path, str]] = []
+    for run in runs:
+        overlay = _primary_overlay(snapshot, run.run_id, file_store)
+        if overlay is None:
+            continue
+        image = images_by_id.get(run.image_id)
+        filename = getattr(image, "filename", None) or run.image_id
+        quality = run.quality.status.value if run.quality is not None else run.status.value
+        figures.append(
+            (
+                overlay,
+                f"{filename} · {run.model_id} · 质量状态 {quality}",
+            )
+        )
+    return tuple(figures)
+
+
+def _render_docx(
+    report: ScientificReportPreviewDTO,
+    *,
+    figures: Sequence[tuple[Path, str]],
+) -> bytes:
     document = Document()
     section = document.sections[0]
     section.page_width = Inches(8.5)
@@ -1458,7 +1518,7 @@ def _render_docx(report: ScientificReportPreviewDTO, *, overlay: Path | None) ->
         (
             "综合方式",
             (
-                f"本地模型 {report.synthesis_model}"
+                f"Qwen {report.synthesis_model} 辅助整理"
                 if report.synthesis_provider == "local_llm"
                 else "确定性可信模板"
             ),
@@ -1470,8 +1530,8 @@ def _render_docx(report: ScientificReportPreviewDTO, *, overlay: Path | None) ->
         _add_run(paragraph, value, 10.5, color=_INK)
 
     _add_heading(document, "技术摘要", level=1)
-    if overlay is not None:
-        _add_summary_with_overlay(document, report.technical_summary, overlay)
+    if figures:
+        _add_summary_with_overlay(document, report.technical_summary, figures[0][0])
     else:
         _add_callout(document, report.technical_summary)
 
@@ -1485,6 +1545,9 @@ def _render_docx(report: ScientificReportPreviewDTO, *, overlay: Path | None) ->
         detail.paragraph_format.line_spacing = 1.1
 
     _add_metric_table(document, report)
+    if len(figures) > 1:
+        _add_heading(document, "各视野识别结果", level=2)
+        _add_figure_gallery(document, figures[1:], start_index=2)
     if report.batch_summary is not None:
         _add_heading(document, "批量分布与异常视野", level=2)
         _add_batch_distribution_table(document, report.batch_summary)
@@ -1643,6 +1706,43 @@ def _add_summary_with_overlay(document: Any, text: str, overlay: Path) -> None:
     _add_run(caption, "图 1  模型覆盖与原图叠加，供人工核对。", 8, color=_MUTED)
     after = document.add_paragraph()
     after.paragraph_format.space_after = Pt(2)
+
+
+def _add_figure_gallery(
+    document: Any,
+    figures: Sequence[tuple[Path, str]],
+    *,
+    start_index: int,
+) -> None:
+    table = document.add_table(rows=0, cols=2)
+    table.alignment = WD_TABLE_ALIGNMENT.LEFT
+    table.autofit = False
+    for offset in range(0, len(figures), 2):
+        row = table.add_row()
+        for column in range(2):
+            figure_index = offset + column
+            cell = row.cells[column]
+            _set_cell_margins(cell, top=90, bottom=130, start=90, end=90)
+            if figure_index >= len(figures):
+                continue
+            path, caption_text = figures[figure_index]
+            picture = cell.paragraphs[0]
+            picture.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            picture.add_run().add_picture(str(path), width=Inches(2.85))
+            caption = cell.add_paragraph()
+            caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            _add_run(
+                caption,
+                f"图 {start_index + figure_index}  {caption_text}",
+                8,
+                color=_MUTED,
+            )
+    after = document.add_paragraph(
+        "全部图片均为所选运行的识别叠加图，用于逐视野核对分割边界与统计结果。"
+    )
+    after.paragraph_format.space_after = Pt(8)
+    for run in after.runs:
+        _set_run_font(run, size=9, color=_MUTED)
 
 
 def _add_metric_table(document: Any, report: ScientificReportPreviewDTO) -> None:
@@ -1914,7 +2014,11 @@ def _add_field(paragraph: Any, instruction: str) -> None:
     _set_run_font(run, size=8.5, color=_MUTED)
 
 
-def _render_pdf(report: ScientificReportPreviewDTO, *, overlay: Path | None) -> bytes:
+def _render_pdf(
+    report: ScientificReportPreviewDTO,
+    *,
+    figures: Sequence[tuple[Path, str]],
+) -> bytes:
     _ensure_pdf_font()
     stream = io.BytesIO()
     document = SimpleDocTemplate(
@@ -1925,7 +2029,7 @@ def _render_pdf(report: ScientificReportPreviewDTO, *, overlay: Path | None) -> 
         topMargin=0.75 * inch,
         bottomMargin=0.78 * inch,
         title=report.title,
-        author="NanoLoop Agent",
+        author="NanoLoop",
         subject="SEM nanoparticle scientific analysis report",
     )
     styles = _pdf_styles()
@@ -1942,7 +2046,7 @@ def _render_pdf(report: ScientificReportPreviewDTO, *, overlay: Path | None) -> 
         (
             "综合方式",
             (
-                f"本地模型 {report.synthesis_model}"
+                f"Qwen {report.synthesis_model} 辅助整理"
                 if report.synthesis_provider == "local_llm"
                 else "确定性可信模板"
             ),
@@ -1955,8 +2059,8 @@ def _render_pdf(report: ScientificReportPreviewDTO, *, overlay: Path | None) -> 
             )
         )
     story.append(Paragraph("技术摘要", styles["H1"]))
-    if overlay is not None:
-        story.append(_pdf_summary_with_overlay(report, overlay, styles))
+    if figures:
+        story.append(_pdf_summary_with_overlay(report, figures[0][0], styles))
     else:
         story.append(_pdf_summary_callout(report, styles))
     story.append(Paragraph("主要结果与单位定义", styles["H1"]))
@@ -1964,6 +2068,9 @@ def _render_pdf(report: ScientificReportPreviewDTO, *, overlay: Path | None) -> 
         story.append(Paragraph(_pdf_text(finding.title), styles["H2"]))
         story.append(Paragraph(_pdf_text(finding.interpretation), styles["Body"]))
     story.extend(_pdf_metric_table(report, styles))
+    if len(figures) > 1:
+        story.append(Paragraph("各视野识别结果", styles["H2"]))
+        story.extend(_pdf_figure_gallery(figures[1:], styles, start_index=2))
     if report.batch_summary is not None:
         story.append(Paragraph("批量分布与异常视野", styles["H2"]))
         story.extend(_pdf_batch_distribution_table(report.batch_summary, styles))
@@ -2211,6 +2318,55 @@ def _pdf_summary_with_overlay(
             ]
         ),
     )
+
+
+def _pdf_figure_gallery(
+    figures: Sequence[tuple[Path, str]],
+    styles: dict[str, ParagraphStyle],
+    *,
+    start_index: int,
+) -> list[object]:
+    rows: list[list[object]] = []
+    for offset in range(0, len(figures), 2):
+        row: list[object] = []
+        for column in range(2):
+            figure_index = offset + column
+            if figure_index >= len(figures):
+                row.append("")
+                continue
+            path, caption = figures[figure_index]
+            row.append(
+                [
+                    _pdf_image(path, max_width=2.9 * inch, max_height=2.2 * inch),
+                    Paragraph(
+                        f"图 {start_index + figure_index}  {_pdf_text(caption)}",
+                        styles["FigureCaption"],
+                    ),
+                ]
+            )
+        rows.append(row)
+    return [
+        Table(
+            rows,
+            colWidths=[3.25 * inch, 3.25 * inch],
+            hAlign="LEFT",
+            style=TableStyle(
+                [
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("BOX", (0, 0), (-1, -1), 0.4, colors.HexColor("#D8DEE8")),
+                    ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#E5E9F0")),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                    ("TOPPADDING", (0, 0), (-1, -1), 6),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                ]
+            ),
+        ),
+        Paragraph(
+            "全部图片均为所选运行的识别叠加图，用于逐视野核对分割边界与统计结果。",
+            styles["Caption"],
+        ),
+    ]
 
 
 def _pdf_metric_table(

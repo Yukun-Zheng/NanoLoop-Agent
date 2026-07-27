@@ -4777,6 +4777,11 @@
         "additionalProperties": false,
         "description": "Select the completed runs that define one report snapshot.",
         "properties": {
+          "require_qwen": {
+            "default": true,
+            "title": "Require Qwen",
+            "type": "boolean"
+          },
           "run_ids": {
             "items": {
               "type": "string"

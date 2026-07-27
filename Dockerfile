@@ -1,11 +1,9 @@
-# syntax=docker/dockerfile:1
-
 ARG PYTHON_VERSION=3.12
 ARG API_EXTRAS=""
 ARG PYTORCH_INDEX_URL="https://download.pytorch.org/whl/cpu"
 ARG PYPI_INDEX_URL="https://pypi.org/simple"
 
-FROM python:${PYTHON_VERSION}-slim-bookworm AS builder
+FROM public.ecr.aws/docker/library/python:${PYTHON_VERSION}-slim-bookworm AS builder
 ARG API_EXTRAS
 ARG PYTORCH_INDEX_URL
 ARG PYPI_INDEX_URL
@@ -47,7 +45,7 @@ RUN set -eu; \
         "${project_spec}"
 
 
-FROM python:${PYTHON_VERSION}-slim-bookworm AS runtime
+FROM public.ecr.aws/docker/library/python:${PYTHON_VERSION}-slim-bookworm AS runtime
 
 ARG APP_UID=10001
 ARG APP_GID=10001

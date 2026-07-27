@@ -181,7 +181,7 @@ export function Launchpad() {
       let readyModels: ModelList["models"] = [];
       if (mode === "auto") {
         setLaunchStep("正在检查可用模型…");
-        const catalog = await apiRequest<ModelList>("models");
+        const catalog = await apiRequest<ModelList>("models?status=ready");
         readyModels = (catalog.data.models ?? []).filter(
           (model) => model.status === "ready" && !model.health_error
         );

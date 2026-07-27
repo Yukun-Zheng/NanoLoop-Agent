@@ -24,6 +24,13 @@ const catalog = {
       version: "1.0.0",
       family: "unet",
       health_error: null
+    },
+    {
+      model_id: "sam2-missing",
+      status: "unavailable",
+      version: "1.0.0",
+      family: "sam2",
+      health_error: "weight file is missing"
     }
   ]
 } as unknown as ModelList;
@@ -61,6 +68,14 @@ beforeEach(() => {
 });
 
 describe("ModelSelector batch mode", () => {
+  it("does not show models that cannot run", () => {
+    renderSelector();
+
+    expect(screen.getByText("unet-batch")).toBeVisible();
+    expect(screen.queryByText("sam2-missing")).not.toBeInTheDocument();
+    expect(screen.queryByText("weight file is missing")).not.toBeInTheDocument();
+  });
+
   it("submits every image through the existing runs API by default", async () => {
     const user = userEvent.setup();
     const onRunsCreated = vi.fn();
