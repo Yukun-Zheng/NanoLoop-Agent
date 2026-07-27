@@ -234,7 +234,7 @@ def test_small_model_card_records_runtime_identity_permissions_and_pending_scien
     normalized = " ".join(card.split())
 
     assert CHECKPOINT_SHA256 in card
-    assert "郭境濠" in card
+    assert "Model asset owner: NanoLoop-Agent project team" in card
     assert "`small_batchnorm`" in card
     assert "128 keys" in card
     assert "`expected_image_size=[1536, 2048]`" in card
