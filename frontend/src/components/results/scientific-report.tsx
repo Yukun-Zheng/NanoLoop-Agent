@@ -82,7 +82,7 @@ export function ScientificReport({
         `analyses/${encodeURIComponent(jobId)}/report`,
         {
           method: "POST",
-          body: { run_ids: selectedRunIds, require_qwen: true }
+          body: { run_ids: selectedRunIds }
         }
       ),
     onSuccess(response) {

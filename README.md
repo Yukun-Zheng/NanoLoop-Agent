@@ -1,7 +1,5 @@
 # NanoLoop Agent
 
-[![CI](https://github.com/Yukun-Zheng/NanoLoop-Agent/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Yukun-Zheng/NanoLoop-Agent/actions/workflows/ci.yml?query=branch%3Amain)
-
 NanoLoop Agent 是一套面向 SEM 纳米颗粒图像的可追溯分析工作台。它把原图与实验元数据、人工 ROI、可插拔分割模型、确定性形貌统计、质量门控、材料知识检索和可复现导出串成一个闭环；数值结论只来自分析代码，材料知识结论必须带可核验引用。
 
 > 当前事实入口是 `main` 上的可执行代码，以及本 README、[开发指南](docs/DEVELOPMENT.md)、
@@ -227,9 +225,8 @@ python scripts/smoke_test.py \
 FastAPI、SQLite、真实 Large/Small-A 运行 bundle 和公开合成工程图完成一次 live UI 验收，见
 [图文指南](docs/USER_ACCEPTANCE_GUIDE.md)和[事实报告](docs/acceptance-report-2026-07-23.md)。
 该验收不替代目标主机的干净无缓存发布镜像、正式向量 RAG、授权 SEM/GT、多浏览器或并发长期验收。
-历史代码快照
-`16456a3` 的 [GitHub Actions run 29848825904](https://github.com/Yukun-Zheng/NanoLoop-Agent/actions/runs/29848825904)
-证明当时的 Python/容器/备份链路可运行，但不证明当前 Next.js 提交、目标环境、真实模型或真实 RAG
+历史代码快照 `16456a3` 的自动化记录证明当时的 Python/容器/备份链路可运行，
+但不证明当前 Next.js 提交、目标环境、真实模型或真实 RAG
 资产已验收；后续提交仍须通过自己的 CI。
 
 ## 核心工程契约

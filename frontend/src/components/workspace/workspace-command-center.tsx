@@ -135,7 +135,8 @@ export function WorkspaceCommandCenter({
 
   const models = useQuery({
     queryKey: queryKeys.models,
-    queryFn: () => apiRequest<ModelList>("models").then((response) => response.data)
+    queryFn: () =>
+      apiRequest<ModelList>("models?status=ready").then((response) => response.data)
   });
 
   const activeImage = useMemo(

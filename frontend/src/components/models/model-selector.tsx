@@ -206,9 +206,9 @@ export function ModelSelector({
         }
       });
     },
-    async onSuccess(response) {
-      await queryClient.invalidateQueries({ queryKey: queryKeys.analysis(jobId) });
+    onSuccess(response) {
       onRunsCreated(response.data.run_ids);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.analysis(jobId) });
     }
   });
 

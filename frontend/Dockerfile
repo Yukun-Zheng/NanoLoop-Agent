@@ -1,6 +1,9 @@
-FROM node:24.18.0-bookworm-slim AS dependencies
+FROM public.ecr.aws/docker/library/node:24.18.0-bookworm-slim AS dependencies
 
 ENV COREPACK_HOME=/tmp/corepack \
+    COREPACK_NPM_REGISTRY=https://registry.npmmirror.com \
+    NPM_CONFIG_REGISTRY=https://registry.npmmirror.com \
+    PNPM_CONFIG_REGISTRY=https://registry.npmmirror.com \
     NEXT_TELEMETRY_DISABLED=1
 
 WORKDIR /app
@@ -11,7 +14,7 @@ COPY package.json pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 
 
-FROM node:24.18.0-bookworm-slim AS builder
+FROM public.ecr.aws/docker/library/node:24.18.0-bookworm-slim AS builder
 
 ENV COREPACK_HOME=/tmp/corepack \
     NEXT_TELEMETRY_DISABLED=1
@@ -27,7 +30,7 @@ COPY . .
 RUN pnpm build
 
 
-FROM node:24.18.0-bookworm-slim AS runtime
+FROM public.ecr.aws/docker/library/node:24.18.0-bookworm-slim AS runtime
 
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \

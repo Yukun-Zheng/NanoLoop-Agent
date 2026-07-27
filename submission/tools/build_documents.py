@@ -13,27 +13,27 @@ from docx.enum.table import WD_ALIGN_VERTICAL, WD_CELL_VERTICAL_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Cm, Mm, Pt, RGBColor
+from docx.shared import Cm, Inches, Pt, RGBColor
 
 ROOT = Path(__file__).resolve().parents[2]
 GENERATED = ROOT / "submission" / "generated"
 GENERATED.mkdir(parents=True, exist_ok=True)
 
-FONT_CJK = "Arial Unicode MS"
-FONT_LATIN = "Arial Unicode MS"
+FONT_CJK = "Hiragino Sans GB"
+FONT_LATIN = "Hiragino Sans GB"
 FONT_MONO = "Menlo"
 
-INK = "151720"
-MUTED = "667085"
-BLUE = "566CF6"
-BLUE_DARK = "3348D8"
-BLUE_PALE = "EDF0FF"
-GREEN = "11875D"
-GREEN_PALE = "E8F7F1"
-AMBER = "A85D00"
-AMBER_PALE = "FFF3E1"
-LINE = "D9DFEC"
-LIGHT = "F6F8FC"
+INK = "17212B"
+MUTED = "5F6B76"
+BLUE = "2E74B5"
+BLUE_DARK = "1F4D78"
+BLUE_PALE = "E8EEF5"
+GREEN = "356859"
+GREEN_PALE = "EDF5F1"
+AMBER = "7A5A00"
+AMBER_PALE = "F8F2E5"
+LINE = "D5DCE3"
+LIGHT = "F4F6F9"
 WHITE = "FFFFFF"
 
 
@@ -127,6 +127,23 @@ def set_table_layout(table, widths: list[int]) -> None:
         tbl_pr.append(tbl_width)
     tbl_width.set(qn("w:type"), "dxa")
     tbl_width.set(qn("w:w"), str(sum(widths)))
+    tbl_indent = tbl_pr.find(qn("w:tblInd"))
+    if tbl_indent is None:
+        tbl_indent = OxmlElement("w:tblInd")
+        tbl_pr.append(tbl_indent)
+    tbl_indent.set(qn("w:type"), "dxa")
+    tbl_indent.set(qn("w:w"), "120")
+    cell_margins = tbl_pr.find(qn("w:tblCellMar"))
+    if cell_margins is None:
+        cell_margins = OxmlElement("w:tblCellMar")
+        tbl_pr.append(cell_margins)
+    for edge_name, value in (("top", 80), ("bottom", 80), ("start", 120), ("end", 120)):
+        edge = cell_margins.find(qn(f"w:{edge_name}"))
+        if edge is None:
+            edge = OxmlElement(f"w:{edge_name}")
+            cell_margins.append(edge)
+        edge.set(qn("w:type"), "dxa")
+        edge.set(qn("w:w"), str(value))
     grid = table._tbl.tblGrid
     for child in list(grid):
         grid.remove(child)
@@ -175,16 +192,86 @@ def add_field(run, instruction: str) -> None:
     run._r.append(fld_char_end)
 
 
-def configure_document(document: Document, title: str) -> None:
+def add_numbering_definition(document: Document, *, fmt: str, text: str) -> int:
+    numbering = document.part.numbering_part.element
+    abstract_ids = [
+        int(element.get(qn("w:abstractNumId")))
+        for element in numbering.findall(qn("w:abstractNum"))
+    ]
+    num_ids = [int(element.get(qn("w:numId"))) for element in numbering.findall(qn("w:num"))]
+    abstract_id = max(abstract_ids, default=0) + 1
+    num_id = max(num_ids, default=0) + 1
+
+    abstract = OxmlElement("w:abstractNum")
+    abstract.set(qn("w:abstractNumId"), str(abstract_id))
+    multi = OxmlElement("w:multiLevelType")
+    multi.set(qn("w:val"), "singleLevel")
+    abstract.append(multi)
+    level = OxmlElement("w:lvl")
+    level.set(qn("w:ilvl"), "0")
+    start = OxmlElement("w:start")
+    start.set(qn("w:val"), "1")
+    level.append(start)
+    num_fmt = OxmlElement("w:numFmt")
+    num_fmt.set(qn("w:val"), fmt)
+    level.append(num_fmt)
+    level_text = OxmlElement("w:lvlText")
+    level_text.set(qn("w:val"), text)
+    level.append(level_text)
+    justification = OxmlElement("w:lvlJc")
+    justification.set(qn("w:val"), "left")
+    level.append(justification)
+    p_pr = OxmlElement("w:pPr")
+    tabs = OxmlElement("w:tabs")
+    tab = OxmlElement("w:tab")
+    tab.set(qn("w:val"), "num")
+    tab.set(qn("w:pos"), "540")
+    tabs.append(tab)
+    p_pr.append(tabs)
+    indent = OxmlElement("w:ind")
+    indent.set(qn("w:left"), "540")
+    indent.set(qn("w:hanging"), "279")
+    p_pr.append(indent)
+    spacing = OxmlElement("w:spacing")
+    spacing.set(qn("w:after"), "80")
+    spacing.set(qn("w:line"), "290")
+    spacing.set(qn("w:lineRule"), "auto")
+    p_pr.append(spacing)
+    level.append(p_pr)
+    abstract.append(level)
+    numbering.append(abstract)
+
+    num = OxmlElement("w:num")
+    num.set(qn("w:numId"), str(num_id))
+    abstract_ref = OxmlElement("w:abstractNumId")
+    abstract_ref.set(qn("w:val"), str(abstract_id))
+    num.append(abstract_ref)
+    numbering.append(num)
+    return num_id
+
+
+def apply_numbering(paragraph, num_id: int) -> None:
+    p_pr = paragraph._p.get_or_add_pPr()
+    num_pr = OxmlElement("w:numPr")
+    level = OxmlElement("w:ilvl")
+    level.set(qn("w:val"), "0")
+    num = OxmlElement("w:numId")
+    num.set(qn("w:val"), str(num_id))
+    num_pr.append(level)
+    num_pr.append(num)
+    p_pr.append(num_pr)
+
+
+def configure_document(document: Document, title: str) -> tuple[int, int]:
     section = document.sections[0]
-    section.page_width = Mm(210)
-    section.page_height = Mm(297)
-    section.top_margin = Mm(16)
-    section.bottom_margin = Mm(16)
-    section.left_margin = Mm(18)
-    section.right_margin = Mm(18)
-    section.header_distance = Mm(7)
-    section.footer_distance = Mm(7)
+    section.page_width = Inches(8.5)
+    section.page_height = Inches(11)
+    section.top_margin = Inches(1)
+    section.bottom_margin = Inches(1)
+    section.left_margin = Inches(1)
+    section.right_margin = Inches(1)
+    section.header_distance = Inches(0.492)
+    section.footer_distance = Inches(0.492)
     section.different_first_page_header_footer = True
 
     styles = document.styles
@@ -197,19 +284,21 @@ def configure_document(document: Document, title: str) -> None:
         ("w:eastAsia", FONT_CJK),
     ]:
         normal._element.rPr.rFonts.set(qn(attribute), value)
-    normal.font.size = Pt(10.2)
+    normal.font.size = Pt(11)
     normal.font.color.rgb = RGBColor.from_string(INK)
-    normal.paragraph_format.space_after = Pt(5)
+    normal.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+    normal.paragraph_format.space_before = Pt(0)
+    normal.paragraph_format.space_after = Pt(8)
     normal.paragraph_format.line_spacing_rule = WD_LINE_SPACING.MULTIPLE
-    normal.paragraph_format.line_spacing = 1.32
+    normal.paragraph_format.line_spacing = 1.333
 
     for style_name, size, color, before, after in [
-        ("Title", 34, INK, 0, 12),
+        ("Title", 30, INK, 0, 12),
         ("Subtitle", 15, MUTED, 0, 10),
-        ("Heading 1", 21, BLUE_DARK, 14, 8),
-        ("Heading 2", 14.5, INK, 12, 5),
-        ("Heading 3", 11.5, BLUE_DARK, 9, 3),
-        ("Caption", 8.7, MUTED, 3, 8),
+        ("Heading 1", 16, BLUE, 18, 10),
+        ("Heading 2", 13, BLUE, 12, 6),
+        ("Heading 3", 12, BLUE_DARK, 8, 4),
+        ("Caption", 9, MUTED, 4, 8),
     ]:
         style = styles[style_name]
         style.font.name = FONT_LATIN
@@ -231,8 +320,9 @@ def configure_document(document: Document, title: str) -> None:
 
     document.core_properties.title = title
     document.core_properties.subject = "2026 年首届深圳大学 AI4S 智能体创新大赛参赛材料"
-    document.core_properties.author = "纳米颗粒图像识别工具开发小组"
-    document.core_properties.comments = "Generated from version-controlled Markdown."
+    document.core_properties.author = ""
+    document.core_properties.last_modified_by = ""
+    document.core_properties.comments = ""
 
     header = section.header
     header.is_linked_to_previous = False
@@ -254,11 +344,14 @@ def configure_document(document: Document, title: str) -> None:
     footer.is_linked_to_previous = False
     p = footer.paragraphs[0]
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = p.add_run("NanoLoop · 纳米颗粒图像识别工具开发小组   ")
+    run = p.add_run("NanoLoop · 智能体使用手册   ")
     set_font(run, size=8.1, color=MUTED)
     page_run = p.add_run()
     add_field(page_run, "PAGE")
     set_font(page_run, size=8.1, color=MUTED)
+    bullet_num_id = add_numbering_definition(document, fmt="bullet", text="•")
+    decimal_num_id = add_numbering_definition(document, fmt="decimal", text="%1.")
+    return bullet_num_id, decimal_num_id
 
 
 def add_cover(document: Document, metadata: dict[str, str], source: Path) -> None:
@@ -271,7 +364,7 @@ def add_cover(document: Document, metadata: dict[str, str], source: Path) -> Non
     accent.alignment = WD_ALIGN_PARAGRAPH.LEFT
     cell = accent.cell(0, 0)
     set_cell_shading(cell, BLUE)
-    cell.width = Cm(17.4)
+    cell.width = Cm(16.5)
     cell.height = Cm(0.12)
     cell.text = ""
     set_cell_border(
@@ -321,14 +414,16 @@ def add_cover(document: Document, metadata: dict[str, str], source: Path) -> Non
             p.alignment = WD_ALIGN_PARAGRAPH.CENTER
             p.paragraph_format.space_before = Pt(10)
             p.paragraph_format.space_after = Pt(8)
-            p.add_run().add_picture(str(hero), width=Cm(17.2))
+            hero_shape = p.add_run().add_picture(str(hero), width=Cm(16.2))
+            hero_shape._inline.docPr.set("descr", "NanoLoop 结果复核界面")
+            hero_shape._inline.docPr.set("title", "NanoLoop 结果复核界面")
 
     info = document.add_table(rows=2, cols=2)
     info.alignment = WD_ALIGN_PARAGRAPH.LEFT
-    set_table_layout(info, [4800, 5200])
+    set_table_layout(info, [4500, 4860])
     values = [
-        (metadata.get("team", ""), metadata.get("leader", "")),
-        (metadata.get("date", ""), "提交版本 · 可复核源码生成"),
+        (metadata.get("team", ""), metadata.get("badge", "")),
+        (metadata.get("date", ""), "单一手册 · 离线 Docker 交付"),
     ]
     for row, values_row in zip(info.rows, values, strict=True):
         for cell, value in zip(row.cells, values_row, strict=True):
@@ -347,7 +442,7 @@ def add_cover(document: Document, metadata: dict[str, str], source: Path) -> Non
 
     promise = document.add_table(rows=1, cols=1)
     promise.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    set_table_layout(promise, [10000])
+    set_table_layout(promise, [9360])
     cell = promise.cell(0, 0)
     set_cell_shading(cell, INK)
     set_cell_border(
@@ -363,7 +458,6 @@ def add_cover(document: Document, metadata: dict[str, str], source: Path) -> Non
     p.paragraph_format.space_after = Pt(7)
     run = p.add_run("原始输入可核对 · 科学配置可复现 · 质量边界不隐藏 · 结果能够回到实验")
     set_font(run, size=10.2, bold=True, color=WHITE)
-    document.add_page_break()
 
 
 def extract_headings(lines: list[str]) -> list[str]:
@@ -372,6 +466,7 @@ def extract_headings(lines: list[str]) -> list[str]:
 
 def add_contents_overview(document: Document, headings: list[str]) -> None:
     p = document.add_paragraph()
+    p.paragraph_format.page_break_before = True
     run = p.add_run("阅读路线")
     set_font(run, size=25, bold=True, color=INK)
     p.paragraph_format.space_after = Pt(4)
@@ -384,7 +479,7 @@ def add_contents_overview(document: Document, headings: list[str]) -> None:
     rows = (len(headings) + cols - 1) // cols
     table = document.add_table(rows=rows, cols=cols)
     table.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    widths = [5000] * cols if cols == 2 else [10000]
+    widths = [4680] * cols if cols == 2 else [9360]
     set_table_layout(table, widths)
     for idx, heading_text in enumerate(headings):
         row_idx = idx % rows
@@ -417,7 +512,7 @@ def add_contents_overview(document: Document, headings: list[str]) -> None:
 
     scoring = document.add_table(rows=2, cols=4)
     scoring.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    set_table_layout(scoring, [2500, 2500, 2500, 2500])
+    set_table_layout(scoring, [2340, 2340, 2340, 2340])
     labels = [
         ("30%", "科学及应用价值"),
         ("30%", "技术深度"),
@@ -472,7 +567,7 @@ def add_inline(
 def add_callout(document: Document, text: str) -> None:
     table = document.add_table(rows=1, cols=1)
     table.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    set_table_layout(table, [10000])
+    set_table_layout(table, [9360])
     cell = table.cell(0, 0)
     set_cell_shading(cell, BLUE_PALE)
     set_cell_border(
@@ -508,9 +603,16 @@ def add_markdown_table(document: Document, lines: list[str]) -> None:
     table = document.add_table(rows=len(rows), cols=column_count)
     table.alignment = WD_ALIGN_PARAGRAPH.CENTER
     table.style = "Table Grid"
-    total_width = 10000
-    widths = [total_width // column_count] * column_count
-    widths[-1] += total_width - sum(widths)
+    total_width = 9360
+    if column_count == 2:
+        widths = [2700, 6660]
+    elif column_count == 3:
+        widths = [2160, 3600, 3600]
+    elif column_count == 4:
+        widths = [1600, 2500, 2630, 2630]
+    else:
+        widths = [total_width // column_count] * column_count
+        widths[-1] += total_width - sum(widths)
     set_table_layout(table, widths)
     for row_idx, (row, source_row) in enumerate(zip(table.rows, rows, strict=True)):
         prevent_row_split(row)
@@ -550,7 +652,7 @@ def add_markdown_table(document: Document, lines: list[str]) -> None:
 def add_code_block(document: Document, lines: list[str]) -> None:
     table = document.add_table(rows=1, cols=1)
     table.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    set_table_layout(table, [10000])
+    set_table_layout(table, [9360])
     cell = table.cell(0, 0)
     set_cell_shading(cell, "20232B")
     set_cell_border(
@@ -575,7 +677,9 @@ def add_image(document: Document, source_path: Path, alt_text: str) -> None:
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
     p.paragraph_format.space_before = Pt(7)
     p.paragraph_format.space_after = Pt(2)
-    p.add_run().add_picture(str(source_path), width=Cm(17.1))
+    picture = p.add_run().add_picture(str(source_path), width=Cm(16.2))
+    picture._inline.docPr.set("descr", alt_text)
+    picture._inline.docPr.set("title", alt_text)
     set_paragraph_keep(p, lines=True)
     caption = document.add_paragraph(style="Caption")
     caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -583,7 +687,14 @@ def add_image(document: Document, source_path: Path, alt_text: str) -> None:
     set_paragraph_keep(caption, lines=True)
 
 
-def render_content(document: Document, source: Path, lines: list[str]) -> None:
+def render_content(
+    document: Document,
+    source: Path,
+    lines: list[str],
+    *,
+    bullet_num_id: int,
+    decimal_num_id: int,
+) -> None:
     i = 0
     while i < len(lines):
         raw = lines[i]
@@ -640,16 +751,24 @@ def render_content(document: Document, source: Path, lines: list[str]) -> None:
             continue
         bullet_match = re.match(r"^-\s+(.*)$", stripped)
         if bullet_match:
-            paragraph = document.add_paragraph(style="List Bullet")
-            paragraph.paragraph_format.space_after = Pt(2)
+            paragraph = document.add_paragraph()
+            paragraph.paragraph_format.left_indent = Inches(0.375)
+            paragraph.paragraph_format.first_line_indent = Inches(-0.194)
+            paragraph.paragraph_format.space_after = Pt(4)
+            paragraph.paragraph_format.line_spacing = 1.208
+            apply_numbering(paragraph, bullet_num_id)
             add_inline(paragraph, bullet_match.group(1))
             set_paragraph_keep(paragraph, lines=True)
             i += 1
             continue
         number_match = re.match(r"^\d+\.\s+(.*)$", stripped)
         if number_match:
-            paragraph = document.add_paragraph(style="List Number")
-            paragraph.paragraph_format.space_after = Pt(2)
+            paragraph = document.add_paragraph()
+            paragraph.paragraph_format.left_indent = Inches(0.375)
+            paragraph.paragraph_format.first_line_indent = Inches(-0.194)
+            paragraph.paragraph_format.space_after = Pt(4)
+            paragraph.paragraph_format.line_spacing = 1.208
+            apply_numbering(paragraph, decimal_num_id)
             add_inline(paragraph, number_match.group(1))
             set_paragraph_keep(paragraph, lines=True)
             i += 1
@@ -682,10 +801,16 @@ def build(source: Path) -> Path:
     metadata, lines = read_source(source)
     document = Document()
     title = metadata.get("title", source.stem)
-    configure_document(document, title)
+    bullet_num_id, decimal_num_id = configure_document(document, title)
     add_cover(document, metadata, source)
     add_contents_overview(document, extract_headings(lines))
-    render_content(document, source, lines)
+    render_content(
+        document,
+        source,
+        lines,
+        bullet_num_id=bullet_num_id,
+        decimal_num_id=decimal_num_id,
+    )
 
     for paragraph in document.paragraphs:
         if paragraph.style.name.startswith("Heading"):

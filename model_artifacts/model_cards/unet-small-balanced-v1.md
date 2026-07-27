@@ -6,8 +6,8 @@ Small-particle segmentation accuracy or scientific fitness.
 
 ## Ownership and permitted use
 
-- Model asset owner: 郭境濠
-- Checkpoint origin: trained by 郭境濠 from NanoLoop-Agent project training data
+- Model asset owner: NanoLoop-Agent project team
+- Checkpoint origin: trained by a project model developer from NanoLoop-Agent project training data
 - Training data origin: internal experimental data from the NanoLoop-Agent project research group
 - Permitted use: internal NanoLoop-Agent development, testing, validation, deployment, and
   demonstration
