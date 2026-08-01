@@ -1103,6 +1103,7 @@ test("completes the mocked scientific workflow through verified export", async (
 
   await page.getByRole("button", { name: "打开科学审查器" }).click();
   const inspector = page.getByRole("dialog", { name: "科学证据审查器" });
+  await inspector.getByRole("tab", { name: "问答" }).click();
   await inspector.getByLabel("发送实验问题").fill("这张图识别了多少颗粒？");
   await inspector.getByRole("button", { name: "发送消息" }).click();
 
@@ -1118,6 +1119,10 @@ test("completes the mocked scientific workflow through verified export", async (
 
   await page.reload();
   await page.getByRole("button", { name: "打开科学审查器" }).click();
+  await page
+    .getByRole("dialog", { name: "科学证据审查器" })
+    .getByRole("tab", { name: "问答" })
+    .click();
   await expect(
     page
       .getByRole("dialog", { name: "科学证据审查器" })
