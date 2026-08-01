@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends
 
 from app.api.deps import require_api_key_contract
 from app.api.routes import (
+    agent_tasks,
     analyses,
     boxes,
     conversations,
@@ -25,6 +26,7 @@ api_router.include_router(boxes.router)
 api_router.include_router(runs.router)
 api_router.include_router(queries.router)
 api_router.include_router(conversations.router)
+api_router.include_router(agent_tasks.router)
 api_router.include_router(knowledge.router)
 api_router.include_router(reports.router)
 api_router.include_router(exports.router)

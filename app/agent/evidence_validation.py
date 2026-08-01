@@ -16,7 +16,10 @@ _ANY_EVIDENCE_REFERENCE = re.compile(r"\[([CD][^\]]*)\]")
 _VALID_EVIDENCE_ID = re.compile(r"[CD]\d+")
 _NUMBER = re.compile(r"(?<![A-Za-z])[-+]?(?:\d+(?:\.\d+)?|\.\d+)")
 _UNIT = re.compile(r"(?<![A-Za-z])(?:nm|µm|μm|um|px|px²|px2|%)(?![A-Za-z])", re.I)
-_SENTENCE = re.compile(r".*?[。！？.!?；;\n]+|.+$", re.S)
+# A decimal point is part of a number, not a sentence boundary.  Splitting at
+# ``46.93`` used to detach the evidence marker at the end of the sentence and
+# reject otherwise valid Qwen output.
+_SENTENCE = re.compile(r".*?(?:[。！？；;\n]+|(?<!\d)[.!?]+(?!\d))|.+$", re.S)
 
 
 def validate_conversation_answer(

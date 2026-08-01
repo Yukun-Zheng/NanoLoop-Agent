@@ -520,6 +520,12 @@ def test_conversation_prompt_distinguishes_uploaded_image_from_missing_material(
             "sample_id": "BaNi-3",
             "material_name": None,
             "material_formula": None,
+            "candidate_material_hint": {
+                "candidate_formula_stem": "BaNi",
+                "candidate_elements": ["Ba", "Ni"],
+                "candidate_system": "Ba–Ni",
+                "evidence_level": "unverified_label_hint",
+            },
         }
     }
 
@@ -538,6 +544,10 @@ def test_conversation_prompt_distinguishes_uploaded_image_from_missing_material(
     system_prompt = messages[0]["content"]
     assert "必须承认图像已经上传并被当前任务选中" in system_prompt
     assert "材料元数据不是开始图像分割的必填项" in system_prompt
+    assert "不能只用" in system_prompt
+    assert "至少给出三类" in system_prompt
+    assert "EDS、XRD、XPS" in system_prompt
+    assert "系统校核过的本地化学约束" in system_prompt
     assert "数字必须逐字复制" in system_prompt
     serialized = messages[1]["content"].removeprefix(
         "BEGIN_UNTRUSTED_CONVERSATION_INPUT_JSON\n"

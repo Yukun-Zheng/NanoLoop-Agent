@@ -31,6 +31,25 @@ def test_data_reference_accepts_exact_backend_value() -> None:
     )
 
 
+def test_decimal_values_keep_their_end_of_sentence_reference() -> None:
+    evidence = _evidence().model_copy(
+        update={
+            "rows": [{"run_id": "run_1", "mean_diameter_nm": 46.93}],
+            "aggregates": {},
+            "units": {"mean_diameter_nm": "nm"},
+        }
+    )
+    validate_conversation_answer(
+        answer="当前运行的平均粒径为 46.93 nm [D1]。",
+        limitations=[],
+        used_data_ids=["D1"],
+        used_citation_ids=[],
+        data_evidence=[evidence],
+        citation_contexts=[],
+        allow_uncited_general_chat=False,
+    )
+
+
 @pytest.mark.parametrize(
     ("answer", "used_ids"),
     [

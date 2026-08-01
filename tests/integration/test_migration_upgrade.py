@@ -84,6 +84,18 @@ def test_legacy_schema_upgrade_preserves_honest_audit_state(
         execution_json = connection.execute(
             "SELECT execution_json FROM segmentation_runs WHERE run_id = 'run-legacy'"
         ).fetchone()
+        agent_task_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(agent_tasks)")
+        }
+        agent_event_triggers = {
+            row[0]
+            for row in connection.execute(
+                """
+                SELECT name FROM sqlite_master
+                WHERE type = 'trigger' AND tbl_name = 'agent_task_events'
+                """
+            )
+        }
 
     assert revision == [(expected_alembic_heads()[0],)]
     assert status_events == [(None, "ANALYZING", None, None, LEGACY_TIMESTAMP)]
@@ -93,6 +105,17 @@ def test_legacy_schema_upgrade_preserves_honest_audit_state(
     # current empty revision 3 is nevertheless known from image_assets.box_revision and retained.
     assert revisions == [(0, 0), (1, 1), (3, 0)]
     assert execution_json == (None,)
+    assert {
+        "created_credential_id",
+        "auth_mode",
+        "pending_action_json",
+        "next_wakeup_at",
+        "final_evidence_refs_json",
+    } <= agent_task_columns
+    assert agent_event_triggers == {
+        "trg_agent_task_events_no_update",
+        "trg_agent_task_events_no_delete",
+    }
     assert application_logger.disabled is False
 
 

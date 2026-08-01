@@ -15,6 +15,7 @@
 | [开发日志](DEVELOPMENT_LOG.md) | 按时间记录实现、验证、风险和仍未验收项 |
 | [生产就绪说明](PRODUCTION_READINESS.md) | 当前可以安全承诺的能力及不能宣称的边界 |
 | [部署与运维边界](DEPLOYMENT.md) | Next.js BFF、容器端口、服务端密钥与单机部署约束 |
+| [科研 Agent 控制平面](AGENT_CONTROL_PLANE.md) | 模型驱动循环、审批、持久状态、模型替换与工具扩展合同 |
 | [用户测试与演示指南](USER_ACCEPTANCE_GUIDE.md) | 从启动到上传、运行、复核、知识库、Agent 和导出的逐步图文操作 |
 | [2026-07-23/24 全功能验收报告](acceptance-report-2026-07-23.md) | 本机 live 对象、运行 ID、指标、数据库回查、自动化结果与限制 |
 
@@ -28,6 +29,7 @@
 | Large U-Net A/B 资产验收 | [2026-07-23 接入审计](model-assets-large-a-b-acceptance-2026-07-23.md)、[机器可读 manifest](../model_artifacts/evidence/unet-large-optimized-v1/delivery-audit-2026-07-23.json) |
 | Small-A U-Net 资产验收 | [2026-07-23 接入审计](model-assets-small-a-acceptance-2026-07-23.md)、[机器可读 manifest](../model_artifacts/evidence/unet-small-balanced-v1/delivery-audit-2026-07-23.json) |
 | RAG 工程与验收细节 | [RAG 与检索功能开发指南](RAG_RETRIEVAL_DEVELOPMENT_GUIDE.md) |
+| 模型驱动 Agent、模型替换与工具适配 | [科研 Agent 控制平面](AGENT_CONTROL_PLANE.md) |
 | 用户演示与本机验收 | [图文操作指南](USER_ACCEPTANCE_GUIDE.md)、[事实验收报告](acceptance-report-2026-07-23.md) |
 | 历史 A+B 模型接入资料 | [模型冻结、接入与 AI 协作指南](developer_handoffs/guo-jinghao-ab-model-integration-guide.md)、[交付审计](developer_handoffs/guo-jinghao-ab-delivery-audit-2026-07-21.md)；仅用于复用技术合同和追溯交付 |
 | 五人集成审计快照 | [2026-07-23 团队集成状态](developer_handoffs/team-integration-status-2026-07-23.md)；仅用于追溯当时分工 |

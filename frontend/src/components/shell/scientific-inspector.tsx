@@ -13,10 +13,12 @@ import {
   PanelRightClose,
   PanelRightOpen,
   Ruler,
-  ShieldCheck
+  ShieldCheck,
+  Sparkles
 } from "lucide-react";
 import { useMemo, useState } from "react";
 
+import { AgentTaskPanel } from "@/components/agent/agent-task-panel";
 import { ConversationPanel } from "@/components/agent/conversation-panel";
 import { Button } from "@/components/ui/button";
 import { RequestError } from "@/components/ui/request-error";
@@ -38,6 +40,7 @@ import {
 } from "@/lib/store/workspace";
 
 const tabItems: Array<{ value: InspectorTab; label: string; icon: typeof Activity }> = [
+  { value: "agent", label: "Agent", icon: Sparkles },
   { value: "assistant", label: "问答", icon: Bot },
   { value: "scale", label: "尺度", icon: Ruler },
   { value: "system", label: "系统", icon: Activity },
@@ -119,6 +122,15 @@ export function ScientificInspector({
               );
             })}
           </Tabs.List>
+          <Tabs.Content value="agent" className="inspector-agent-content">
+            <AgentTaskPanel
+              jobId={jobId}
+              image={image}
+              runIds={runIds}
+              health={health}
+              writeBlocker={writeBlocker}
+            />
+          </Tabs.Content>
           <Tabs.Content value="assistant" className="inspector-assistant-content">
             <ConversationPanel
               jobId={jobId}

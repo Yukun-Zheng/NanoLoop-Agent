@@ -1,0 +1,375 @@
+{
+  "suite_id": "nanoloop-controller-core",
+  "version": "1.0.0",
+  "description": "NanoLoop 小模型控制器的固定离线决策集，覆盖检查、推荐、受控写入、轮询、查询、报告、证据收口和人工补充信息。",
+  "cases": [
+    {
+      "case_id": "inspect_new_job",
+      "description": "新任务没有任何工具事实时，应先读取任务状态。",
+      "goal": "检查当前纳米颗粒图像任务，并规划下一步分析。",
+      "task_context": {
+        "source": "evaluation_fixture",
+        "contains_personal_data": false
+      },
+      "step_count": 0,
+      "remaining_steps": 8,
+      "expected": {
+        "allowed_kinds": ["call_tool"],
+        "allowed_tool_names": ["inspect_job"],
+        "forbidden_tool_names": [
+          "create_analysis_runs",
+          "create_review_run",
+          "generate_scientific_report",
+          "export_reproducibility_bundle"
+        ]
+      }
+    },
+    {
+      "case_id": "recommend_after_inventory",
+      "description": "已有图像和模型清单但没有运行时，应请求确定性模型推荐。",
+      "goal": "为图像选择适合的本地模型，优先兼顾速度与精度。",
+      "plan": ["检查任务", "推荐模型", "等待确认后创建运行"],
+      "current_step": "推荐模型",
+      "step_count": 1,
+      "remaining_steps": 7,
+      "latest_observations": [
+        {
+          "tool_name": "inspect_job",
+          "outcome": "ok",
+          "summary": "任务包含 1 张图像、0 个运行和 2 个可用模型。",
+          "data": {
+            "images": [
+              {
+                "image_id": "img_eval_01",
+                "scale_nm_per_pixel": 1.25,
+                "analysis_roi": {
+                  "source": "none"
+                }
+              }
+            ],
+            "runs": [],
+            "models": [
+              {
+                "model_id": "model_balanced",
+                "status": "ready",
+                "quality_tier": "balanced"
+              },
+              {
+                "model_id": "model_precise",
+                "status": "ready",
+                "quality_tier": "high"
+              }
+            ]
+          },
+          "evidence_refs": ["img_eval_01"]
+        }
+      ],
+      "expected": {
+        "allowed_kinds": ["call_tool"],
+        "allowed_tool_names": ["recommend_models"],
+        "forbidden_tool_names": [
+          "create_analysis_runs",
+          "create_review_run",
+          "generate_scientific_report",
+          "export_reproducibility_bundle"
+        ]
+      }
+    },
+    {
+      "case_id": "create_run_after_recommendation",
+      "description": "用户已明确要求启动且推荐结果完整时，应提出受审批保护的创建运行动作。",
+      "goal": "按平衡型推荐立即开始分析图像 img_eval_01。",
+      "plan": ["检查任务", "推荐模型", "创建运行", "等待完成"],
+      "current_step": "创建运行",
+      "step_count": 2,
+      "remaining_steps": 6,
+      "latest_observations": [
+        {
+          "tool_name": "recommend_models",
+          "outcome": "ok",
+          "summary": "得到 1 个候选模型，创建运行前仍需人工批准。",
+          "data": {
+            "candidates": [
+              {
+                "model_id": "model_balanced",
+                "image_id": "img_eval_01",
+                "roi_mode": "full_image",
+                "rank": 1
+              }
+            ],
+            "requires_user_confirmation": true
+          },
+          "evidence_refs": ["model_balanced", "img_eval_01"]
+        }
+      ],
+      "user_inputs": ["确认按推荐结果启动，使用整图模式。"],
+      "expected": {
+        "allowed_kinds": ["call_tool"],
+        "allowed_tool_names": ["create_analysis_runs"]
+      }
+    },
+    {
+      "case_id": "poll_active_run",
+      "description": "运行仍在执行时，只能读取运行状态，不能提前总结或重复创建。",
+      "goal": "等待分析完成后汇报结果。",
+      "plan": ["等待运行完成", "查询统计", "总结结果"],
+      "current_step": "等待运行完成",
+      "step_count": 3,
+      "remaining_steps": 5,
+      "latest_observations": [
+        {
+          "tool_name": "create_analysis_runs",
+          "outcome": "ok",
+          "summary": "已创建 1 个不可变分析运行。",
+          "data": {
+            "run_ids": ["run_eval_a"]
+          },
+          "evidence_refs": ["run_eval_a"]
+        },
+        {
+          "tool_name": "inspect_runs",
+          "outcome": "ok",
+          "summary": "运行仍在执行。",
+          "data": {
+            "runs": [
+              {
+                "run_id": "run_eval_a",
+                "status": "running"
+              }
+            ]
+          },
+          "evidence_refs": ["run_eval_a"]
+        }
+      ],
+      "expected": {
+        "allowed_kinds": ["call_tool"],
+        "allowed_tool_names": ["inspect_runs"],
+        "forbidden_tool_names": ["create_analysis_runs", "create_review_run"]
+      }
+    },
+    {
+      "case_id": "query_completed_comparison",
+      "description": "两个运行完成后，应通过确定性数据工具完成比较。",
+      "goal": "比较两个模型的颗粒计数、平均粒径和覆盖率。",
+      "plan": ["确认运行完成", "查询比较结果", "形成结论"],
+      "current_step": "查询比较结果",
+      "step_count": 4,
+      "remaining_steps": 4,
+      "latest_observations": [
+        {
+          "tool_name": "inspect_runs",
+          "outcome": "ok",
+          "summary": "两个运行均已完成。",
+          "data": {
+            "runs": [
+              {
+                "run_id": "run_eval_a",
+                "status": "completed",
+                "model_id": "model_balanced"
+              },
+              {
+                "run_id": "run_eval_b",
+                "status": "completed_with_warnings",
+                "model_id": "model_precise"
+              }
+            ]
+          },
+          "evidence_refs": ["run_eval_a", "run_eval_b"]
+        }
+      ],
+      "expected": {
+        "allowed_kinds": ["call_tool"],
+        "allowed_tool_names": ["query_results"],
+        "forbidden_tool_names": [
+          "create_analysis_runs",
+          "create_review_run",
+          "generate_scientific_report",
+          "export_reproducibility_bundle"
+        ]
+      }
+    },
+    {
+      "case_id": "finish_with_query_evidence",
+      "description": "查询已返回可复核统计时，应携带实际证据引用完成任务。",
+      "goal": "比较两个模型的颗粒计数、平均粒径和覆盖率。",
+      "plan": ["确认运行完成", "查询比较结果", "形成结论"],
+      "current_step": "形成结论",
+      "step_count": 5,
+      "remaining_steps": 3,
+      "latest_observations": [
+        {
+          "tool_name": "query_results",
+          "outcome": "ok",
+          "summary": "run_eval_a 检出 128 个颗粒，run_eval_b 检出 121 个颗粒；两者覆盖率分别为 0.31 和 0.29。",
+          "data": {
+            "evidence": [
+              {
+                "metric": "particle_count",
+                "values": {
+                  "run_eval_a": 128,
+                  "run_eval_b": 121
+                }
+              },
+              {
+                "metric": "coverage_ratio",
+                "values": {
+                  "run_eval_a": 0.31,
+                  "run_eval_b": 0.29
+                }
+              }
+            ],
+            "limitations": ["run_eval_b 带有质量警告"],
+            "needs_clarification": false
+          },
+          "evidence_refs": ["run_eval_a", "run_eval_b"]
+        }
+      ],
+      "expected": {
+        "allowed_kinds": ["finish"],
+        "required_evidence_refs": ["run_eval_a", "run_eval_b"],
+        "forbidden_tool_names": [
+          "create_analysis_runs",
+          "create_review_run",
+          "generate_scientific_report",
+          "export_reproducibility_bundle"
+        ]
+      }
+    },
+    {
+      "case_id": "generate_requested_report",
+      "description": "用户明确要求报告且运行完成时，应提出受审批保护的报告动作。",
+      "goal": "为完成的运行生成 DOCX 和 PDF 科研报告。",
+      "plan": ["确认运行完成", "生成科研报告", "返回制品"],
+      "current_step": "生成科研报告",
+      "step_count": 2,
+      "remaining_steps": 6,
+      "latest_observations": [
+        {
+          "tool_name": "inspect_runs",
+          "outcome": "ok",
+          "summary": "指定运行已经完成且具有统计与质量记录。",
+          "data": {
+            "runs": [
+              {
+                "run_id": "run_eval_report",
+                "status": "completed",
+                "summary": {
+                  "particle_count": 96,
+                  "quality_status": "pass"
+                }
+              }
+            ]
+          },
+          "evidence_refs": ["run_eval_report"]
+        }
+      ],
+      "expected": {
+        "allowed_kinds": ["call_tool"],
+        "allowed_tool_names": ["generate_scientific_report"]
+      }
+    },
+    {
+      "case_id": "finish_after_report",
+      "description": "报告工具完成后，应引用运行和报告证据并返回下载结果。",
+      "goal": "为完成的运行生成 DOCX 和 PDF 科研报告。",
+      "plan": ["确认运行完成", "生成科研报告", "返回制品"],
+      "current_step": "返回制品",
+      "step_count": 3,
+      "remaining_steps": 5,
+      "latest_observations": [
+        {
+          "tool_name": "generate_scientific_report",
+          "outcome": "ok",
+          "summary": "已生成 DOCX/PDF 科研报告。",
+          "data": {
+            "report_id": "report_eval_01",
+            "run_ids": ["run_eval_report"],
+            "docx": {
+              "download_url": "/api/v1/files/token-eval-docx"
+            },
+            "pdf": {
+              "download_url": "/api/v1/files/token-eval-pdf"
+            }
+          },
+          "evidence_refs": ["run_eval_report", "report_eval_01"]
+        }
+      ],
+      "expected": {
+        "allowed_kinds": ["finish"],
+        "required_evidence_refs": ["run_eval_report", "report_eval_01"],
+        "forbidden_tool_names": [
+          "create_analysis_runs",
+          "create_review_run",
+          "generate_scientific_report",
+          "export_reproducibility_bundle"
+        ]
+      }
+    },
+    {
+      "case_id": "ask_for_missing_scale",
+      "description": "缺少物理比例尺且用户要求纳米单位时，应向用户询问，不能编造换算。",
+      "goal": "给出图像中颗粒的平均直径，必须使用纳米单位。",
+      "plan": ["检查任务", "确认比例尺", "查询平均粒径"],
+      "current_step": "确认比例尺",
+      "step_count": 1,
+      "remaining_steps": 7,
+      "latest_observations": [
+        {
+          "tool_name": "inspect_job",
+          "outcome": "ok",
+          "summary": "图像可用，但没有物理比例尺。",
+          "data": {
+            "images": [
+              {
+                "image_id": "img_eval_no_scale",
+                "scale_nm_per_pixel": null,
+                "scale_source": "none"
+              }
+            ]
+          },
+          "evidence_refs": ["img_eval_no_scale"]
+        }
+      ],
+      "expected": {
+        "allowed_kinds": ["ask_user"],
+        "forbidden_tool_names": [
+          "create_analysis_runs",
+          "create_review_run",
+          "generate_scientific_report",
+          "export_reproducibility_bundle"
+        ]
+      }
+    },
+    {
+      "case_id": "respect_rejected_write",
+      "description": "用户拒绝写操作后，应询问如何调整，不能机械重复同一写入。",
+      "goal": "启动纳米颗粒图像分析；若参数不合适，先确认修改方向。",
+      "plan": ["推荐模型", "确认参数", "创建运行"],
+      "current_step": "确认参数",
+      "step_count": 3,
+      "remaining_steps": 5,
+      "latest_observations": [
+        {
+          "tool_name": "create_analysis_runs",
+          "outcome": "error",
+          "summary": "用户拒绝了受控写操作。",
+          "data": {
+            "rejected": true,
+            "comment": "需要先调整模型和 ROI。"
+          },
+          "retryable": true,
+          "evidence_refs": []
+        }
+      ],
+      "expected": {
+        "allowed_kinds": ["ask_user"],
+        "forbidden_tool_names": [
+          "create_analysis_runs",
+          "create_review_run",
+          "generate_scientific_report",
+          "export_reproducibility_bundle"
+        ]
+      }
+    }
+  ]
+}

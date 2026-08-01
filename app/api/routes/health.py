@@ -32,6 +32,8 @@ async def health(request: Request) -> ApiResponse[HealthData]:
     gateway = getattr(request.app.state, "inference_gateway", None)
     knowledge_service = getattr(request.app.state, "knowledge_service", None)
     conversation_service = getattr(request.app.state, "conversation_service", None)
+    agent_control_service = getattr(request.app.state, "agent_control_service", None)
+    agent_task_scheduler = getattr(request.app.state, "agent_task_scheduler", None)
 
     database_health = await run_in_threadpool(_database_health, database)
     model_health = await _model_registry_health(gateway, settings.model_registry_path)
@@ -50,6 +52,14 @@ async def health(request: Request) -> ApiResponse[HealthData]:
         llm_provider=await run_in_threadpool(
             _llm_provider_health,
             conversation_service,
+        ),
+        agent_runtime=await run_in_threadpool(
+            _agent_runtime_health,
+            agent_control_service,
+        ),
+        agent_scheduler=await run_in_threadpool(
+            _agent_scheduler_health,
+            agent_task_scheduler,
         ),
         online_research=await run_in_threadpool(
             _online_research_health,
@@ -90,6 +100,54 @@ def _online_research_health(conversation_service: object | None) -> HealthCompon
             status="unavailable",
             detail=f"联网检索状态检查失败：{type(error).__name__}",
         )
+
+
+def _agent_runtime_health(agent_control_service: object | None) -> HealthComponent:
+    if agent_control_service is None:
+        return HealthComponent(
+            status="unavailable",
+            detail="bounded agent control service is not initialized",
+        )
+    try:
+        return HealthComponent.model_validate(agent_control_service.health())  # type: ignore[attr-defined]
+    except Exception as error:
+        return HealthComponent(
+            status="unavailable",
+            detail=f"agent runtime health probe failed: {type(error).__name__}",
+        )
+
+
+def _agent_scheduler_health(agent_task_scheduler: object | None) -> HealthComponent:
+    if agent_task_scheduler is None:
+        return HealthComponent(
+            status="unavailable",
+            detail="durable agent scheduler is not initialized",
+        )
+    try:
+        snapshot = agent_task_scheduler.snapshot()  # type: ignore[attr-defined]
+    except Exception as error:
+        return HealthComponent(
+            status="unavailable",
+            detail=f"agent scheduler health probe failed: {type(error).__name__}",
+        )
+    if not snapshot.running:
+        return HealthComponent(
+            status="unavailable",
+            detail="durable agent scheduler is not running",
+        )
+    return HealthComponent(
+        status=(
+            "degraded"
+            if snapshot.error_count or snapshot.last_failed_count
+            else "healthy"
+        ),
+        detail=(
+            f"iterations={snapshot.iterations}; "
+            f"last_resumed={snapshot.last_resumed_count}; "
+            f"last_failed={snapshot.last_failed_count}; "
+            f"errors={snapshot.error_count}"
+        ),
+    )
 
 
 def _database_health(database: Database) -> HealthComponent:

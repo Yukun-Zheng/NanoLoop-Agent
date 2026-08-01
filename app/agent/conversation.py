@@ -57,7 +57,10 @@ _UNTRUSTED_REQUEST = re.compile(
     r"忽略(?:文献|引用|规则)|编造|虚构|ignore (?:the )?(?:rules|citations)|fabricate",
     re.I,
 )
-_NUMERIC_SENTENCE = re.compile(r".*?[。！？.!?；;\n]+|.+$", re.S)
+_NUMERIC_SENTENCE = re.compile(
+    r".*?(?:[。！？；;\n]+|(?<!\d)[.!?]+(?!\d))|.+$",
+    re.S,
+)
 _NUMBER = re.compile(r"(?<![A-Za-z])[-+]?(?:\d+(?:\.\d+)?|\.\d+)")
 _EVIDENCE_REFERENCE = re.compile(r"\[[DC]\d+\]")
 _DATA_REFERENCE = re.compile(r"\[(D\d+)\]")
@@ -68,6 +71,44 @@ _MISSING_SCALE_CLAIM = re.compile(
 _NEGATED_MISSING_SCALE_CLAIM = re.compile(
     r"(?:不得|不应|不能).{0,8}(?:缺乏|缺少|未提供).{0,8}(?:比例尺|物理尺度)"
 )
+_CHEMICAL_SYMBOL_TEXT = (
+    "H He Li Be B C N O F Ne Na Mg Al Si P S Cl Ar K Ca Sc Ti V Cr Mn Fe Co Ni Cu "
+    "Zn Ga Ge As Se Br Kr Rb Sr Y Zr Nb Mo Tc Ru Rh Pd Ag Cd In Sn Sb Te I Xe Cs Ba "
+    "La Ce Pr Nd Pm Sm Eu Gd Tb Dy Ho Er Tm Yb Lu Hf Ta W Re Os Ir Pt Au Hg Tl Pb Bi "
+    "Po At Rn Fr Ra Ac Th Pa U Np Pu Am Cm Bk Cf Es Fm Md No Lr Rf Db Sg Bh Hs Mt Ds "
+    "Rg Cn Nh Fl Mc Lv Ts Og"
+)
+_CHEMICAL_SYMBOLS = frozenset(_CHEMICAL_SYMBOL_TEXT.split())
+_CANDIDATE_SYSTEM_NOTES: Mapping[str, tuple[str, ...]] = {
+    "BaCr": (
+        "BaCr 只是 Ba–Cr 元素体系标签，不是可据此确认的电中性化学式。",
+        "若实际物相为 BaCrO4（铬酸钡），电荷守恒要求 Cr 的形式氧化态为 +6；"
+        "不得把 BaCrO4 描述为含 Cr(III)。",
+        "BaCrO4 通常是黄色、难溶的无机铬酸盐，历史上用于颜料或防腐蚀体系；"
+        "其中 Cr(VI) 具有氧化性和显著健康危害，讨论应用时必须同时提示安全风险。",
+        "若实际为其他 Ba–Cr 氧化物、混合相或复合物，导电、磁性、热稳定、"
+        "氧化还原和催化行为都可能改变，不能从样品标签或 SEM 形貌确定方向。",
+        "EDS 可确认元素组成与空间分布，XRD 用于物相识别，XPS 用于区分 Cr 价态；"
+        "SEM 分割只能支撑粒径、覆盖、团聚和空间分布等形貌结论。",
+    ),
+}
+_CANDIDATE_SYSTEM_ANSWERS: Mapping[str, str] = {
+    "BaCr": (
+        "`BaCr-1` 可以安全识别为 Ba–Cr 候选体系的样品标签，但它不是已经确认的化学式。\n\n"
+        "可能的性质要分物相讨论：\n"
+        "- 若实际物相是 BaCrO₄（铬酸钡），它通常呈黄色、难溶；其中 Cr 为 +6 价，"
+        "具有氧化性和显著健康危害，历史上曾用于颜料或防腐蚀体系。\n"
+        "- 若实际是其他 Ba–Cr 氧化物、混合相或复合物，导电、磁性、热稳定、氧化还原"
+        "和催化行为都可能随 Cr 价态与晶相改变，不能仅凭标签判断增强还是减弱。\n"
+        "- 当前 SEM 图像与分割结果能回答颗粒尺寸、覆盖、团聚和空间分布，不能直接证明"
+        "元素组成、晶相、价态或功能性能。\n\n"
+        "最有效的确认顺序是：先用 EDS 核对 Ba、Cr 及其他元素，再用 XRD 确认物相，"
+        "最后用 XPS 区分 Cr 价态。在这些结果出来前，不应把样品直接定名为 BaCrO₄，"
+        "也不应宣称它已经具有某种催化、导电或磁学性能。"
+    ),
+}
+_SAMPLE_LABEL_STEM = re.compile(r"^[A-Z][A-Za-z]{1,11}$")
+_ELEMENT_SYMBOL = re.compile(r"[A-Z][a-z]?")
 logger = logging.getLogger(__name__)
 
 
@@ -345,6 +386,10 @@ class ConversationService:
         data = DataQueryResult(answer="")
         knowledge = KnowledgeEvidence((), (), (), "OK")
         research = ResearchEvidence()
+        checked_candidate_answer = _checked_candidate_answer(
+            request.content,
+            task_context,
+        )
         if query_type in {QueryType.ANALYSIS_DATA, QueryType.MIXED}:
             data = self.data_tools.answer(
                 DataQuery(
@@ -394,6 +439,14 @@ class ConversationService:
                 )
                 answer = generated.answer
                 provider_limitations = generated.limitations
+                confidence = generated.confidence
+                scientific_guardrail_applied = checked_candidate_answer is not None
+                if checked_candidate_answer is not None:
+                    answer = checked_candidate_answer
+                    provider_limitations = (
+                        "样品标签只提供候选元素体系，最终组成与性质仍需成分、物相和价态表征",
+                    )
+                    confidence = "medium"
                 validation_limitations = provider_limitations
                 validation_data_ids = generated.used_data_ids
                 validation_citation_ids = generated.used_citation_ids
@@ -459,9 +512,13 @@ class ConversationService:
                             [*data.limitations, *knowledge.limitations, *generated_limitations]
                         )
                     ),
-                    confidence=generated.confidence,
+                    confidence=confidence,
                     outcome_code=_outcome(query_type, data, knowledge),
-                    llm_provider="openai_compatible",
+                    llm_provider=(
+                        "openai_compatible+scientific_guardrail"
+                        if scientific_guardrail_applied
+                        else "openai_compatible"
+                    ),
                     llm_model=provider.model,
                     fallback_used=False,
                     generation_time_ms=_elapsed_ms(started),
@@ -689,6 +746,12 @@ class ConversationService:
                 "进入“开始分析”选择模型并创建一次全图分割运行。",
                 "局部区域（ROI）是可选步骤，可以直接跳过。",
             ]
+        candidate_material_hint = (
+            _candidate_material_hint(image.sample_id, image.filename)
+            if image is not None
+            and not (image.material_name or image.material_formula)
+            else None
+        )
         return {
             "job": {
                 "name": job.name if job is not None else None,
@@ -702,6 +765,7 @@ class ConversationService:
                     "height_px": image.height,
                     "material_name": image.material_name,
                     "material_formula": image.material_formula,
+                    "candidate_material_hint": candidate_material_hint,
                     "has_physical_scale": (
                         image.scale_nm_per_pixel is not None or selected_run_has_physical_scale
                     ),
@@ -782,6 +846,57 @@ class ConversationService:
                 "material_context": material,
             }
         )
+
+
+def _candidate_material_hint(
+    sample_id: str | None,
+    filename: str | None,
+) -> Mapping[str, object] | None:
+    """Parse an element-system hint from a sample label without claiming composition."""
+
+    label = (sample_id or "").strip()
+    if not label and filename:
+        label = filename.rsplit(".", 1)[0].strip()
+    if not label:
+        return None
+    stem = re.split(r"[-_]", label, maxsplit=1)[0]
+    if _SAMPLE_LABEL_STEM.fullmatch(stem) is None:
+        return None
+    symbols = _ELEMENT_SYMBOL.findall(stem)
+    if len(symbols) < 2 or "".join(symbols) != stem:
+        return None
+    if any(symbol not in _CHEMICAL_SYMBOLS for symbol in symbols):
+        return None
+    hint: dict[str, object] = {
+        "sample_label": label,
+        "candidate_formula_stem": stem,
+        "candidate_elements": symbols,
+        "candidate_system": "–".join(symbols),
+        "evidence_level": "unverified_label_hint",
+    }
+    if notes := _CANDIDATE_SYSTEM_NOTES.get(stem):
+        hint["trusted_scientific_notes"] = list(notes)
+    return hint
+
+
+def _checked_candidate_answer(
+    question: str,
+    task_context: Mapping[str, object],
+) -> str | None:
+    normalized = question.casefold()
+    if not any(
+        signal in normalized
+        for signal in ("性质", "特性", "性能", "用途", "应用", "什么材料")
+    ):
+        return None
+    selected_image = task_context.get("selected_image")
+    if not isinstance(selected_image, Mapping):
+        return None
+    hint = selected_image.get("candidate_material_hint")
+    if not isinstance(hint, Mapping) or not hint.get("trusted_scientific_notes"):
+        return None
+    stem = hint.get("candidate_formula_stem")
+    return _CANDIDATE_SYSTEM_ANSWERS.get(str(stem))
 
 
 class _TurnAnswer:

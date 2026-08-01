@@ -2,6 +2,7 @@ import { create } from "zustand";
 
 export type WorkspaceStage = "project" | "roi" | "models" | "runs" | "results" | "agent";
 export type InspectorTab =
+  | "agent"
   | "assistant"
   | "scale"
   | "system"
@@ -38,7 +39,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   activeRunId: null,
   selectedRunIds: [],
   stage: "project",
-  inspectorTab: "assistant",
+  inspectorTab: "agent",
   queryMode: "auto",
   queryDraft: "",
   railCollapsed: false,
