@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import Settings
 from app.core.errors import JobStateConflictError
-from app.db.models import IdentityAuditEvent, SegmentationRun
+from app.db.models import AgentTaskEvent, IdentityAuditEvent, SegmentationRun
 
 IMMUTABLE_RUN_FIELDS = (
     "job_id",
@@ -64,6 +64,25 @@ def protect_append_only_identity_audit(
             raise RuntimeError("identity audit events are append-only")
     if any(isinstance(instance, IdentityAuditEvent) for instance in session.deleted):
         raise RuntimeError("identity audit events are append-only")
+
+
+@event.listens_for(Session, "before_flush")
+def protect_append_only_agent_events(
+    session: Session,
+    _flush_context: object,
+    _instances: object,
+) -> None:
+    """Keep the public agent execution trace append-only."""
+
+    for instance in session.dirty:
+        if (
+            isinstance(instance, AgentTaskEvent)
+            and inspect(instance).persistent
+            and session.is_modified(instance, include_collections=False)
+        ):
+            raise RuntimeError("agent task events are append-only")
+    if any(isinstance(instance, AgentTaskEvent) for instance in session.deleted):
+        raise RuntimeError("agent task events are append-only")
 
 
 def create_database_engine(settings: Settings) -> Engine:

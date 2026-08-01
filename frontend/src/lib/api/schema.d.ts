@@ -4,6 +4,91 @@
  */
 
 export interface paths {
+    "/api/v1/agent-tasks/{task_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Agent Task */
+        get: operations["getAgentTask"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/agent-tasks/{task_id}/approvals/{approval_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Resolve Agent Task Approval */
+        post: operations["resolveAgentTaskApproval"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/agent-tasks/{task_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel Agent Task */
+        post: operations["cancelAgentTask"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/agent-tasks/{task_id}/input": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Submit Agent Task Input */
+        post: operations["submitAgentTaskInput"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/agent-tasks/{task_id}/run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Run Agent Task */
+        post: operations["runAgentTask"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/analyses": {
         parameters: {
             query?: never;
@@ -32,6 +117,24 @@ export interface paths {
         get: operations["getAnalysis"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/analyses/{job_id}/agent-tasks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Agent Tasks */
+        get: operations["listAgentTasks"];
+        put?: never;
+        /** Create Agent Task */
+        post: operations["createAgentTask"];
         delete?: never;
         options?: never;
         head?: never;
@@ -368,6 +471,171 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** AgentApprovalDTO */
+        AgentApprovalDTO: {
+            /** Action Id */
+            action_id: string;
+            /** Approval Id */
+            approval_id: string;
+            /** Comment */
+            comment?: string | null;
+            /** Reason */
+            reason: string;
+            /**
+             * Requested At
+             * Format: date-time
+             */
+            requested_at: string;
+            /** Resolved At */
+            resolved_at?: string | null;
+            /** Resolved By */
+            resolved_by?: string | null;
+            status: components["schemas"]["AgentApprovalStatus"];
+            /** Task Id */
+            task_id: string;
+            /** Tool Arguments */
+            tool_arguments?: {
+                [key: string]: unknown;
+            };
+            /** Tool Name */
+            tool_name: string;
+        };
+        /**
+         * AgentApprovalStatus
+         * @enum {string}
+         */
+        AgentApprovalStatus: "pending" | "approved" | "rejected";
+        /**
+         * AgentBudget
+         * @description Hard runtime limits; the model cannot increase them.
+         */
+        AgentBudget: {
+            /**
+             * Max Auto Steps Per Run
+             * @default 4
+             */
+            max_auto_steps_per_run: number;
+            /**
+             * Max Failures
+             * @default 3
+             */
+            max_failures: number;
+            /**
+             * Max Steps
+             * @default 12
+             */
+            max_steps: number;
+        };
+        /** AgentEventDTO */
+        AgentEventDTO: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Event Id */
+            event_id: number;
+            event_type: components["schemas"]["AgentEventType"];
+            /** Payload */
+            payload?: {
+                [key: string]: unknown;
+            };
+            /** Sequence */
+            sequence: number;
+            /** Summary */
+            summary: string;
+        };
+        /**
+         * AgentEventType
+         * @enum {string}
+         */
+        AgentEventType: "task.created" | "model.decision" | "tool.started" | "tool.completed" | "tool.failed" | "approval.requested" | "approval.resolved" | "user_input.received" | "task.completed" | "task.failed" | "task.cancelled";
+        /** AgentModelIdentity */
+        AgentModelIdentity: {
+            /** Model */
+            model: string;
+            /** Provider */
+            provider: string;
+        };
+        /** AgentRunRequest */
+        AgentRunRequest: {
+            /** Max Steps */
+            max_steps?: number | null;
+        };
+        /** AgentTaskDTO */
+        AgentTaskDTO: {
+            /** Approvals */
+            approvals?: components["schemas"]["AgentApprovalDTO"][];
+            budget: components["schemas"]["AgentBudget"];
+            /** Context */
+            context?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Created By */
+            created_by: string;
+            /** Current Step */
+            current_step?: string | null;
+            /** Error */
+            error?: string | null;
+            /** Events */
+            events?: components["schemas"]["AgentEventDTO"][];
+            /** Failure Count */
+            failure_count: number;
+            /** Final Answer */
+            final_answer?: string | null;
+            /** Final Evidence Refs */
+            final_evidence_refs?: string[];
+            /** Goal */
+            goal: string;
+            /** Job Id */
+            job_id: string;
+            /** Latest Observations */
+            latest_observations?: {
+                [key: string]: unknown;
+            }[];
+            model?: components["schemas"]["AgentModelIdentity"] | null;
+            /** Next Wakeup At */
+            next_wakeup_at?: string | null;
+            /** Pending Action */
+            pending_action?: {
+                [key: string]: unknown;
+            } | null;
+            /** Plan */
+            plan?: string[];
+            status: components["schemas"]["AgentTaskStatus"];
+            /** Step Count */
+            step_count: number;
+            /** Task Id */
+            task_id: string;
+            /** Tenant Id */
+            tenant_id: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** User Inputs */
+            user_inputs?: string[];
+            /** Version */
+            version: number;
+            /** Waiting Question */
+            waiting_question?: string | null;
+        };
+        /** AgentTaskListData */
+        AgentTaskListData: {
+            /** Tasks */
+            tasks?: components["schemas"]["AgentTaskDTO"][];
+        };
+        /**
+         * AgentTaskStatus
+         * @enum {string}
+         */
+        AgentTaskStatus: "created" | "running" | "waiting_for_approval" | "waiting_for_input" | "waiting_for_external" | "completed" | "failed" | "cancelled";
         /** AnalysisJobDTO */
         AnalysisJobDTO: {
             /** Config */
@@ -436,6 +704,22 @@ export interface components {
              * @default false
              */
             retryable: boolean;
+        };
+        /** ApiResponse[AgentTaskDTO] */
+        ApiResponse_AgentTaskDTO_: {
+            data?: components["schemas"]["AgentTaskDTO"] | null;
+            error?: components["schemas"]["ApiErrorPayload"] | null;
+            /** Request Id */
+            request_id: string;
+            status: components["schemas"]["ApiStatus"];
+        };
+        /** ApiResponse[AgentTaskListData] */
+        ApiResponse_AgentTaskListData_: {
+            data?: components["schemas"]["AgentTaskListData"] | null;
+            error?: components["schemas"]["ApiErrorPayload"] | null;
+            /** Request Id */
+            request_id: string;
+            status: components["schemas"]["ApiStatus"];
         };
         /** ApiResponse[BoxSetDTO] */
         ApiResponse_BoxSetDTO_: {
@@ -856,6 +1140,21 @@ export interface components {
             /** Width */
             width: number;
         };
+        /** CreateAgentTaskRequest */
+        CreateAgentTaskRequest: {
+            /**
+             * Auto Start
+             * @default true
+             */
+            auto_start: boolean;
+            budget?: components["schemas"]["AgentBudget"];
+            /** Context */
+            context?: {
+                [key: string]: unknown;
+            };
+            /** Goal */
+            goal: string;
+        };
         /** CreateConversationRequest */
         CreateConversationRequest: {
             /** Title */
@@ -978,6 +1277,8 @@ export interface components {
         };
         /** HealthData */
         HealthData: {
+            agent_runtime?: components["schemas"]["HealthComponent"];
+            agent_scheduler?: components["schemas"]["HealthComponent"];
             database: components["schemas"]["HealthComponent"];
             llm_provider?: components["schemas"]["HealthComponent"];
             model_registry: components["schemas"]["HealthComponent"];
@@ -1643,6 +1944,16 @@ export interface components {
             /** Scale Nm Per Pixel */
             scale_nm_per_pixel?: number | null;
         };
+        /** ResolveAgentApprovalRequest */
+        ResolveAgentApprovalRequest: {
+            /** Comment */
+            comment?: string | null;
+            /**
+             * Decision
+             * @enum {string}
+             */
+            decision: "approve" | "reject";
+        };
         /** ReviewRunData */
         ReviewRunData: {
             /** Parent Run Id */
@@ -2012,6 +2323,11 @@ export interface components {
             /** Working Distance Mm */
             working_distance_mm?: number | null;
         };
+        /** SubmitAgentInputRequest */
+        SubmitAgentInputRequest: {
+            /** Content */
+            content: string;
+        };
         /** ToolCallLog */
         ToolCallLog: {
             /** Arguments */
@@ -2115,6 +2431,669 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    getAgentTask: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_AgentTaskDTO_"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description API key required or invalid */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Request forbidden by security policy */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Resource not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description State or revision conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Payload too large */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Unsupported media type */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Validation error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Rate limit exceeded */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Frozen route awaiting service integration */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Dependency unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+        };
+    };
+    resolveAgentTaskApproval: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                task_id: string;
+                approval_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResolveAgentApprovalRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_AgentTaskDTO_"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description API key required or invalid */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Request forbidden by security policy */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Resource not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description State or revision conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Payload too large */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Unsupported media type */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Validation error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Rate limit exceeded */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Frozen route awaiting service integration */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Dependency unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+        };
+    };
+    cancelAgentTask: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_AgentTaskDTO_"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description API key required or invalid */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Request forbidden by security policy */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Resource not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description State or revision conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Payload too large */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Unsupported media type */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Validation error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Rate limit exceeded */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Frozen route awaiting service integration */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Dependency unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+        };
+    };
+    submitAgentTaskInput: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SubmitAgentInputRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_AgentTaskDTO_"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description API key required or invalid */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Request forbidden by security policy */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Resource not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description State or revision conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Payload too large */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Unsupported media type */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Validation error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Rate limit exceeded */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Frozen route awaiting service integration */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Dependency unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+        };
+    };
+    runAgentTask: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AgentRunRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_AgentTaskDTO_"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description API key required or invalid */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Request forbidden by security policy */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Resource not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description State or revision conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Payload too large */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Unsupported media type */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Validation error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Rate limit exceeded */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Frozen route awaiting service integration */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Dependency unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+        };
+    };
     createAnalysis: {
         parameters: {
             query?: never;
@@ -2265,6 +3244,270 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResponse_JobDetailDTO_"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description API key required or invalid */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Request forbidden by security policy */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Resource not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description State or revision conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Payload too large */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Unsupported media type */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Validation error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Rate limit exceeded */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Frozen route awaiting service integration */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Dependency unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+        };
+    };
+    listAgentTasks: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_AgentTaskListData_"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description API key required or invalid */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Request forbidden by security policy */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Resource not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description State or revision conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Payload too large */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Unsupported media type */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Validation error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Rate limit exceeded */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Frozen route awaiting service integration */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+            /** @description Dependency unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__object__"];
+                };
+            };
+        };
+    };
+    createAgentTask: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateAgentTaskRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_AgentTaskDTO_"];
                 };
             };
             /** @description Bad request */

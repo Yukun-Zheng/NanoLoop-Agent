@@ -9,6 +9,7 @@ from fastapi import HTTPException, Request, Security
 from fastapi.security import APIKeyHeader
 
 from app.agent.application import QueryApplicationService
+from app.agent.control import AgentControlService
 from app.agent.conversation import ConversationService
 from app.analysis.application import AnalysisApplicationService, AnalysisCreationService
 from app.authentication import AUTHENTICATION_VERIFIED_STATE_KEY, RequestAuthenticator
@@ -159,4 +160,11 @@ def get_conversation_service(request: Request) -> ConversationService:
     service = getattr(request.app.state, "conversation_service", None)
     if not isinstance(service, ConversationService):
         raise ServiceUnavailableError(details={"component": "conversation_service"})
+    return service
+
+
+def get_agent_control_service(request: Request) -> AgentControlService:
+    service = getattr(request.app.state, "agent_control_service", None)
+    if not isinstance(service, AgentControlService):
+        raise ServiceUnavailableError(details={"component": "agent_control_service"})
     return service

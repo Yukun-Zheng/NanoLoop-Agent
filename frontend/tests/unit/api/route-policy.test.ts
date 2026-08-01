@@ -15,6 +15,13 @@ const allowed = [
   ["PUT", "analyses/job-1/images/image-1/boxes"],
   ["GET", "analyses/job-1/queries"],
   ["POST", "analyses/job-1/query"],
+  ["GET", "analyses/job-1/agent-tasks"],
+  ["POST", "analyses/job-1/agent-tasks"],
+  ["GET", "agent-tasks/agt-1"],
+  ["POST", "agent-tasks/agt-1/run"],
+  ["POST", "agent-tasks/agt-1/input"],
+  ["POST", "agent-tasks/agt-1/cancel"],
+  ["POST", "agent-tasks/agt-1/approvals/apr-1"],
   ["POST", "analyses/job-1/runs"],
   ["GET", "files/v2.token.signature"],
   ["GET", "knowledge/documents"],
@@ -37,6 +44,9 @@ describe("BFF route policy", () => {
     ["DELETE", "analyses/job-1"],
     ["POST", "health"],
     ["POST", "analyses/job-1/queries"],
+    ["DELETE", "agent-tasks/agt-1"],
+    ["GET", "agent-tasks/agt-1/run"],
+    ["GET", "agent-tasks/agt-1/approvals/apr-1"],
     ["GET", "models/recommend"],
     ["PUT", "knowledge/documents/doc-1"]
   ])("recognizes a path but rejects wrong method", (method, path) => {

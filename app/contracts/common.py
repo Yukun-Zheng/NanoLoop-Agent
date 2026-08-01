@@ -67,6 +67,18 @@ class HealthData(ContractModel):
             detail="LLM provider status not reported",
         )
     )
+    agent_runtime: HealthComponent = Field(
+        default_factory=lambda: HealthComponent(
+            status="degraded",
+            detail="Agent runtime status not reported",
+        )
+    )
+    agent_scheduler: HealthComponent = Field(
+        default_factory=lambda: HealthComponent(
+            status="degraded",
+            detail="Agent scheduler status not reported",
+        )
+    )
     online_research: HealthComponent = Field(
         default_factory=lambda: HealthComponent(
             status="degraded",

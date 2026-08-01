@@ -94,6 +94,9 @@ class AnalysisJob(TimestampMixin, Base):
     conversations: Mapped[list["ChatConversation"]] = relationship(
         back_populates="job", cascade="all, delete-orphan"
     )
+    agent_tasks: Mapped[list["AgentTask"]] = relationship(
+        back_populates="job", cascade="all, delete-orphan"
+    )
 
 
 class ImageAsset(TimestampMixin, Base):
@@ -741,6 +744,158 @@ class ChatTurnEvidence(Base):
     message: Mapped[ChatMessage] = relationship(back_populates="evidence")
 
 
+class AgentTask(Base):
+    """Durable public state for one bounded agent objective."""
+
+    __tablename__ = "agent_tasks"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["job_id", "tenant_id"],
+            ["analysis_jobs.job_id", "analysis_jobs.tenant_id"],
+            name="fk_agent_tasks_job_tenant",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["created_by", "tenant_id"],
+            ["principals.principal_id", "principals.tenant_id"],
+            name="fk_agent_tasks_creator_tenant",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "status IN ('created', 'running', 'waiting_for_approval', "
+            "'waiting_for_input', 'waiting_for_external', "
+            "'completed', 'failed', 'cancelled')",
+            name="agent_task_status_known",
+        ),
+        CheckConstraint(
+            "auth_mode IN ('disabled', 'shared_key', 'principal')",
+            name="agent_task_auth_mode_known",
+        ),
+        CheckConstraint(
+            "(auth_mode = 'principal' AND created_credential_id IS NOT NULL) OR "
+            "(auth_mode IN ('disabled', 'shared_key') AND created_credential_id IS NULL)",
+            name="agent_task_credential_shape",
+        ),
+        CheckConstraint("step_count >= 0", name="agent_task_step_count_nonnegative"),
+        CheckConstraint(
+            "failure_count >= 0",
+            name="agent_task_failure_count_nonnegative",
+        ),
+        CheckConstraint("version >= 1", name="agent_task_version_positive"),
+        Index("ix_agent_tasks_tenant_job_updated", "tenant_id", "job_id", "updated_at"),
+    )
+
+    task_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    job_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_by: Mapped[str] = mapped_column(String(36), nullable=False)
+    created_credential_id: Mapped[str | None] = mapped_column(
+        ForeignKey("api_credentials.credential_id", ondelete="RESTRICT")
+    )
+    auth_mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    goal: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    plan_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    current_step: Mapped[str | None] = mapped_column(Text)
+    budget_json: Mapped[JsonObject] = mapped_column(JSON, default=dict, nullable=False)
+    context_json: Mapped[JsonObject] = mapped_column(JSON, default=dict, nullable=False)
+    observations_json: Mapped[list[JsonObject]] = mapped_column(
+        JSON, default=list, nullable=False
+    )
+    user_inputs_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    pending_action_json: Mapped[JsonObject | None] = mapped_column(JSON)
+    next_wakeup_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    waiting_question: Mapped[str | None] = mapped_column(Text)
+    final_answer: Mapped[str | None] = mapped_column(Text)
+    final_evidence_refs_json: Mapped[list[str]] = mapped_column(
+        JSON,
+        default=list,
+        nullable=False,
+    )
+    error: Mapped[str | None] = mapped_column(Text)
+    model_provider: Mapped[str | None] = mapped_column(String(80))
+    model_name: Mapped[str | None] = mapped_column(String(255))
+    step_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    failure_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+    job: Mapped[AnalysisJob] = relationship(back_populates="agent_tasks")
+    events: Mapped[list["AgentTaskEvent"]] = relationship(
+        back_populates="task",
+        cascade="all, delete-orphan",
+        order_by="AgentTaskEvent.sequence",
+    )
+    approvals: Mapped[list["AgentApproval"]] = relationship(
+        back_populates="task",
+        cascade="all, delete-orphan",
+        order_by="AgentApproval.requested_at",
+    )
+
+
+class AgentTaskEvent(Base):
+    """Append-only, user-visible trace of decisions, actions, and observations."""
+
+    __tablename__ = "agent_task_events"
+    __table_args__ = (
+        UniqueConstraint("task_id", "sequence", name="uq_agent_task_events_task_sequence"),
+        Index("ix_agent_task_events_task_created", "task_id", "created_at"),
+    )
+
+    event_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    task_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_tasks.task_id", ondelete="CASCADE"), nullable=False
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    payload_json: Mapped[JsonObject] = mapped_column(JSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+    task: Mapped[AgentTask] = relationship(back_populates="events")
+
+
+class AgentApproval(Base):
+    """Human decision for one model-proposed controlled action."""
+
+    __tablename__ = "agent_approvals"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'approved', 'rejected')",
+            name="agent_approval_status_known",
+        ),
+        UniqueConstraint("action_id", name="uq_agent_approvals_action"),
+        Index("ix_agent_approvals_task_status", "task_id", "status"),
+    )
+
+    approval_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    task_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_tasks.task_id", ondelete="CASCADE"), nullable=False
+    )
+    action_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    tool_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    tool_arguments_json: Mapped[JsonObject] = mapped_column(JSON, default=dict, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    resolved_by: Mapped[str | None] = mapped_column(
+        ForeignKey("principals.principal_id", ondelete="RESTRICT")
+    )
+    comment: Mapped[str | None] = mapped_column(Text)
+
+    task: Mapped[AgentTask] = relationship(back_populates="approvals")
+
+
 class Tenant(TimestampMixin, Base):
     """Tenant lifecycle state used by principal authentication and authorization."""
 
@@ -971,6 +1126,32 @@ event.listen(
         BEFORE UPDATE ON identity_audit_events
         BEGIN
             SELECT RAISE(ABORT, 'identity audit events are append-only');
+        END
+        """
+    ).execute_if(dialect="sqlite"),
+)
+event.listen(
+    AgentTaskEvent.__table__,
+    "after_create",
+    DDL(  # type: ignore[no-untyped-call]
+        """
+        CREATE TRIGGER trg_agent_task_events_no_update
+        BEFORE UPDATE ON agent_task_events
+        BEGIN
+            SELECT RAISE(ABORT, 'agent task events are append-only');
+        END
+        """
+    ).execute_if(dialect="sqlite"),
+)
+event.listen(
+    AgentTaskEvent.__table__,
+    "after_create",
+    DDL(  # type: ignore[no-untyped-call]
+        """
+        CREATE TRIGGER trg_agent_task_events_no_delete
+        BEFORE DELETE ON agent_task_events
+        BEGIN
+            SELECT RAISE(ABORT, 'agent task events are append-only');
         END
         """
     ).execute_if(dialect="sqlite"),

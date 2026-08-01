@@ -99,6 +99,7 @@ class InferenceGateway:
         expected_adapter_sha256: str | None = None,
         model_bundle: ModelBundleReference | None = None,
     ) -> SegmentationOutput:
+        device = request.device.value
         if model_bundle is None:
             metadata = self.registry.get_metadata(model_id)
             if metadata.status != ModelStatus.READY:
@@ -110,10 +111,6 @@ class InferenceGateway:
                     }
                 )
 
-        device = resolve_device(request.device.value)
-        resolved_request = request.model_copy(
-            update={"device": DevicePreference(device)},
-        )
         try:
             if model_bundle is None:
                 bundle = self.registry.validate_bundle(
@@ -144,6 +141,13 @@ class InferenceGateway:
                     expected_model_card_sha256=expected_model_card_sha256,
                     expected_adapter_sha256=expected_adapter_sha256,
                 )
+            device = self._resolve_runtime_device(
+                request.device.value,
+                bundle.metadata,
+            )
+            resolved_request = request.model_copy(
+                update={"device": DevicePreference(device)},
+            )
             with deterministic_inference(request.seed, device=device) as controls:
                 with self.cache.lease(
                     model_id,
@@ -184,6 +188,34 @@ class InferenceGateway:
             raise InferenceExecutionError(
                 details={"model_id": model_id, "stage": "predict", "device": device}
             ) from exc
+
+    @staticmethod
+    def _resolve_runtime_device(requested: str, metadata: ModelMetadata) -> str:
+        """Resolve auto against the devices verified for this exact model bundle."""
+
+        resolved = resolve_device(requested)
+        declared = metadata.metric_context.get("runtime_supported_devices")
+        if not isinstance(declared, (list, tuple)):
+            return resolved
+        supported = {
+            str(item).strip().lower()
+            for item in declared
+            if str(item).strip().lower() in {"cpu", "cuda", "mps"}
+        }
+        if not supported or resolved in supported:
+            return resolved
+        if requested == DevicePreference.AUTO.value and "cpu" in supported:
+            return DevicePreference.CPU.value
+        raise ModelNotReadyError(
+            "所选设备不受该模型支持",
+            details={
+                "model_id": metadata.model_id,
+                "reason": "unsupported_runtime_device",
+                "requested_device": requested,
+                "resolved_device": resolved,
+                "supported_devices": sorted(supported),
+            },
+        )
 
     def freeze_model_bundle(
         self,

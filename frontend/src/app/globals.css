@@ -1651,7 +1651,7 @@ body:has(.workspace-page) {
 
 .inspector-tabs {
   display: grid;
-  grid-template-columns: repeat(7, 1fr);
+  grid-template-columns: repeat(8, 1fr);
   border-bottom: 1px solid var(--nl-border);
 }
 
@@ -1693,6 +1693,442 @@ body:has(.workspace-page) {
 
 .inspector-assistant-content {
   overflow: hidden !important;
+}
+
+.inspector-agent-content {
+  overflow-y: auto;
+}
+
+.agent-task-shell {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+}
+
+.agent-task-create,
+.agent-task-list,
+.agent-task-detail {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--nl-border);
+  border-radius: 12px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.agent-task-create {
+  background:
+    radial-gradient(circle at 100% 0%, rgba(95, 111, 245, 0.13), transparent 40%),
+    rgba(255, 255, 255, 0.86);
+}
+
+.agent-task-kicker,
+.agent-task-status,
+.agent-task-list > header,
+.agent-events > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.agent-task-kicker > span,
+.agent-task-status > div > span {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--nl-accent);
+  font-size: 8px;
+  font-weight: 780;
+  letter-spacing: 0.12em;
+}
+
+.agent-task-create h3,
+.agent-task-status h3 {
+  margin: 0;
+  font-size: 13px;
+}
+
+.agent-task-create > p,
+.agent-task-create > small,
+.agent-empty-plan {
+  margin: 0;
+  color: var(--nl-text-muted);
+  font-size: 9px;
+  line-height: 1.6;
+}
+
+.agent-task-create textarea,
+.agent-input-request textarea {
+  width: 100%;
+  resize: vertical;
+  border: 1px solid var(--nl-border-strong);
+  border-radius: 9px;
+  padding: 9px 10px;
+  color: var(--nl-text);
+  background: rgba(255, 255, 255, 0.88);
+  font: inherit;
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.agent-task-create textarea:focus,
+.agent-input-request textarea:focus {
+  border-color: var(--nl-accent);
+  outline: 2px solid var(--nl-accent-soft);
+}
+
+.agent-goal-suggestions {
+  display: grid;
+  gap: 5px;
+}
+
+.agent-goal-suggestions button {
+  border: 0;
+  border-radius: 8px;
+  padding: 7px 8px;
+  color: var(--nl-text-muted);
+  background: rgba(95, 111, 245, 0.06);
+  text-align: left;
+  font-size: 8px;
+  line-height: 1.45;
+  cursor: pointer;
+}
+
+.agent-goal-suggestions button:hover {
+  color: var(--nl-accent-strong);
+  background: var(--nl-accent-soft);
+}
+
+.agent-task-list {
+  gap: 5px;
+}
+
+.agent-task-list > header {
+  margin-bottom: 4px;
+  font-size: 10px;
+}
+
+.agent-task-list > header span {
+  display: grid;
+  min-width: 20px;
+  height: 20px;
+  place-items: center;
+  border-radius: 999px;
+  color: var(--nl-accent-strong);
+  background: var(--nl-accent-soft);
+  font-size: 8px;
+}
+
+.agent-task-list > button {
+  display: grid;
+  gap: 3px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 8px;
+  color: inherit;
+  background: rgba(246, 247, 251, 0.7);
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-task-list > button.active {
+  border-color: rgba(95, 111, 245, 0.25);
+  background: var(--nl-accent-soft);
+}
+
+.agent-task-list > button span {
+  color: var(--nl-accent);
+  font-size: 8px;
+  font-weight: 700;
+}
+
+.agent-task-list > button strong {
+  overflow: hidden;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-task-list > button small {
+  color: var(--nl-text-soft);
+  font-size: 7px;
+}
+
+.agent-task-status {
+  align-items: flex-start;
+}
+
+.agent-task-status > div {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.agent-task-status h3 {
+  overflow-wrap: anywhere;
+  line-height: 1.45;
+}
+
+.agent-task-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.agent-task-meta span {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 999px;
+  padding: 4px 7px;
+  color: var(--nl-text-muted);
+  background: rgba(138, 143, 152, 0.08);
+  font-size: 8px;
+}
+
+.agent-plan,
+.agent-events ol {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.agent-plan li {
+  display: grid;
+  grid-template-columns: 23px minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  border-bottom: 1px solid var(--nl-border);
+  padding: 7px 0;
+  color: var(--nl-text-muted);
+  font-size: 9px;
+}
+
+.agent-plan li:last-child {
+  border-bottom: 0;
+}
+
+.agent-plan li b,
+.agent-events li > b {
+  display: grid;
+  width: 21px;
+  height: 21px;
+  place-items: center;
+  border-radius: 7px;
+  color: var(--nl-text-soft);
+  background: rgba(138, 143, 152, 0.1);
+  font-size: 8px;
+}
+
+.agent-plan li.active {
+  color: var(--nl-accent-strong);
+  font-weight: 700;
+}
+
+.agent-plan li.active b {
+  color: white;
+  background: var(--nl-accent);
+}
+
+.agent-boundary,
+.agent-final {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 8px;
+  border-radius: 9px;
+  padding: 10px;
+  background: rgba(95, 111, 245, 0.07);
+}
+
+.agent-boundary .status-spinner {
+  width: 19px;
+  height: 19px;
+  border-width: 2px;
+}
+
+.agent-boundary.error {
+  color: var(--nl-review);
+  background: var(--nl-review-soft);
+}
+
+.agent-boundary strong,
+.agent-final strong {
+  font-size: 9px;
+}
+
+.agent-boundary p,
+.agent-final p {
+  margin: 3px 0 0;
+  color: var(--nl-text-muted);
+  font-size: 8px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.agent-approval,
+.agent-input-request {
+  display: grid;
+  gap: 9px;
+  border: 1px solid rgba(219, 151, 46, 0.28);
+  border-radius: 10px;
+  padding: 10px;
+  background: rgba(255, 247, 230, 0.72);
+}
+
+.agent-approval > div:first-child {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.agent-approval strong,
+.agent-input-request strong {
+  font-size: 9px;
+}
+
+.agent-approval p {
+  margin: 3px 0 0;
+  color: var(--nl-text-muted);
+  font-size: 8px;
+  line-height: 1.5;
+}
+
+.agent-approval pre {
+  max-height: 180px;
+  overflow: auto;
+  margin: 0;
+  border-radius: 7px;
+  padding: 8px;
+  color: var(--nl-text-muted);
+  background: rgba(255, 255, 255, 0.72);
+  font-size: 7px;
+  white-space: pre-wrap;
+}
+
+.agent-approval > div:last-child,
+.agent-task-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.agent-final {
+  color: var(--nl-success);
+  background: rgba(57, 163, 115, 0.08);
+}
+
+.agent-final small {
+  display: block;
+  margin-top: 5px;
+  color: var(--nl-text-soft);
+  font-size: 7px;
+  overflow-wrap: anywhere;
+}
+
+.agent-downloads {
+  display: grid;
+  gap: 6px;
+  border: 1px solid rgba(57, 163, 115, 0.2);
+  border-radius: 9px;
+  padding: 9px;
+  background: rgba(57, 163, 115, 0.05);
+}
+
+.agent-downloads > strong {
+  font-size: 9px;
+}
+
+.agent-downloads > a {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 7px;
+  padding: 7px 8px;
+  color: var(--nl-success);
+  background: rgba(255, 255, 255, 0.74);
+  font-size: 8px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.agent-downloads > a:hover {
+  background: white;
+}
+
+.agent-downloads > small {
+  color: var(--nl-text-soft);
+  font-size: 7px;
+  line-height: 1.45;
+}
+
+.agent-events {
+  display: grid;
+  gap: 7px;
+  border-top: 1px solid var(--nl-border);
+  padding-top: 10px;
+}
+
+.agent-events > header strong {
+  font-size: 9px;
+}
+
+.agent-events > header span {
+  color: var(--nl-text-soft);
+  font-size: 7px;
+}
+
+.agent-events li {
+  display: grid;
+  grid-template-columns: 23px minmax(0, 1fr);
+  gap: 7px;
+  padding: 7px 0;
+}
+
+.agent-events li > div {
+  min-width: 0;
+}
+
+.agent-events li span {
+  color: var(--nl-accent);
+  font-size: 7px;
+  font-weight: 700;
+}
+
+.agent-events li p {
+  margin: 2px 0;
+  color: var(--nl-text-muted);
+  font-size: 8px;
+  line-height: 1.5;
+}
+
+.agent-events li small {
+  color: var(--nl-text-soft);
+  font-size: 7px;
+}
+
+.agent-empty {
+  display: grid;
+  min-height: 150px;
+  place-items: center;
+  align-content: center;
+  gap: 7px;
+  color: var(--nl-text-soft);
+  text-align: center;
+}
+
+.agent-empty strong {
+  color: var(--nl-text);
+  font-size: 11px;
+}
+
+.agent-empty p {
+  max-width: 240px;
+  margin: 0;
+  font-size: 8px;
+  line-height: 1.5;
 }
 
 .inspector-conversation {

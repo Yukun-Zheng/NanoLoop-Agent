@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 from sqlalchemy import select
 
-from app.agent.conversation import ConversationService
+from app.agent.conversation import ConversationService, _candidate_material_hint
 from app.agent.router import QueryRouter
 from app.agent.unified_query import DataQuery, DataQueryResult
 from app.contracts.common import HealthComponent
@@ -233,6 +233,13 @@ def test_open_ended_request_is_answered_as_safe_general_chat(tmp_path: Path) -> 
             "height_px": 1536,
             "material_name": None,
             "material_formula": None,
+            "candidate_material_hint": {
+                "sample_label": "BaNi-3",
+                "candidate_formula_stem": "BaNi",
+                "candidate_elements": ["Ba", "Ni"],
+                "candidate_system": "Ba–Ni",
+                "evidence_level": "unverified_label_hint",
+            },
             "has_physical_scale": False,
             "scale_nm_per_pixel": None,
             "scale_source": "none",
@@ -244,6 +251,62 @@ def test_open_ended_request_is_answered_as_safe_general_chat(tmp_path: Path) -> 
             "进入“开始分析”选择模型并创建一次全图分割运行。",
             "局部区域（ROI）是可选步骤，可以直接跳过。",
         ]
+    finally:
+        database.dispose()
+
+
+def test_bacr_sample_label_supplies_checked_chemistry_constraints() -> None:
+    hint = _candidate_material_hint("BaCr-1", "BaCr-1.tif")
+
+    assert hint is not None
+    assert hint["candidate_system"] == "Ba–Cr"
+    notes = hint["trusted_scientific_notes"]
+    assert isinstance(notes, list)
+    assert any("Cr 的形式氧化态为 +6" in note for note in notes)
+    assert any("不得把 BaCrO4 描述为含 Cr(III)" in note for note in notes)
+
+
+def test_checked_material_guardrail_replaces_small_model_chemistry_error(
+    tmp_path: Path,
+) -> None:
+    service, database, provider = _service(tmp_path)
+    provider.response = ConversationProviderAnswer(
+        answer="BaCrO4 含 Cr3+，可直接判断其导电性能。",
+        used_data_ids=(),
+        used_citation_ids=(),
+        confidence="high",
+    )
+    try:
+        with database.session() as session:
+            image = session.get(ImageAsset, "img_chat")
+            assert image is not None
+            image.filename = "BaCr-1.tif"
+            image.sample_id = "BaCr-1"
+        conversation = service.create(
+            "job_chat",
+            CreateConversationRequest(),
+            principal=_PRINCIPAL,
+        )
+
+        result = service.send(
+            "job_chat",
+            conversation.conversation_id,
+            ConversationMessageRequest(
+                content="这个材料可能有什么性质？",
+                image_id="img_chat",
+            ),
+            principal=_PRINCIPAL,
+        )
+
+        assistant = result.messages[-1]
+        assert provider.calls == 1
+        assert "其中 Cr 为 +6 价" in assistant.content
+        assert "Cr3+" not in assistant.content
+        assert assistant.evidence is not None
+        assert assistant.evidence.llm_provider == (
+            "openai_compatible+scientific_guardrail"
+        )
+        assert assistant.evidence.fallback_used is False
     finally:
         database.dispose()
 

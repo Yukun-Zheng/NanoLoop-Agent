@@ -85,6 +85,8 @@ def test_health_alias_and_versioned_health_are_real(api_harness: ApiHarness) -> 
         assert data["model_registry"]["status"] == "healthy"
         assert data["rag_index"]["status"] == "degraded"
         assert data["llm_provider"]["status"] == "degraded"
+        assert data["agent_runtime"]["status"] == "unavailable"
+        assert data["agent_scheduler"]["status"] == "healthy"
 
 
 def test_conversation_api_persists_and_reloads_messages(
@@ -122,6 +124,41 @@ def test_conversation_api_persists_and_reloads_messages(
     )
     assert reloaded.status_code == 200
     assert reloaded.json()["data"]["messages"] == messages
+
+
+def test_agent_task_api_persists_public_state_without_calling_a_model(
+    api_harness: ApiHarness,
+) -> None:
+    created = api_harness.client.post(
+        "/api/v1/analyses/job_1/agent-tasks",
+        json={
+            "goal": "检查当前任务并等待后续指令",
+            "auto_start": False,
+            "context": {"selected_image_id": "img_1"},
+        },
+    )
+    assert created.status_code == 201
+    task = created.json()["data"]
+    assert task["status"] == "created"
+    assert task["events"][0]["event_type"] == "task.created"
+    assert task["model"]["provider"] == "inherit"
+
+    listed = api_harness.client.get("/api/v1/analyses/job_1/agent-tasks")
+    assert listed.status_code == 200
+    assert listed.json()["data"]["tasks"][0]["task_id"] == task["task_id"]
+
+    reloaded = api_harness.client.get(
+        f"/api/v1/agent-tasks/{task['task_id']}"
+    )
+    assert reloaded.status_code == 200
+    assert reloaded.json()["data"]["context"]["selected_image_id"] == "img_1"
+
+    cancelled = api_harness.client.post(
+        f"/api/v1/agent-tasks/{task['task_id']}/cancel",
+        json={},
+    )
+    assert cancelled.status_code == 200
+    assert cancelled.json()["data"]["status"] == "cancelled"
 
 
 def test_optional_api_key_protects_versioned_api_and_downloads(

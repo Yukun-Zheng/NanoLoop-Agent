@@ -1,5 +1,15 @@
 import type { components } from "./schema";
 
+export type AgentApproval = components["schemas"]["AgentApprovalDTO"];
+export type AgentEvent = components["schemas"]["AgentEventDTO"];
+export type AgentTask = components["schemas"]["AgentTaskDTO"];
+export type AgentTaskList = components["schemas"]["AgentTaskListData"];
+export type CreateAgentTaskRequest =
+  components["schemas"]["CreateAgentTaskRequest"];
+export type ResolveAgentApprovalRequest =
+  components["schemas"]["ResolveAgentApprovalRequest"];
+export type SubmitAgentInputRequest =
+  components["schemas"]["SubmitAgentInputRequest"];
 export type AnalysisJob = components["schemas"]["AnalysisJobDTO"];
 export type AnalysisRoi = components["schemas"]["AnalysisROI"];
 export type ApiErrorPayload = components["schemas"]["ApiErrorPayload"];

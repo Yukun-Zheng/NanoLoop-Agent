@@ -194,6 +194,9 @@ models:
         independent_test_runtime_ms_p95: 587.7999999999998
       metric_context:
         architecture: nanoloop-msbi-efficient-anchor-v1
+        runtime_supported_devices:
+          - cpu
+          - cuda
         experts: 2
         training_complete: true
         formal_training_device: cuda_rtx_4090

@@ -15,6 +15,18 @@ const rules: RouteRule[] = [
   },
   { pattern: /^analyses\/[^/]+\/queries$/, methods: new Set(["GET"]) },
   { pattern: /^analyses\/[^/]+\/query$/, methods: new Set(["POST"]) },
+  {
+    pattern: /^analyses\/[^/]+\/agent-tasks$/,
+    methods: new Set(["GET", "POST"])
+  },
+  { pattern: /^agent-tasks\/[^/]+$/, methods: new Set(["GET"]) },
+  { pattern: /^agent-tasks\/[^/]+\/run$/, methods: new Set(["POST"]) },
+  { pattern: /^agent-tasks\/[^/]+\/input$/, methods: new Set(["POST"]) },
+  { pattern: /^agent-tasks\/[^/]+\/cancel$/, methods: new Set(["POST"]) },
+  {
+    pattern: /^agent-tasks\/[^/]+\/approvals\/[^/]+$/,
+    methods: new Set(["POST"])
+  },
   { pattern: /^analyses\/[^/]+\/conversations$/, methods: new Set(["GET", "POST"]) },
   {
     pattern: /^analyses\/[^/]+\/conversations\/[^/]+$/,

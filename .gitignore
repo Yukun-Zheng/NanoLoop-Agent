@@ -17,6 +17,7 @@ data/*.db
 data/*.db-*
 data/.file_token_secret
 data/.file_token_v2_keyring.json
+frontend/data/
 data/model-snapshots/
 data/*-model-snapshots/
 outputs/*

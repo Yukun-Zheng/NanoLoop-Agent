@@ -14,9 +14,15 @@ from sqlalchemy import inspect
 from sqlalchemy.engine import make_url
 
 from app.agent.application import QueryApplicationService
+from app.agent.control import AgentControlService
 from app.agent.conversation import ConversationService
 from app.agent.data_tools import SqlAlchemyDataToolService
+from app.agent.model_provider import (
+    build_agent_decision_model,
+)
 from app.agent.router import QueryRouter
+from app.agent.scheduler import AgentTaskScheduler
+from app.agent.scientific_tools import build_scientific_tool_registry
 from app.agent.unified_query import UnifiedQueryService
 from app.analysis.application import AnalysisApplicationService, AnalysisCreationService
 from app.api.deps import bind_route_log_context
@@ -32,6 +38,7 @@ from app.api.middleware import (
 from app.api.routes import api_router
 from app.api.routes.health import health
 from app.authentication import RequestAuthenticator
+from app.contracts.agent_runtime import AgentBudget
 from app.contracts.common import ApiResponse, HealthData
 from app.contracts.identity import AuthMode
 from app.core.config import Settings, get_settings
@@ -87,6 +94,8 @@ def create_app(
     knowledge_source_store: KnowledgeSourceStore | None = None,
     query_application_service: QueryApplicationService | None = None,
     conversation_service: ConversationService | None = None,
+    agent_control_service: AgentControlService | None = None,
+    agent_task_scheduler: AgentTaskScheduler | None = None,
 ) -> FastAPI:
     """Build an app with injectable infrastructure and no schema mutation on startup."""
 
@@ -210,10 +219,65 @@ def create_app(
                             "detail": "segmentation_runs table is missing",
                         },
                     )
+        if (
+            application.state.agent_control_service is None
+            and application.state.analysis_application_service is not None
+            and application.state.inference_gateway is not None
+        ):
+            agent_data_tools = SqlAlchemyDataToolService(
+                active_database.session_factory,
+                distribution_evidence_limit=configured.data_distribution_evidence_limit,
+            )
+            application.state.agent_control_service = AgentControlService(
+                session_factory=active_database.session_factory,
+                model=build_agent_decision_model(configured),
+                tools=build_scientific_tool_registry(
+                    session_factory=active_database.session_factory,
+                    inference_gateway=application.state.inference_gateway,
+                    analysis_service=application.state.analysis_application_service,
+                    data_tools=agent_data_tools,
+                    file_store=active_file_store,
+                    file_access=application.state.file_artifact_access_service,
+                    api_prefix=configured.api_prefix,
+                    report_llm_provider=getattr(
+                        application.state.conversation_service,
+                        "llm_provider",
+                        None,
+                    ),
+                ),
+                server_budget=AgentBudget(
+                    max_steps=configured.agent_max_steps,
+                    max_failures=configured.agent_max_failures,
+                    max_auto_steps_per_run=configured.agent_max_auto_steps_per_run,
+                ),
+                max_observation_chars=configured.agent_max_observation_chars,
+            )
+        if (
+            application.state.agent_task_scheduler is None
+            and application.state.agent_control_service is not None
+            and inspect(active_database.engine).has_table("agent_tasks")
+        ):
+            application.state.agent_task_scheduler = AgentTaskScheduler(
+                application.state.agent_control_service,
+                poll_interval_seconds=configured.agent_scheduler_poll_seconds,
+                batch_size=configured.agent_scheduler_batch_size,
+            )
+        if application.state.agent_task_scheduler is not None:
+            application.state.agent_task_scheduler.start()
         logger.info("application_started", extra={"event": "application_started"})
         try:
             yield
         finally:
+            agent_scheduler = application.state.agent_task_scheduler
+            if agent_scheduler is not None:
+                agent_scheduler_stopped = await agent_scheduler.astop(
+                    timeout=configured.shutdown_timeout_seconds,
+                )
+                if not agent_scheduler_stopped:
+                    logger.warning(
+                        "agent_task_scheduler_shutdown_incomplete",
+                        extra={"event": "agent_task_scheduler_shutdown_incomplete"},
+                    )
             scheduler = application.state.queued_run_scheduler
             if scheduler is not None:
                 scheduler_stopped = await scheduler.astop(
@@ -271,6 +335,8 @@ def create_app(
     application.state.knowledge_source_store = knowledge_source_store
     application.state.query_application_service = query_application_service
     application.state.conversation_service = conversation_service
+    application.state.agent_control_service = agent_control_service
+    application.state.agent_task_scheduler = agent_task_scheduler
     application.state.knowledge_service = None
 
     allowed_origins = cors_origins(configured)

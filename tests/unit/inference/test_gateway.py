@@ -62,6 +62,39 @@ def test_predict_is_lazy_and_reuses_cached_fake(tmp_path: Path) -> None:
     assert instances[0].predict_calls == 2
 
 
+def test_auto_device_falls_back_to_cpu_for_model_without_mps_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entry = model_entry(tmp_path, "cpu-cuda-only")
+    entry["metadata"]["metric_context"] = {
+        "runtime_supported_devices": ["cpu", "cuda"]
+    }
+    instances: list[FakeAdapter] = []
+
+    def resolver(_: str) -> type[FakeAdapter]:
+        class TrackedFake(FakeAdapter):
+            def __init__(self, **kwargs: object) -> None:
+                super().__init__(**kwargs)
+                instances.append(self)
+
+        return TrackedFake
+
+    monkeypatch.setattr("app.inference.gateway.resolve_device", lambda _: "mps")
+    registry = build_registry(tmp_path, [entry], resolver=resolver)
+    gateway = InferenceGateway(registry, AdapterCache())
+    auto_request = request(tmp_path).model_copy(
+        update={"device": DevicePreference.AUTO}
+    )
+
+    output = gateway.predict("cpu-cuda-only", auto_request)
+
+    assert instances[0].device == "cpu"
+    assert output.execution is not None
+    assert output.execution.actual_device == "cpu"
+    assert registry.get_metadata("cpu-cuda-only").status is ModelStatus.READY
+
+
 def test_frozen_run_hashes_reject_registry_refresh_and_cache_by_fingerprint(
     tmp_path: Path,
 ) -> None:

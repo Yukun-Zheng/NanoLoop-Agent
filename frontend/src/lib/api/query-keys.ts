@@ -5,6 +5,8 @@ export const queryKeys = {
   conversations: (jobId: string) => ["conversations", jobId] as const,
   conversation: (jobId: string, conversationId: string) =>
     ["conversation", jobId, conversationId] as const,
+  agentTasks: (jobId: string) => ["agent-tasks", jobId] as const,
+  agentTask: (taskId: string) => ["agent-task", taskId] as const,
   boxes: (jobId: string, imageId: string) => ["boxes", jobId, imageId] as const,
   models: ["models"] as const,
   run: (runId: string) => ["run", runId] as const,

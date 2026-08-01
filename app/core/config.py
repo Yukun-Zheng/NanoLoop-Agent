@@ -64,6 +64,25 @@ class Settings(BaseSettings):
     llm_temperature: float = Field(default=0.0, ge=0, le=2)
     llm_history_turns: int = Field(default=8, ge=1, le=20)
     llm_history_max_chars: int = Field(default=12_000, ge=1_000, le=50_000)
+    agent_model_provider: str = Field(
+        default="inherit",
+        pattern=r"^[a-z][a-z0-9_-]{1,63}$",
+    )
+    agent_model_base_url: str | None = None
+    agent_model_api_key: str | None = None
+    agent_model_name: str | None = None
+    agent_model_timeout_seconds: float = Field(default=90.0, ge=1, le=300)
+    agent_model_max_tokens: int = Field(default=800, ge=128, le=8_192)
+    agent_model_temperature: float = Field(default=0.0, ge=0, le=1)
+    agent_model_json_mode: bool = True
+    agent_model_format_retries: int = Field(default=1, ge=0, le=2)
+    agent_model_max_input_chars: int = Field(default=12_000, ge=12_000, le=200_000)
+    agent_max_steps: int = Field(default=12, ge=1, le=64)
+    agent_max_failures: int = Field(default=3, ge=0, le=16)
+    agent_max_auto_steps_per_run: int = Field(default=4, ge=1, le=16)
+    agent_max_observation_chars: int = Field(default=12_000, ge=1_000, le=50_000)
+    agent_scheduler_poll_seconds: float = Field(default=1.0, ge=0.1, le=60)
+    agent_scheduler_batch_size: int = Field(default=20, ge=1, le=100)
     online_research_enabled: bool = True
     tavily_api_key: SecretStr | None = None
     research_timeout_seconds: float = Field(default=12.0, ge=1, le=60)
@@ -100,6 +119,9 @@ class Settings(BaseSettings):
         "llm_base_url",
         "llm_api_key",
         "llm_model",
+        "agent_model_base_url",
+        "agent_model_api_key",
+        "agent_model_name",
         "tavily_api_key",
         "nanoloop_api_key",
         "credential_pepper",
